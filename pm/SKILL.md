@@ -72,6 +72,7 @@ Interrogate until every question below is answered or explicitly deferred with a
 - **Data**: new entities/fields? ownership, retention, migration of existing rows?
 - **Permissions**: which roles see/do what; hard boundaries?
 - **Commercial**: which tier/plan gets it (if the project tiers features)?
+- **Generality**: who else must this serve beyond the requesting customer? What is the sane default, and is customer-specific behavior an opt-in config? A feature only the requester could use is bespoke — flag it before it ships as core.
 - **Localization / compliance**: languages, formats, regulatory constraints?
 - **Edge cases**: empty states, conflicts, concurrency, failure modes?
 - **Dependencies**: blocked by / blocking which other work?
