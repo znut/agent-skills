@@ -66,3 +66,14 @@ Symlinks keep bare skill names (`/pm`, not `plugin:pm`) and make edits in the cl
 - **Workers own the whole pipeline** (implement → self-review → green → push → PR → artifacts). The orchestrator never fixes a worker's output — it re-dispatches fresh with findings.
 - **Chain depth 2 max**: manager → worker. Workers never spawn subagents.
 - **Merge approval is always the human's**, per PR. Watchers detect merges; they never authorize them.
+
+## Tools
+
+`tools/` is a separate, config-driven family of local background services these
+skills lean on but don't require: a multi-repo GitHub PR status poller
+(`gh-status`), a project-board-to-markdown renderer (`board-snapshot`), and a
+generic post-merge step runner (`on-merge`). Each target repo gets one JSON
+file under `$AGENT_TOOLS_HOME/config/` (outside this repo — see
+`tools/config/example.json` for the shape). See `tools/README.md` for the
+config contract, `tools/install.sh` usage, and the migration checklist from
+any prior per-repo service.

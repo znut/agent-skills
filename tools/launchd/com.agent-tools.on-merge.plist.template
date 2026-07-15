@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- See com.agent-tools.gh-status.plist.template for the PATH note — this
+	     watcher's on-merge steps shell out to board-snapshot (needs `gh`) and
+	     arbitrary "command" steps, so both bun's and gh's directories must be
+	     in PATH here too. -->
+	<key>Label</key><string>com.agent-tools.on-merge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__BUN__</string>
+		<string>__TOOLS_DIR__/on-merge/run.mjs</string>
+		<string>__CONFIG_NAME__</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key><string>__PATH__</string>
+		<key>AGENT_TOOLS_HOME</key><string>__AGENT_TOOLS_HOME__</string>
+	</dict>
+	<key>WorkingDirectory</key><string>__TOOLS_DIR__/on-merge</string>
+	<key>WatchPaths</key>
+	<array>
+		<string>__VAR_DIR__/__CONFIG_NAME__/gh-status/events</string>
+	</array>
+	<key>StandardOutPath</key><string>__VAR_DIR__/on-merge-watch.log</string>
+	<key>StandardErrorPath</key><string>__VAR_DIR__/on-merge-watch.log</string>
+</dict>
+</plist>

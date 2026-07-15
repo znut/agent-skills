@@ -1,0 +1,10 @@
+{
+	"name": "my-project",
+	"org": "YOUR_ORG", "repo": "YOUR_REPO",
+	"tokenFile": "~/.config/YOUR_TOKEN_FILE",
+	"board": { "projectNumber": 1, "owner": "YOUR_ORG" },
+	"onMerge": [
+		{ "type": "board-snapshot" },
+		{ "type": "command", "cmd": "bash scripts/cleanup-worktrees.sh --apply", "cwd": "~/src/your-repo" }
+	]
+}

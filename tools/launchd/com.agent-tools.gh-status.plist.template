@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PATH must include the resolved bun's directory (launchd invokes
+	     ProgramArguments[0] directly) and the resolved gh's directory
+	     (board-snapshot, which on-merge invokes, shells out to `gh`).
+	     tools/install.sh computes both fresh via `command -v` and renders the
+	     result below — never hardcode a version dir or one package manager's
+	     install location here. -->
+	<key>Label</key><string>com.agent-tools.gh-status</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__BUN__</string>
+		<string>__TOOLS_DIR__/gh-status/poller.ts</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key><string>__PATH__</string>
+		<key>AGENT_TOOLS_HOME</key><string>__AGENT_TOOLS_HOME__</string>
+	</dict>
+	<key>WorkingDirectory</key><string>__TOOLS_DIR__/gh-status</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>StandardOutPath</key><string>__VAR_DIR__/poller.log</string>
+	<key>StandardErrorPath</key><string>__VAR_DIR__/poller.log</string>
+</dict>
+</plist>
