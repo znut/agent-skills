@@ -45,9 +45,9 @@ Match the changed paths against each judgment section's path tags. Only sections
 
 ## Step 4 — judgment pass
 
-**Max agent-chain depth is 2: manager → one subagent.** If you are already a subagent (a worker running its pre-PR gate, or an agent dispatched specifically to run this review): do the judgment pass **INLINE yourself** — do NOT spawn a reviewer child (that made 3-level manager→agent→reviewer chains; the review dispatch from the main thread is the only sanctioned review spawn).
+**You are the reviewer — run the judgment pass INLINE and spawn nothing.** This skill executes inside the review-gate agent: a FRESH subagent with a clean context, dispatched by the diff's author-worker (or by the orchestrator for engines that can't spawn agents). The author of a diff never reviews it — the clean context is the mechanism, not a nicety. Chain depth caps at manager → worker → reviewer; a reviewer spawning its own child made 4-level chains and broke cost/model attribution.
 
-Only when running in the top-level interactive session: dispatch **ONE reviewer subagent** (`cavecrew-reviewer` or general-purpose) — **ALWAYS with an explicit `model: "sonnet"`** (an omitted model inherits the TOP session's model, not the caller's — review children silently ran on the most expensive tier). Give it: the diff, the selected checklist sections, and the grep hits needing adjudication.
+Exception — ad-hoc review from the top-level interactive session (no author-worker in the chain): dispatch **ONE reviewer subagent** (the conventions' reviewer agent type, else `cavecrew-reviewer`/general-purpose) — **ALWAYS with an explicit `model: "sonnet"`** (an omitted model inherits the TOP session's model, not the caller's — review children silently ran on the most expensive tier). Give it: the diff, the selected checklist sections, and the grep hits needing adjudication.
 
 Either way (inline or dispatched), findings come back ONLY as `path:line — rule — problem — fix`, must-fix focus, no praise, no scope creep, plus **checklist candidates** (recurring-looking mistakes not yet banked).
 

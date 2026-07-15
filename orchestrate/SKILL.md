@@ -44,7 +44,7 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 | Actor | Responsibility |
 |---|---|
 | **Orchestrator (main thread)** | Talk to user, refine questions, decompose tasks, dispatch workers, then **final-check the worker's opened PR**. Does NOT implement, does NOT fix the worker's mistakes, does NOT run lint for the worker, does NOT push or open PRs on the worker's behalf. Never edits files or switches branches in the primary checkout — that tree belongs to the user. |
-| **Workers (subagents)** | Own the ENTIRE pipeline for one task: implement → self-review → fix until green → push → open labeled PR → attach required artifacts → return the PR URL. |
+| **Workers (subagents)** | Own the ENTIRE pipeline for one task: implement → fresh-reviewer gate → fix until green → push → open labeled PR → attach required artifacts → return the PR URL. |
 
 > ⛔ **The orchestrator NEVER fixes a worker's mistakes by itself** (no inline lint/review-finding fixes, no "I'll just patch it"). If a returned PR is wrong or red, **re-dispatch a FRESH worker** with the findings. The only thing the main thread hand-edits is its OWN non-worker work (skills, memory, tiny chores it explicitly owns).
 
@@ -56,7 +56,7 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 
 1. **Implement** one small logical change in its worktree (reads the **[conventions]** read-order docs first).
 2. **Verify gate**: run the **[conventions]** typecheck/lint/test commands, scoped to the touched workspace when possible. All green.
-3. **Self-review**: run the **[conventions]** review gate (if defined) on its own diff **INLINE — workers never spawn subagents**. Fold every must-fix. (Agent-chain depth caps at manager → worker; a worker that "delegates" its review to a child breaks cost attribution and model control.)
+3. **Review gate — fresh reviewer, never yourself**: spawn ONE fresh review subagent (the **[conventions]** reviewer agent type if defined, else a clean subagent with an explicit model) to run the **[conventions]** review gate on the diff. **The author of a diff never reviews it** — a clean context is the mechanism. Give the reviewer the branch + worktree path, the acceptance criteria, and the conventions' reviewer-contract items; never tell it what engine wrote the diff. Fold every must-fix, commit, then spawn a NEW fresh reviewer for the next round (never resume one). Cap 2 rounds; still failing → return to the orchestrator with the findings instead of opening a PR. (Chain depth caps at manager → worker → reviewer; the reviewer spawns NOTHING.)
 4. **Lint until green** exactly the way **[conventions]** says CI validates it (some setups need explicit file paths or a commit to trigger staged-file hooks — the conventions file documents the traps).
 5. **Push** the branch (`git push -u origin <branch>`).
 6. **Open the PR** (`gh pr create`, ready-for-review) **with the labels the conventions' scheme assigns** (`--label`), honoring any pre-PR enforcement hook the conventions define.
@@ -104,11 +104,11 @@ Every worker prompt MUST include:
      typecheck: pass
      lint: pass
      test: pass
-   self_review: <review gate run; findings folded>
+   review: <fresh-reviewer rounds to PASS; findings folded; marker written by the reviewer>
    artifacts: <URL(s) if the conventions require any for this diff type, else "n/a">
    open_questions: [unresolved tech/business questions — note in the PR body too]
    ```
-7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. After the code is done: verify gate green → review gate run + findings folded → lint green the way CI checks it → `git push -u origin <branch>` → open a ready, labeled PR (honoring any pre-PR hook) → attach required artifacts. Return the PR URL. Do NOT return until the PR is open and green."
+7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. After the code is done: verify gate green → fresh-reviewer gate PASS (findings folded) → lint green the way CI checks it → `git push -u origin <branch>` → open a ready, labeled PR (honoring any pre-PR hook) → attach required artifacts. Return the PR URL. Do NOT return until the PR is open and green."
 
 If a worker hits an ambiguity it cannot resolve (business logic, decision-record conflict, scope unclear), it MUST surface it in `open_questions` (in the PR body + its return) — do not guess on business decisions.
 
@@ -150,7 +150,7 @@ Orchestrator decides escalation — do not ask user unless cost is extreme.
 The worker already self-reviewed, got green, pushed, opened the labeled PR, and attached artifacts. My job is a lightweight final check of the OPENED PR — NOT to fix anything:
 
 1. Open the PR; confirm CI is green, labels are applied, and required artifacts are present.
-2. Confirm the self-review ran and findings were folded (the PR body should note it).
+2. Confirm the review gate ran in a fresh reviewer and findings were folded (the PR body should note it).
 3. Spot-check: scope is right, no secrets/`.env`/lockfile churn beyond a real dep change, decision-record compliance.
 4. **PASS** → report the PR URL to the user. **FAIL/RED/wrong/unlabeled** → **re-dispatch a worker** with the specific findings (continue in the same worktree, or fresh). ⛔ Do NOT fix it yourself.
 
@@ -221,9 +221,9 @@ Dispatch workers as background tasks (`run_in_background: true`) so the main thr
 
 - ⛔ **Don't fix a worker's mistakes yourself.** No inline lint/review-finding patches, no "I'll just hand-edit it", no producing the worker's artifacts, no committing on its behalf. A wrong/red PR → RE-DISPATCH. The main thread only hand-edits its OWN work (skills, memory, a chore it explicitly owns) — and any repo-file chore happens in a worktree, never the primary checkout.
 - ⛔ **Don't touch the primary checkout.** No branch switches, commits, or file edits there — it's reserved for the user. Worktrees for everything, orchestrator included.
-- ⛔ **Workers don't spawn subagents. Ever.** Chain depth = manager → worker, full stop. The worker does everything inline — implementation, review gate, screenshots. Put this instruction verbatim in every worker prompt. A standalone review/verification agent is dispatched only by the manager itself.
+- ⛔ **Workers spawn NO subagents except the review-gate reviewer.** Chain depth = manager → worker → reviewer, full stop — the reviewer spawns nothing, and there is no other sanctioned worker-spawned agent (no locators, no helpers; implementation, screenshots, lint all stay inline). One fresh reviewer per review round, explicit model. Put this instruction verbatim in every worker prompt.
 - ⛔ **Workers write ONLY inside their worktree.** Never to `~/.claude` (skills, hooks, settings, memory), never to the primary checkout, never to other worktrees. Rule/skill changes are the manager's own work — a worker that spots a rule gap REPORTS it as a checklist/skill candidate in its return, nothing more (a reviewer child once hand-edited a global skill mid-task: right idea, wrong actor).
-- Don't do the workers' work in the main thread — whatever the deliverable is (feature code, docs, research). Workers own implement → self-review → fix-green → push → PR → artifacts.
+- Don't do the workers' work in the main thread — whatever the deliverable is (feature code, docs, research). Workers own implement → fresh-reviewer gate → fix-green → push → PR → artifacts.
 - Don't accept a PR you had to fix. If you're tempted to patch it, that's a re-dispatch.
 - Don't open PRs with `--draft` unless the user explicitly requests it.
 - Don't run more than 5 concurrent workers.
