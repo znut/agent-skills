@@ -167,7 +167,7 @@ Never accept a red PR. Never accept a PR missing a required artifact or label �
 
 ### Post-PASS merge watch (if the conventions define a PR-status service)
 
-Merge approval belongs to the USER — never merge without their explicit per-PR go-ahead, and never treat a watcher event as approval. But don't make them announce the merge either: if **[conventions]** defines a local PR-status service (file markers, status daemon), arm a background watcher on the PR right after reporting PASS (`run_in_background: true`, e.g. `until [ -f <events>/pr-<N>.merged ]; do sleep 20; done`). When it fires: confirm the merge, do the post-merge bookkeeping the conventions call for (board status, ticket state, `git fetch`), and start any queued dependent task without waiting to be told. If CI was still pending at PASS time, watch the service's CI marker the same way instead of polling `gh pr checks`.
+Merge approval belongs to the USER — never merge without their explicit per-PR go-ahead, and never treat a watcher event as approval. But don't make them announce the merge either: if **[conventions]** defines a local PR-status service (file markers, status daemon), arm a background watcher on the PR right after reporting PASS (`run_in_background: true`, e.g. `until [ -f <events>/pr-<N>.merged ]; do sleep 20; done`). When it fires: confirm the merge, `git fetch`, do any post-merge bookkeeping the conventions call for (often none — the PR's closing keyword already closes the ticket and board workflows move it; don't duplicate automation by hand), and start any queued dependent task without waiting to be told. If CI was still pending at PASS time, watch the service's CI marker the same way instead of polling `gh pr checks`.
 
 ---
 

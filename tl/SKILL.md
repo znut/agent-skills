@@ -63,7 +63,9 @@ Ready queue (PM-grilled tickets, board status Ready)
        explicit model + effort tier, fully self-contained prompt)
   └─ 4 FINAL-CHECK the PR the worker opened (never fix it — re-dispatch fresh)
   └─ 5 ARM a merge watcher; report PR URL + PASS to the user; STOP
-  └─ 6 ON MERGE: fetch, flip board to Done, release the next task in the chain
+  └─ 6 ON MERGE: fetch, release the next task in the chain (ticket state is
+       automatic — the PR's closing keyword closes it and the board workflow
+       moves it; only fix stragglers)
 ```
 
 Stay conversational throughout. Workers run in the background; the main thread keeps talking.
@@ -83,7 +85,7 @@ Per the engine's final-check step: CI green, labels applied, required artifacts 
 
 **PASS** → report the PR URL, arm the merge watcher the conventions describe, and stop. **FAIL** → re-dispatch a fresh worker with the specific findings. Never patch it yourself; never accept a red PR.
 
-Merge approval is the user's, per PR. A watcher firing means the user merged — it is **not** approval and never authorizes the next merge. On merge: `git fetch`, flip the board item to Done, and start whatever was queued behind it without waiting to be asked.
+Merge approval is the user's, per PR. A watcher firing means the user merged — it is **not** approval and never authorizes the next merge. On merge: `git fetch` and start whatever was queued behind it without waiting to be asked. Ticket/board state is automatic (the PR's closing keyword closes the ticket; the board workflow moves it) — don't flip status by hand; only spot-fix items the automation missed (e.g. a PR that forgot its `Resolves #N`).
 
 ## Decision records
 
