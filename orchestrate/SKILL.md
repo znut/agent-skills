@@ -234,6 +234,7 @@ Dispatch workers as background tasks (`run_in_background: true`) so the main thr
 |---|---|
 | Verify fails (typecheck/lint/test) | Re-dispatch with error output + "fix only this". Escalate model if same error repeats. |
 | Worker dies / no return | Summarize to user, dispatch fresh with narrowed scope. |
+| Worker returns "waiting on a background command, will continue" | Treat as AT-RISK — self-resume is not guaranteed (one died silently at exactly this point). If no completion within the command's expected runtime, presume dead: audit its branch/worktree state (`git branch --list`, `git -C <its worktree> log/status` read-only), then dispatch a FRESH continuation worker from the committed state — detached-HEAD flow if the dead worker's locked tree holds the branch. |
 | Merge conflict on push | Rebase in worktree, re-run verify, then push. |
 | Ambiguity in `open_questions` | Bring to user immediately. Do not guess business logic. |
 | Scope grew too large | Split into 2+ tasks, dispatch separately, 2+ PRs. |
