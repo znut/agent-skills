@@ -26,7 +26,18 @@ Before anything else, read **`.claude/orchestrate.md`** — from the **default b
 - **artifact rules** (e.g. screenshots for UI PRs) and how to produce/host them
 - project-specific code rules to inject into worker prompts (banned APIs, required libs)
 
-**If the file is missing**: derive defaults — read `AGENTS.md`/`CONTRIBUTING.md`, take verify commands from `package.json` scripts (or the ecosystem equivalent), skip label/artifact steps, and tell the user you're running on derived defaults (offer to generate a conventions file).
+**If the file is missing — run the bootstrap interview (once per repo, explicit answers, never silent defaults).** DETECT first, cheaply: `git remote -v` (git service), `gh auth status` (identity available), the package manifest's scripts (verify-gate candidates), `gh label list` (label scheme), existing docs layout (`README`/`AGENTS.md`/decision docs). Then CONFIRM with the user via AskUserQuestion — detections pre-filled as recommendations, but every dimension gets an explicit answer:
+
+1. **Git service + PR flow**: `github` (full automation: issues, PRs, labels, comments) | `push-only` (any non-GitHub service, or by choice — pipeline ends at commit+push+structured report; no PR/label/marker steps).
+2. **Identity**: dedicated bot account + token file (inline `GH_TOKEN=` prefix convention) | the user's own `gh` CLI auth.
+3. **Tracker**: `github-projects` | `none` | `external-manual` (Jira/Linear/etc — agents format ticket text, the human files it; no API adapters).
+4. **Review gate strictness**: `strict` (fresh reviewer + sha-pinned marker + hook) | `lite` (fresh reviewer, no marker machinery) | `none`.
+5. **Merge policy**: `user-merges` | `agent-merges-after-user-confirm` (agent proposes on green, merges only on the user's explicit per-PR yes) | `auto-on-green` (explicit opt-in only — never recommend it).
+6. **Verify gate commands** (confirm the detected scripts; name the exact runner).
+7. **Labels**: use existing | create a scheme | none (`gh pr create --label` fails on undefined labels — never assume).
+8. **Docs read order**: full decision-record apparatus | lightweight fixed docs (e.g. `README.md → PAYROLL.md`).
+
+Write the answers into a generated `.claude/orchestrate.md` (from this skill repo's `templates/orchestrate.md` — including the `## Enforcement policy` section reflecting answers 2 and 4; the gate hook defaults to ENFORCE, so opt-outs must be written explicitly) plus `.claude/agents/` from `templates/agents/`, land them via the normal pipeline, and proceed. Never re-interview while the file exists — edit the file instead.
 
 Everything below marked **[conventions]** means: the concrete value comes from that file.
 
@@ -172,6 +183,8 @@ Merge approval belongs to the USER — never merge without their explicit per-PR
 ---
 
 ## PR step (gh CLI)
+
+**PR flow `push-only`** (non-GitHub service, or by choice — per **[conventions]**): the pipeline ends at commit + `git push` + the structured return (state the pushed branch and that no PR exists); skip everything below plus label/marker steps. Otherwise:
 
 Honor the **[conventions]** review gate BEFORE `gh pr create` (some repos hook-enforce it).
 
