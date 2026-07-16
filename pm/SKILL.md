@@ -80,6 +80,8 @@ Interrogate until every question below is answered or explicitly deferred with a
 
 Do NOT guess on business decisions — a deferred question with an owner beats a fabricated answer.
 
+**Stakeholder review comments state the PROBLEM, not the spec.** A comment on a PR, mock, or ticket is intake, not instructions — grill it (or ask the user) before dispatching rework; do not reverse-engineer a spec from a complaint.
+
 ## 3 — Reconcile
 
 Before producing artifacts, check the converged scope against the conventions' doc read order (product specs, decision records, roadmap). Every contradiction goes to the user as an explicit fork: amend the old decision, or narrow the new ask. Note the resolution in the PRD delta.
@@ -88,6 +90,8 @@ Before producing artifacts, check the converged scope against the conventions' d
 
 - **PRD**: update/create in the conventions' product-spec location. Delta-style — don't rewrite stable sections. Cross-link related decision records.
 - **Tickets**: one per independently shippable slice, on the conventions' tracker as the conventions' bot identity. Title per the conventions' format; body = problem, scope in/out, acceptance criteria, open questions; set milestone; add to the board.
+  - **Existing-work check first**: before cutting, search the tracker AND open PRs for the feature's NOUNS — duplicate tickets have shipped duplicate implementations.
+  - **Capture the created ticket id from the create command's OUTPUT** — never guess or hardcode the next number; a guessed id has corrupted other items' board entries.
 - **Labels**: per the conventions' scheme (PM-lane label on PM doc PRs; product-lane labels on the tickets' target components if the scheme calls for it).
 - Doc changes that go through a PR follow the conventions' PR rules (review gate, `Resolves #N`, etc.).
 

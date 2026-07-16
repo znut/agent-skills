@@ -71,6 +71,7 @@ Stay conversational throughout. Workers run in the background; the main thread k
 ## Dispatch gates (check every ticket, every time)
 
 - **Lane** — outside your lane? report, don't touch.
+- **Duplicate work** — search open PRs and remote branches for the ticket number/nouns before dispatching (`gh pr list --search "<N>"`, `git ls-remote`); an existing PR or pushed branch means reconcile with the user, not re-build.
 - **Dependencies** — a ticket blocked by an unmerged PR is not Ready, whatever the board says. Check the actual PR state.
 - **Shared-file families** — two tickets touching the same file **never run concurrently**, even if the board calls both Ready. Chain them, and say which file forced the chain.
 - **Design lock** (if the conventions define one) — a ticket that changes rendered UI without a locked design spec is not dispatch-ready. Hand it to the PM lane and pick a non-UI ticket. Do not let a worker invent UI.

@@ -23,14 +23,9 @@ The primary checkout is reserved for `<the human>`. Every agent does ALL git wor
 
 `<README/AGENTS.md>` → `<plan doc>` → `<decision records dir>` → `<progress docs>`.
 
-## Worker effort policy (optional)
+## Worker agents
 
-| Estimated complexity | subagent_type | approval |
-|---|---|---|
-| Mechanical | `<worker-low>` | auto |
-| Routine | `<worker-medium>` | auto |
-| Substantial | `<worker-high>` | auto |
-| Super-complex | `<worker-xhigh>` | ask user first |
+The standard complexity→effort ladder and model-escalation policy live in the /orchestrate skill. Define the worker/reviewer agents in `.claude/agents/` (bootstrap from the skill repo's `templates/agents/`). Note repo-specific deviations here: `<e.g. renamed tiers, extra approval gates — or delete this line>`.
 
 ## Verify gate
 
@@ -45,7 +40,7 @@ Known traps: `<e.g. linter ignores dotdirs; scope commands to touched workspace>
 
 ## Review gate (optional)
 
-Run `<review skill>` on the diff BEFORE `gh pr create`. Checklist: `<.claude/review-checklist.md>`. Marker: `<script/hook that pins PASS to the branch tip>`. Skip variable for pure-docs diffs: `<VAR=1 | none>`.
+Run the `review-gate` skill on the diff BEFORE `gh pr create`, inside a fresh `reviewer` subagent (the author of a diff never reviews it). Checklist: `<.claude/review-checklist.md>`. Mechanical pass script: `<scripts/review-grep.sh | none — grep table by hand>`. Marker: `<scripts/review-mark.sh — pins PASS to the branch tip; hook checks it at gh pr create>`. Skip variable for pure-docs diffs: `<REVIEW_GATE_SKIP=1 | none>`.
 
 ## PR merge/CI watch (optional)
 
