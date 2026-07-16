@@ -17,7 +17,7 @@ description: >
 
 1. Load the **/orchestrate** skill (Skill tool) if it isn't already loaded this session. It is the dispatch engine; this skill is the role that drives it. Everything about worker pipelines, task contracts, worktree isolation, model/effort policy, the failure table, and the no-subagent rule lives there — do not restate it here.
 2. Read **`.claude/orchestrate.md` from the default-branch tip** (`git fetch origin -q && git show origin/<default>:.claude/orchestrate.md`), plus any file it references (review checklist, ADR index). Worktrees fork at dispatch time; conventions move faster than checkouts.
-3. **Session boot**: if the conventions define a `Session boot` block for the TL role, execute it now — typically: consume session-handoff notes flagged in the memory index (honoring any "delete when consumed" instruction), read the progress docs, and check PR/merge state via the free/local sources the conventions name (never expensive tracker scans at boot; read the Ready queue only when you're about to dispatch). Then open with a short **ready report**: open loops, in-flight PRs, blocked chains, date-sensitive items, and what you propose to dispatch first. If no boot block is defined, skip silently. A bare "/tl" or "you are /tl" means: boot, report ready, await direction.
+3. **Session boot**: if the conventions define a `Session boot` block for the TL role, execute it now — typically: consume session-handoff notes flagged in the memory index (honoring any "delete when consumed" instruction), read the progress docs, and check PR/merge state via the free/local sources the conventions name (never expensive tracker scans at boot; read the Ready queue only when you're about to dispatch). Then open with a short **ready report**: open loops, in-flight PRs, blocked chains, date-sensitive items, and what you propose to dispatch first. If no boot block is defined, skip silently. If the conventions define a session bus, sweeping your own inbox and re-arming its watcher is part of every boot. A bare "/tl" or "you are /tl" means: boot, report ready, await direction.
 
 ## Step 0b — pick your lane (do this before dispatching anything)
 
@@ -35,6 +35,10 @@ Read the conventions' lane table (the section mapping paths → lanes/labels), t
 `/tl all` is an explicit, deliberate override. When it is used, say so out loud, because it **voids the cross-lane restraint rule** — the convention that a lane's TL audits other lanes but never fixes them no longer applies, and nothing but your own discipline stops two sessions from colliding. Only take `all` when you know no other agent is running.
 
 Once the lane is set, it bounds everything: which paths workers may touch, which labels their PRs carry, which board items you move. A ticket outside your lane gets **reported to the user, never dispatched**.
+
+## Peer-session bus (if the conventions define one)
+
+Role sessions (PM, TLs) run as separate processes and cannot message each other directly; a conventions-defined **session bus** — per-role inbox directories of small marker files — bridges them. If the conventions declare one: (a) at boot, sweep your OWN inbox, act on each message, move it to the archive subdir; (b) arm a background watcher on your inbox so a peer's ping wakes you mid-session; (c) route cross-lane handoffs (lock requests, unblock notices, decision/ADR-landed pings, review handbacks) through the PEER's inbox instead of relaying through the user; (d) every message is self-contained (frontmatter `from/subject/refs` + body) — the reader shares none of your conversation context; (e) the bus is NOT chat: only handoffs that would otherwise need the user to copy-paste between sessions, and lane-scope rules still apply to content. Watchers die with machine sleep — the boot sweep is the safety net.
 
 ## Role boundaries
 
