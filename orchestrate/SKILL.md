@@ -61,7 +61,7 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 5. **Push** the branch (`git push -u origin <branch>`).
 6. **Open the PR** (`gh pr create`, ready-for-review) **with the labels the conventions' scheme assigns** (`--label`), honoring any pre-PR enforcement hook the conventions define.
 7. **Artifacts**: produce + attach whatever **[conventions]** requires for this diff type (e.g. screenshot for UI changes).
-8. **Self-clean**: remove your own worktree (see Worktree lifecycle — plain `git worktree remove <path>` from outside it, never `--force`; refused = report, don't force).
+8. **Self-clean**: attempt to remove your own worktree (see Worktree lifecycle — plain `git worktree remove <path>` from outside it, never `--force`). A harness pid-lock refusal is EXPECTED for harness-created worktrees (`isolation: "worktree"` trees stay locked for the session's lifetime) — report `worktree_cleanup: harness-locked` and move on. A modified/untracked-files refusal = unpushed work — report that loudly instead.
 9. **Return** the PR URL + a short summary. Done.
 
 Workers use the **[conventions]** bot identity for push / PR / uploads.
@@ -109,7 +109,7 @@ Every worker prompt MUST include:
    artifacts: <URL(s) if the conventions require any for this diff type, else "n/a">
    open_questions: [unresolved tech/business questions — note in the PR body too]
    ```
-7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. After the code is done: verify gate green → fresh-reviewer gate PASS (findings folded) → lint green the way CI checks it → `git push -u origin <branch>` → open a ready, labeled PR (honoring any pre-PR hook) → attach required artifacts → remove your own worktree (plain `git worktree remove` from outside it, never `--force`; refused = report instead). Return the PR URL. Do NOT return until the PR is open and green."
+7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. After the code is done: verify gate green → fresh-reviewer gate PASS (findings folded) → lint green the way CI checks it → `git push -u origin <branch>` → open a ready, labeled PR (honoring any pre-PR hook) → attach required artifacts → attempt to remove your own worktree (plain `git worktree remove` from outside it, never `--force`; harness pid-lock = expected, report `harness-locked`; modified/untracked refusal = unpushed work, report loudly). Return the PR URL. Do NOT return until the PR is open and green."
 
 If a worker hits an ambiguity it cannot resolve (business logic, decision-record conflict, scope unclear), it MUST surface it in `open_questions` (in the PR body + its return) — do not guess on business decisions.
 
@@ -202,7 +202,7 @@ gh pr create \
 
 - **Born** at dispatch: the harness creates the worktree (`isolation: "worktree"`), branched off latest default (the harness auto-removes it again if the worker never changed anything).
 - **Live**: the worker does ALL its work inside it; no other agent touches it.
-- **Dies with its worker**: after the PR is open and required artifacts are attached, the worker removes its OWN worktree as the last pipeline step — by explicit path, plain `git worktree remove <path>` (run from outside the tree). **NEVER `--force`, NEVER a bare `git worktree prune`** (a bare prune once deleted a live lane's tree). If removal is refused (modified/untracked files present), that is a signal something never got committed or pushed — REPORT it in the return instead of forcing.
+- **Dies with its worker**: after the PR is open and required artifacts are attached, the worker attempts to remove its OWN worktree as the last pipeline step — by explicit path, plain `git worktree remove <path>` (run from outside the tree). **NEVER `--force`, NEVER a bare `git worktree prune`** (a bare prune once deleted a live lane's tree). Two refusal cases, different meanings: a **harness pid-lock** is expected for harness-created worktrees (locked for the whole session; the harness/cleanup mechanism reclaims them) — report `harness-locked`, not an error; **modified/untracked files** means something never got committed or pushed — REPORT that loudly instead of forcing. Self-clean fully applies to self-made worktrees (`git worktree add` — orchestrator chores, doc edits).
 - **Rework = fresh tree**: a re-dispatched worker always gets a FRESH worktree and checks out the pushed branch there — never revive or reuse a previous worker's tree.
 - **Crash orphans**: workers that die mid-pipeline leave worktrees behind; clean via the conventions' cleanup mechanism if one exists, else `git worktree remove <path>` by explicit path after confirming the branch is pushed or dead.
 - If a branch needs rebase after PR: rebase in a fresh worktree, re-run verify, re-push.
