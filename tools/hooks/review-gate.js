@@ -19,8 +19,8 @@
  *    markers are fresh for the head branch (each pinned to the branch tip
  *    sha — commits after invalidate):
  *      review marker  (<git-common-dir>/.review-gate/<branch>; legacy
- *                      .zcr-reviewed/<branch> honored during the
- *                      znut-code-review → review-gate rename transition)
+ *                      .zcr-reviewed/<branch> honored for repos that predate
+ *                      the current marker-dir name)
  *                      — /review-gate passed
  *      verify marker  (<git-common-dir>/.verify-green/<branch>)  — scripts/verify-mark.sh
  *

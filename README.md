@@ -12,7 +12,7 @@ tier 1 (this repo, reusable)          tier 2 (each project repo, committed)
 orchestrate/SKILL.md  engine    ←──  .claude/orchestrate.md   conventions SSOT
 pm/SKILL.md           role      ←──  .claude/review-checklist.md
 tl/SKILL.md           role      ←──  docs (PRD / ADRs / plan / progress)
-znut-code-review/     gate      ←──  repo-local hooks + helper scripts
+review-gate/          gate      ←──  repo-local hooks + helper scripts
 ```
 
 New project = copy `templates/orchestrate.md` into the repo, fill it in, done. The skills work day one.
@@ -24,13 +24,13 @@ New project = copy `templates/orchestrate.md` into the repo, fill it in, done. T
 | `orchestrate` | Dispatch engine: decompose → worker-per-task in worktrees → verify/review gates → worker opens labeled PR → orchestrator final-checks. Not a role — pair with `/pm` or `/tl`. |
 | `pm` | Product manager: requirements grill, PRD deltas, tickets + board, design direction + design locks. Auto-loads the engine, runs the conventions' PM session boot, reports ready. |
 | `tl` | Tech lead: gates Ready tickets, dispatches workers, final-checks PRs, owns ADRs. Auto-loads the engine, runs the conventions' TL session boot, reports ready. |
-| `znut-code-review` | Pre-PR review gate: deterministic banned-pattern grep + diff-scoped judgment review against the repo's checklist; sha-pinned PASS marker for hook enforcement. |
+| `review-gate` | Pre-PR review gate: deterministic banned-pattern/script pass + diff-scoped judgment review against the repo's checklist; sha-pinned PASS marker for hook enforcement. |
 
 ## Install
 
 ```bash
 git clone <this repo> ~/src/agent-skills
-for s in orchestrate pm tl znut-code-review; do
+for s in orchestrate pm tl review-gate; do
   rm -rf ~/.claude/skills/$s
   ln -s ~/src/agent-skills/$s ~/.claude/skills/$s
 done
@@ -50,7 +50,7 @@ Symlinks keep bare skill names (`/pm`, not `plugin:pm`) and make edits in the cl
 | ★ Agent read order | all | ordered doc list workers read before coding (plan → decisions → progress) |
 | Worker effort policy | orchestrate, tl | complexity → subagent type/effort table, approval gates |
 | ★ Verify gate | orchestrate, tl | exact typecheck/lint/test/build commands + known traps |
-| Review gate | orchestrate, znut-code-review | gate skill name, checklist path, marker script, enforcing hooks |
+| Review gate | orchestrate, review-gate | gate skill name, checklist path, marker script, enforcing hooks |
 | PR merge/CI watch | orchestrate, tl | local PR-status service paths for merge watchers (else `gh` fallback) |
 | ★ PR conventions | all | label table (paths → labels), body template, closing-keyword rules |
 | Ticket conventions | pm, tl | tracker + board identity, required fields, native relationship APIs |

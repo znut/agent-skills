@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: >
-  Pre-PR review gate (formerly znut-code-review). Run ONCE on a finished
+  Pre-PR review gate. Run ONCE on a finished
   branch diff BEFORE opening the PR: deterministic script/grep pass over the
   repo's banned-pattern list, then a diff-scoped judgment review — delegated
   to the harness's built-in code-review skill with the repo's
