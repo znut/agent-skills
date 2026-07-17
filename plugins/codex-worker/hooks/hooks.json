@@ -1,0 +1,18 @@
+{
+  "description": "Blocks Bash commands that bypass scripts/run-codex.mjs and talk to Codex (or its unsafe sandbox flags) directly.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs\"",
+            "timeout": 5,
+            "statusMessage": "codex-worker guard"
+          }
+        ]
+      }
+    ]
+  }
+}

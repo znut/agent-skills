@@ -1,0 +1,13 @@
+{
+  "name": "agent-skills",
+  "owner": {
+    "name": "znut"
+  },
+  "plugins": [
+    {
+      "name": "codex-worker",
+      "source": "./plugins/codex-worker",
+      "description": "Hybrid worker: Codex authors code, a Claude wrapper owns git/gh, verification, review, and the PR."
+    }
+  ]
+}

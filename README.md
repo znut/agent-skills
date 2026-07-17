@@ -60,6 +60,10 @@ Symlinks keep bare skill names (`/pm`, not `plugin:pm`) and make edits in the cl
 
 `templates/orchestrate.md` is a fill-in starter covering all of the above.
 
+## plugins/
+
+A separate top-level category from the skills above: installable Claude Code plugins, distributed via this repo's own marketplace (`.claude-plugin/marketplace.json` — `claude plugin marketplace add ~/src/agent-skills`). First entry: [`plugins/codex-worker`](plugins/codex-worker/README.md), a hybrid implementation worker where Codex authors the code and a Claude wrapper owns git/gh, verification, review, and the PR.
+
 ## Design notes
 
 - **Engine vs role**: `orchestrate` never decides what work is yours; `/pm` and `/tl` never restate how dispatch works. Both may load together on a small project.

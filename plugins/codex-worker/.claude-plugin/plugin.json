@@ -1,0 +1,8 @@
+{
+  "name": "codex-worker",
+  "version": "0.1.0",
+  "description": "Hybrid worker: Codex authors code, a Claude wrapper owns git/gh, verification, review, and the PR.",
+  "author": {
+    "name": "znut"
+  }
+}
