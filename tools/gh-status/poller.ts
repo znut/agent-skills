@@ -10,6 +10,10 @@
  *
  *   status/pr-<n>.json      — current snapshot per PR (overwritten every poll)
  *   status/state.json       — full snapshot of the last poll + comment cursors
+ *   events/pr-<n>.log       — UNIFIED per-PR timeline (append-only JSONL:
+ *     {at, type, actor?, body?, kind?, path?, line?, sha?}) — one watcher +
+ *     line-cursor backfill covers merge/close/checks/approval(+body)/comments.
+ *     Legacy per-type markers below stay during the transition.
  *   events/pr-<n>.merged    — marker, touched once when the PR is seen merged
  *   events/pr-<n>.closed    — marker, touched once when closed without merge
  *   events/pr-<n>.checks-success / .checks-failure — marker per CI outcome
@@ -73,7 +77,7 @@ query($owner: String!, $name: String!) {
         }
         reviews(last: 1) {
           totalCount
-          nodes { updatedAt state }
+          nodes { updatedAt state body author { login } }
         }
       }
     }
@@ -98,7 +102,7 @@ type Pr = {
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null
 	commits: { nodes: Array<{ commit: { oid: string; statusCheckRollup: { state: string } | null } }> }
 	comments: { totalCount: number; nodes: Array<{ updatedAt: string }> }
-	reviews: { totalCount: number; nodes: Array<{ updatedAt: string; state: string }> }
+	reviews: { totalCount: number; nodes: Array<{ updatedAt: string; state: string; body: string | null; author: { login: string } | null }> }
 }
 
 type PollState = {
@@ -307,6 +311,26 @@ async function bump(path: string): Promise<void> {
 	await Bun.write(path, `${new Date().toISOString()}\n`)
 }
 
+type TimelineEvent = {
+	at: string
+	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented"
+	actor?: string
+	body?: string
+	kind?: string
+	path?: string
+	line?: number | null
+	sha?: string | null
+}
+
+// Unified per-PR timeline: one append-only JSONL file per PR so a session
+// arms ONE watcher (`find events -name 'pr-*.log' -newer <stamp>`) instead of
+// one loop per marker type, and backfills by reading lines since a stamp.
+// Legacy marker files stay during the transition — same firings, two shapes.
+async function appendEvent(eventsDir: string, prNumber: number, ev: TimelineEvent): Promise<void> {
+	const { appendFileSync } = await import("node:fs")
+	appendFileSync(`${eventsDir}/pr-${prNumber}.log`, `${JSON.stringify(ev)}\n`)
+}
+
 async function rm(path: string): Promise<void> {
 	const { rmSync } = await import("node:fs")
 	try {
@@ -375,8 +399,15 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
 
-		if (pr.merged) await touch(`${eventsDir}/pr-${pr.number}.merged`)
-		else if (pr.state === "CLOSED") await touch(`${eventsDir}/pr-${pr.number}.closed`)
+		if (pr.merged) {
+			const marker = `${eventsDir}/pr-${pr.number}.merged`
+			if (!(await Bun.file(marker).exists())) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "merged" })
+			await touch(marker)
+		} else if (pr.state === "CLOSED") {
+			const marker = `${eventsDir}/pr-${pr.number}.closed`
+			if (!(await Bun.file(marker).exists())) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "closed" })
+			await touch(marker)
+		}
 
 		if (rollup === "SUCCESS") {
 			await rm(`${eventsDir}/pr-${pr.number}.checks-failure`)
@@ -384,6 +415,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			const isTransition = !(await Bun.file(marker).exists())
 			await touch(marker)
 			if (isTransition) {
+				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-success", sha })
 				try {
 					await writeChecksInfo(config.org, config.repo, eventsDir, pr.number, sha, "SUCCESS", false, token)
 				} catch (e) {
@@ -396,6 +428,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			const isTransition = !(await Bun.file(marker).exists())
 			await touch(marker)
 			if (isTransition) {
+				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-failure", sha })
 				try {
 					await writeChecksInfo(config.org, config.repo, eventsDir, pr.number, sha, rollup, true, token)
 				} catch (e) {
@@ -411,10 +444,20 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		// Approval decision — same create/clear shape as the checks rollup above.
 		if (pr.reviewDecision === "APPROVED") {
 			await rm(`${eventsDir}/pr-${pr.number}.changes-requested`)
-			await touch(`${eventsDir}/pr-${pr.number}.approved`)
+			const marker = `${eventsDir}/pr-${pr.number}.approved`
+			if (!(await Bun.file(marker).exists())) {
+				const rv = pr.reviews.nodes[0]
+				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "approved", actor: rv?.author?.login, body: capBody(rv?.body) })
+			}
+			await touch(marker)
 		} else if (pr.reviewDecision === "CHANGES_REQUESTED") {
 			await rm(`${eventsDir}/pr-${pr.number}.approved`)
-			await touch(`${eventsDir}/pr-${pr.number}.changes-requested`)
+			const marker = `${eventsDir}/pr-${pr.number}.changes-requested`
+			if (!(await Bun.file(marker).exists())) {
+				const rv = pr.reviews.nodes[0]
+				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "changes-requested", actor: rv?.author?.login, body: capBody(rv?.body) })
+			}
+			await touch(marker)
 		} else {
 			// REVIEW_REQUIRED or null: a later push (or dismissal) reset the
 			// decision — clear both so watchers wait on the fresh outcome.
@@ -438,6 +481,9 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 				const sinceAt = prevCursor.lastAt ?? new Date(0).toISOString()
 				const newComments = await fetchNewComments(config.org, config.repo, pr.number, sinceAt, token)
 				await writeAtomic(`${eventsDir}/pr-${pr.number}.comments.json`, `${JSON.stringify(newComments, null, "\t")}\n`)
+				for (const c of newComments) {
+					await appendEvent(eventsDir, pr.number, { at: c.createdAt, type: "commented", actor: c.author, kind: c.kind, path: c.path, line: c.line, body: c.body })
+				}
 			} catch (e) {
 				console.error(`${new Date().toISOString()} pr-${pr.number} comments payload fetch failed: ${e instanceof Error ? e.message : e}`)
 			}
