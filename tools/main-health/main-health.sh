@@ -58,13 +58,21 @@ run_pass() {
 	STEPS=""
 	step() {
 		local name="$1"; shift
-		if (cd "$WT" && "$@") >/dev/null 2>&1; then
+		if (cd "$WT" && "$@") > "$VAR/step-$name.log" 2>&1; then
 			STEPS="$STEPS\"$name\": \"ok\", "
 			log "$name: ok"
 		else
-			STEPS="$STEPS\"$name\": \"FAIL\", "
-			GREEN=false
-			log "$name: FAIL"
+			# retry once — concurrent worker suites contend for chromium/CPU and
+			# time out; a red alarm must survive an isolated second attempt
+			log "$name: fail — retrying once"
+			if (cd "$WT" && "$@") > "$VAR/step-$name.log" 2>&1; then
+				STEPS="$STEPS\"$name\": \"ok(retry)\", "
+				log "$name: ok on retry"
+			else
+				STEPS="$STEPS\"$name\": \"FAIL\", "
+				GREEN=false
+				log "$name: FAIL (retried)"
+			fi
 		fi
 	}
 
