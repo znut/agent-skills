@@ -47,7 +47,8 @@ run_pass() {
 	log "run start sha=$SHA"
 
 	if [ ! -d "$WT" ]; then
-		git -C "$REPO" worktree add "$WT" --detach origin/main >/dev/null 2>&1 || { log "worktree add FAILED"; return 1; }
+		# --lock: sibling on-merge step cleanup-worktrees.sh --apply reaps unlocked trees
+		git -C "$REPO" worktree add "$WT" --detach --lock --reason main-health origin/main >/dev/null 2>&1 || { log "worktree add FAILED"; return 1; }
 	fi
 	git -C "$WT" checkout --detach origin/main -q 2>/dev/null
 	git -C "$WT" reset --hard origin/main -q
