@@ -31,6 +31,10 @@
  *   events/pr-<n>.approved  — marker, touched when reviewDecision becomes APPROVED
  *   events/pr-<n>.changes-requested — marker, touched on CHANGES_REQUESTED
  *
+ * Configs with a `board` block additionally get a 1-point board-change probe
+ * per cycle that re-derives $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md on
+ * change (see probeBoard) — agents read the board from that file, no API calls.
+ *
  * Markers for merged/closed are monotonic facts. CI and approval markers are
  * re-created if a new push flips the rollup/decision (the stale opposite
  * marker is removed). The `commented` marker uses a different, "consume then
@@ -89,6 +93,7 @@ type RepoConfig = {
 	org: string
 	repo: string
 	tokenFile: string
+	board?: { owner: string; projectNumber: number }
 }
 
 type Pr = {
@@ -109,6 +114,7 @@ type PollState = {
 	fetchedAt: string
 	prs: number[]
 	commentCursors: Record<string, { count: number; lastAt: string | null }>
+	boardUpdatedAt?: string | null
 }
 
 type CommentPayload = {
@@ -346,6 +352,40 @@ async function readPrevState(stateFile: string): Promise<PollState | null> {
 	}
 }
 
+/**
+ * Board-change probe — configs with a `board` block only. One 1-point GraphQL
+ * query (`projectV2.updatedAt`) per cycle; a board-snapshot refresh (the
+ * expensive multi-page search, ~15 points) runs ONLY when the stamp moved.
+ * Agents then read the snapshot file with zero API calls of their own.
+ * The refresh subprocess passes --force: probe-gating already rate-limits, and
+ * the tool's own debounce would silently swallow a change that lands within
+ * 60s of an on-merge refresh. The new stamp is stored only after a successful
+ * refresh, so a failed run self-heals by retrying on the next cycle.
+ * Known blind spot: an issue TITLE edit may not bump projectV2.updatedAt —
+ * the title stales until the next real board change. Field edits, adds,
+ * status flips, and closes all bump it.
+ */
+async function probeBoard(config: RepoConfig, prevUpdatedAt: string | null | undefined, token: string): Promise<string | null | undefined> {
+	if (!config.board) return undefined
+	const { owner, projectNumber } = config.board
+	const query = `query { organization(login: "${owner}") { projectV2(number: ${projectNumber}) { updatedAt } } }`
+	const res = await fetch("https://api.github.com/graphql", {
+		method: "POST",
+		headers: { authorization: `bearer ${token}`, "content-type": "application/json" },
+		body: JSON.stringify({ query }),
+	})
+	if (!res.ok) throw new Error(`board probe HTTP ${res.status}`)
+	const body = (await res.json()) as { data?: { organization: { projectV2: { updatedAt: string } | null } | null }; errors?: unknown }
+	const updatedAt = body.data?.organization?.projectV2?.updatedAt
+	if (!updatedAt) throw new Error(`board probe errors: ${JSON.stringify(body.errors ?? body)}`)
+	if (prevUpdatedAt === updatedAt) return updatedAt
+
+	const script = new URL("../board-snapshot/board-snapshot.mjs", import.meta.url).pathname
+	const proc = Bun.spawn(["bun", script, config.name, "--force"], { stdout: "inherit", stderr: "inherit" })
+	if ((await proc.exited) !== 0) throw new Error("board-snapshot refresh exited non-zero")
+	return updatedAt
+}
+
 async function pollRepo(config: RepoConfig): Promise<void> {
 	const base = `${varDir(config.name)}/gh-status`
 	const statusDir = `${base}/status`
@@ -492,7 +532,15 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		nextCursors[String(pr.number)] = { count: commentCount, lastAt: lastCommentAt }
 	}
 
-	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors }
+	let boardUpdatedAt = prevState?.boardUpdatedAt ?? null
+	try {
+		boardUpdatedAt = (await probeBoard(config, boardUpdatedAt, token)) ?? null
+	} catch (e) {
+		// keep the previous stamp — the change (if any) re-triggers next cycle
+		console.error(`${new Date().toISOString()} [${config.name}] board probe failed: ${e instanceof Error ? e.message : e}`)
+	}
+
+	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt }
 	await writeAtomic(stateFile, `${JSON.stringify(state, null, "\t")}\n`)
 }
 

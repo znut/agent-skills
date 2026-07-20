@@ -44,13 +44,15 @@ shows the shape (fill-me-in placeholders); copy it to
 | `org` | gh-status, board-snapshot | yes | GitHub org/owner of the repo to poll (e.g. `YOUR_ORG`) |
 | `repo` | gh-status, board-snapshot | yes | Repo name, without org (e.g. `YOUR_REPO`) |
 | `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
-| `board.owner` | board-snapshot | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
-| `board.projectNumber` | board-snapshot | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
+| `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
+| `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
 | `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see below |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and covers all of them in one process (one 40s loop, one GraphQL request per
-configured repo per cycle). `board-snapshot` and `on-merge` are invoked
+configured repo per cycle; configs with a `board` block add a 1-point
+`projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
+when that stamp moves — agents read the board file with zero API calls). `board-snapshot` and `on-merge` are invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
 
 ### `onMerge` step types

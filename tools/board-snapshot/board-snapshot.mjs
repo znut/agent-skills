@@ -155,12 +155,15 @@ export function stripTimestamp(markdown) {
 	return markdown.replace(TIMESTAMP_LINE, "Generated: <redacted>")
 }
 
-export function run(config) {
+// force: skips the debounce — for callers with their own rate-limiting (the
+// gh-status poller only invokes on a detected board change, so a debounce
+// skip there would silently drop a real change until the NEXT one).
+export function run(config, { force = false } = {}) {
 	const dir = varDir(config.name)
 	const snapshotPath = join(dir, "board-snapshot.md")
 	const stateFile = join(dir, ".board-snapshot-last-run")
 
-	if (isDebounced(stateFile)) {
+	if (!force && isDebounced(stateFile)) {
 		console.log(`board-snapshot[${config.name}]: debounced (last run < 60s ago), skipping`)
 		return
 	}
@@ -178,10 +181,10 @@ export function run(config) {
 function main() {
 	const name = process.argv[2]
 	if (!name) {
-		console.error("usage: bun tools/board-snapshot/board-snapshot.mjs <configName>")
+		console.error("usage: bun tools/board-snapshot/board-snapshot.mjs <configName> [--force]")
 		process.exit(1)
 	}
-	run(loadConfig(name))
+	run(loadConfig(name), { force: process.argv.includes("--force") })
 }
 
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
