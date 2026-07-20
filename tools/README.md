@@ -50,7 +50,9 @@ shows the shape (fill-me-in placeholders); copy it to
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and covers all of them in one process (one 40s loop, one GraphQL request per
-configured repo per cycle; configs with a `board` block add a 1-point
+configured repo per cycle plus one repo-wide `issues/comments?since=` REST
+call feeding `events/issue-<n>.log|.commented|.comments.json` — same shapes as
+the PR comment events; configs with a `board` block add a 1-point
 `projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
 when that stamp moves — agents read the board file with zero API calls). `board-snapshot` and `on-merge` are invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).

@@ -31,6 +31,11 @@
  *   events/pr-<n>.approved  — marker, touched when reviewDecision becomes APPROVED
  *   events/pr-<n>.changes-requested — marker, touched on CHANGES_REQUESTED
  *
+ *   events/issue-<n>.log / .commented / .comments.json — ISSUE comments,
+ *     same shapes as the pr-<n> comment events: one repo-wide
+ *     `issues/comments?since=` REST call per cycle feeds them; PR-owned
+ *     comments are routed to the pr-<n> flow, first sight is baseline-only.
+ *
  * Configs with a `board` block additionally get a 1-point board-change probe
  * per cycle that re-derives $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md on
  * change (see probeBoard) — agents read the board from that file, no API calls.
@@ -115,6 +120,7 @@ type PollState = {
 	prs: number[]
 	commentCursors: Record<string, { count: number; lastAt: string | null }>
 	boardUpdatedAt?: string | null
+	issueCommentCursor?: string | null
 }
 
 type CommentPayload = {
@@ -332,9 +338,11 @@ type TimelineEvent = {
 // arms ONE watcher (`find events -name 'pr-*.log' -newer <stamp>`) instead of
 // one loop per marker type, and backfills by reading lines since a stamp.
 // Legacy marker files stay during the transition — same firings, two shapes.
-async function appendEvent(eventsDir: string, prNumber: number, ev: TimelineEvent): Promise<void> {
+async function appendEvent(eventsDir: string, key: string | number, ev: TimelineEvent): Promise<void> {
+	// key: bare number = PR (legacy callers), string = full prefix e.g. "issue-954"
+	const name = typeof key === "number" ? `pr-${key}` : key
 	const { appendFileSync } = await import("node:fs")
-	appendFileSync(`${eventsDir}/pr-${prNumber}.log`, `${JSON.stringify(ev)}\n`)
+	appendFileSync(`${eventsDir}/${name}.log`, `${JSON.stringify(ev)}\n`)
 }
 
 async function rm(path: string): Promise<void> {
@@ -350,6 +358,67 @@ async function readPrevState(stateFile: string): Promise<PollState | null> {
 	} catch {
 		return null
 	}
+}
+
+/**
+ * ISSUE comment events — one repo-wide REST call per cycle
+ * (`issues/comments?since=<cursor>`), mirroring the PR comment pattern:
+ * `events/issue-<n>.comments.json` payload written BEFORE `events/issue-<n>.commented`
+ * bumps, plus append-only `events/issue-<n>.log` JSONL. First run records the
+ * cursor and never fires. Comments whose issue is actually a PR are skipped —
+ * the PR flow above owns those (in-window PRs matched by number; out-of-window
+ * checked via a per-cycle `issues/{n}` lookup, only on new-comment transitions).
+ * All authors are emitted (bot included) — consumers filter by `actor`, same
+ * contract as the PR events.
+ */
+async function pollIssueComments(
+	config: RepoConfig,
+	prevCursor: string | null | undefined,
+	prNumbers: Set<number>,
+	eventsDir: string,
+	token: string,
+): Promise<string> {
+	const nowIso = new Date().toISOString()
+	if (!prevCursor) return nowIso // baseline only — never fire on first sight
+
+	const base = `https://api.github.com/repos/${config.org}/${config.repo}`
+	const res = await fetch(`${base}/issues/comments?since=${encodeURIComponent(prevCursor)}&per_page=100&sort=updated&direction=asc`, {
+		headers: ghHeaders(token),
+	})
+	if (!res.ok) throw new Error(`issue comments fetch HTTP ${res.status}`)
+	const comments = (await res.json()) as Array<{
+		issue_url: string
+		user: { login: string } | null
+		created_at: string
+		updated_at: string
+		body: string | null
+	}>
+
+	const prevMs = Date.parse(prevCursor)
+	let cursor = prevCursor
+	const byIssue = new Map<number, typeof comments>()
+	for (const c of comments) {
+		if (Date.parse(c.updated_at) <= prevMs) continue // since= is inclusive
+		if (Date.parse(c.updated_at) > Date.parse(cursor)) cursor = c.updated_at
+		const n = Number(c.issue_url.split("/").pop())
+		if (!Number.isFinite(n) || prNumbers.has(n)) continue
+		if (!byIssue.has(n)) byIssue.set(n, [])
+		byIssue.get(n)?.push(c)
+	}
+
+	for (const [n, list] of byIssue) {
+		// out-of-window PR comments also arrive on this endpoint — skip them
+		const issueRes = await fetch(`${base}/issues/${n}`, { headers: ghHeaders(token) })
+		if (issueRes.ok && ((await issueRes.json()) as { pull_request?: unknown }).pull_request) continue
+
+		const payload = list.map((c) => ({ issue: n, author: c.user?.login ?? "unknown", createdAt: c.created_at, body: capBody(c.body) }))
+		await writeAtomic(`${eventsDir}/issue-${n}.comments.json`, `${JSON.stringify(payload, null, "\t")}\n`)
+		for (const p of payload) {
+			await appendEvent(eventsDir, `issue-${n}`, { at: p.createdAt, type: "commented", actor: p.author, body: p.body })
+		}
+		await bump(`${eventsDir}/issue-${n}.commented`)
+	}
+	return cursor
 }
 
 /**
@@ -540,7 +609,15 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		console.error(`${new Date().toISOString()} [${config.name}] board probe failed: ${e instanceof Error ? e.message : e}`)
 	}
 
-	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt }
+	let issueCommentCursor = prevState?.issueCommentCursor ?? null
+	try {
+		issueCommentCursor = await pollIssueComments(config, issueCommentCursor, new Set(prs.map((p) => p.number)), eventsDir, token)
+	} catch (e) {
+		// keep the previous cursor — missed comments re-fetch next cycle
+		console.error(`${new Date().toISOString()} [${config.name}] issue comments poll failed: ${e instanceof Error ? e.message : e}`)
+	}
+
+	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt, issueCommentCursor }
 	await writeAtomic(stateFile, `${JSON.stringify(state, null, "\t")}\n`)
 }
 
