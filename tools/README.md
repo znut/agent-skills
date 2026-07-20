@@ -41,8 +41,8 @@ shows the shape (fill-me-in placeholders); copy it to
 | Field | Used by | Required | Meaning |
 |---|---|---|---|
 | `name` | all | yes | Identifies this config; also the directory name under `$AGENT_TOOLS_HOME/var/<name>/` |
-| `org` | gh-status | yes | GitHub org/owner of the repo to poll (e.g. `YOUR_ORG`) |
-| `repo` | gh-status | yes | Repo name, without org (e.g. `YOUR_REPO`) |
+| `org` | gh-status, board-snapshot | yes | GitHub org/owner of the repo to poll (e.g. `YOUR_ORG`) |
+| `repo` | gh-status, board-snapshot | yes | Repo name, without org (e.g. `YOUR_REPO`) |
 | `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |

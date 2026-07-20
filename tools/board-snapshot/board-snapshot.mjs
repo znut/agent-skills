@@ -56,38 +56,56 @@ function recordRun(stateFile) {
 	writeAtomic(stateFile, `${Date.now()}\n`)
 }
 
-// One targeted paginated query: Status/Service/Tier/Week/Milestone field
-// values plus native blockedBy all ride in the same items() page as content —
-// no per-item round trip for dependencies (GitHub's GraphQL schema already
-// exposes Issue.blockedBy).
-function fetchItems(config) {
-	const { owner, projectNumber } = config.board
+// Issue-side search instead of a full projectV2 items() sweep: the snapshot
+// only wants non-Done + recently-Done rows, but items() has no server-side
+// filter and returns oldest-first, so a whole-board pull grows with every
+// closed ticket forever (554 items on 2026-07-20; a capped sweep silently
+// drops the NEWEST rows). Two searches — all open + closed within retention —
+// cost proportional to the live working set. Each hit hoists its
+// projectItems field values; issues not on the target board are skipped
+// (parity with the old board-side pull, which also never saw draft items).
+// GitHub caps search at 1000 results per query — warned on, not handled:
+// 1000+ OPEN tickets is a process failure this tool can't paper over.
+function searchIssues(config, qualifiers) {
+	const { org, repo } = config
+	const { projectNumber } = config.board
+	const q = `repo:${org}/${repo} is:issue ${qualifiers}`
 	const items = []
 	let cursor = null
 	for (;;) {
 		const after = cursor ? `, after: "${cursor}"` : ""
-		const query = `query { organization(login: "${owner}") { projectV2(number: ${projectNumber}) { items(first: 100${after}) { pageInfo { hasNextPage endCursor } nodes { content { __typename ... on Issue { number title closedAt milestone { title } blockedBy(first: 20) { nodes { number } } } } status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } service: fieldValueByName(name: "Service") { ... on ProjectV2ItemFieldSingleSelectValue { name } } tier: fieldValueByName(name: "Tier") { ... on ProjectV2ItemFieldSingleSelectValue { name } } week: fieldValueByName(name: "Week") { ... on ProjectV2ItemFieldIterationValue { title } } } } } } }`
+		const query = `query { search(query: ${JSON.stringify(q)}, type: ISSUE, first: 100${after}) { issueCount pageInfo { hasNextPage endCursor } nodes { ... on Issue { number title closedAt milestone { title } blockedBy(first: 20) { nodes { number } } projectItems(first: 10) { nodes { project { number } status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } service: fieldValueByName(name: "Service") { ... on ProjectV2ItemFieldSingleSelectValue { name } } tier: fieldValueByName(name: "Tier") { ... on ProjectV2ItemFieldSingleSelectValue { name } } week: fieldValueByName(name: "Week") { ... on ProjectV2ItemFieldIterationValue { title } } } } } } } }`
 		const res = ghJson(["api", "graphql", "-f", `query=${query}`])
-		if (res.errors) throw new Error(`Project items query failed: ${JSON.stringify(res.errors)}`)
-		const page = res.data.organization.projectV2.items
+		if (res.errors) throw new Error(`Issue search failed: ${JSON.stringify(res.errors)}`)
+		const page = res.data.search
+		if (!cursor && page.issueCount > 1000)
+			console.error(`board-snapshot: search "${q}" matches ${page.issueCount} issues — GitHub caps search at 1000, results truncated`)
 		for (const node of page.nodes) {
-			if (node.content?.__typename !== "Issue") continue
+			const boardItem = node.projectItems?.nodes?.find((pi) => pi.project?.number === projectNumber)
+			if (!boardItem) continue
 			items.push({
-				number: node.content.number,
-				title: node.content.title,
-				status: node.status?.name ?? null,
-				service: node.service?.name ?? null,
-				tier: node.tier?.name ?? null,
-				week: node.week?.title ?? null,
-				milestone: node.content.milestone?.title ?? null,
-				closedAt: node.content.closedAt ?? null,
-				blockedBy: node.content.blockedBy.nodes.map((n) => n.number).sort((a, b) => a - b),
+				number: node.number,
+				title: node.title,
+				status: boardItem.status?.name ?? null,
+				service: boardItem.service?.name ?? null,
+				tier: boardItem.tier?.name ?? null,
+				week: boardItem.week?.title ?? null,
+				milestone: node.milestone?.title ?? null,
+				closedAt: node.closedAt ?? null,
+				blockedBy: node.blockedBy.nodes.map((n) => n.number).sort((a, b) => a - b),
 			})
 		}
 		if (!page.pageInfo.hasNextPage) break
 		cursor = page.pageInfo.endCursor
 	}
 	return items
+}
+
+function fetchItems(config) {
+	const closedSince = new Date(Date.now() - DONE_RETENTION_MS).toISOString().slice(0, 10)
+	const open = searchIssues(config, "is:open")
+	const seen = new Set(open.map((i) => i.number))
+	return [...open, ...searchIssues(config, `is:closed closed:>=${closedSince}`).filter((i) => !seen.has(i.number))]
 }
 
 export function selectRenderableItems(items, nowMs) {
