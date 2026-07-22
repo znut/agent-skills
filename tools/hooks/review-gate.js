@@ -140,7 +140,9 @@ if (offenders.length && policy().identity) {
 	process.stderr.write(
 		`⛔ bot-identity guard: mutating gh invocation(s) WITHOUT an inline GH_TOKEN= prefix — would author/post as the HUMAN keychain login:\n` +
 			offenders.map((o) => `  ✗ ${o.replace(/\s+/g, " ").trim().slice(0, 120)}`).join("\n") +
-			`\nThe token must directly prefix EACH gh invocation. \`GH_TOKEN=$(…); gh …\` does NOT work — the semicolon makes it an unexported shell var the gh child never sees. Use:\n` +
+			`\nPreferred fix — the bgh wrapper (resolves the repo's \`git config agent.bot-token-file\`):\n` +
+				`  bgh <subcommand> …\n` +
+				`or an inline prefix on EACH gh invocation (\`GH_TOKEN=$(…); gh …\` does NOT work — the semicolon makes it an unexported shell var the gh child never sees):\n` +
 			`  GH_TOKEN=$(cat <token-file per the repo conventions>) gh <subcommand> …\n` +
 			`Applies even under REVIEW_GATE_SKIP/ZCR_SKIP. Reads (gh pr list/view, gh api GET) are exempt.\n` +
 			`(Repo with no bot identity? The human can commit an "## Enforcement policy" section with "- bot_identity: off" in .claude/orchestrate.md.)`,

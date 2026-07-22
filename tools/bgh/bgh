@@ -1,0 +1,25 @@
+#!/bin/sh
+# bgh — bot-identity gh wrapper. Resolves the current repo's bot token and
+# execs gh with it, so mutations post as the repo's bot instead of the human
+# keychain login.
+#
+# Per-repo config (machine-local .git/config — never committed, and shared by
+# every worktree of the repo):
+#   git config agent.bot-token-file '~/.config/<bot>.token'
+# One-call override: BGH_TOKEN_FILE=<path> bgh …
+set -eu
+
+tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
+if [ -z "$tf" ]; then
+	echo 'bgh: no bot token configured for this repo.' >&2
+	echo "  set one:  git config agent.bot-token-file '~/.config/<bot>.token'" >&2
+	exit 1
+fi
+case $tf in
+	"~/"*) tf=$HOME/${tf#"~/"} ;;
+esac
+if [ ! -r "$tf" ]; then
+	echo "bgh: token file not readable: $tf" >&2
+	exit 1
+fi
+GH_TOKEN=$(cat "$tf") exec gh "$@"
