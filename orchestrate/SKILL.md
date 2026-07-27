@@ -47,9 +47,9 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 | **Orchestrator (main thread)** | Talk to user, refine questions, decompose tasks, dispatch workers, then **final-check the worker's opened PR**. Does NOT implement, and does NOT push or open PRs on the worker's behalf. |
 | **Workers (subagents)** | Own the ENTIRE pipeline for one task: implement → fresh-reviewer gate → fix until green → push → open labeled PR → attach required artifacts → return the PR URL. |
 
-> ⛔ **The orchestrator NEVER fixes a worker's mistakes by itself** (no inline lint/review-finding fixes, no "I'll just patch it"). If a returned PR is wrong or red, **re-dispatch a FRESH worker** with the findings. The only thing the main thread hand-edits is its OWN non-worker work (skills, memory, tiny chores it explicitly owns).
+> **A wrong or red PR gets a FRESH worker re-dispatched with the findings** — the orchestrator fixes nothing inline. The main thread hand-edits only its OWN work (skills, memory, chores it owns).
 
-> ⛔ **Workers are always FRESH — never resume a completed worker.** Every dispatch and every fix/review round = a NEW agent (default worker model) with a fully self-contained prompt: the branch name + its current state, the findings/decisions verbatim, and the pipeline steps. Resuming a completed agent by message causes role confusion (it narrates or re-delegates instead of working) and silently runs on the orchestrator's session model instead of the worker tier. Only exception: messaging a STILL-RUNNING worker to adjust its in-flight scope. The orchestrator's session is the only long-running context.
+> **Every dispatch and every fix/review round = a NEW agent** with a fully self-contained prompt: branch name + current state, findings verbatim, pipeline steps. A resumed completed agent narrates or re-delegates instead of working, and silently runs on the orchestrator's session model instead of the worker tier. One exception: message a STILL-RUNNING worker to adjust its in-flight scope. The orchestrator's session is the only long-running context.
 
 ---
 
@@ -75,9 +75,9 @@ Every worker prompt MUST include:
 
 1. **Read order**: FIRST the conventions file (the worker-scoped conventions file when the repo declares one) + review checklist **from `origin/<default>` tip via `git show`** (your worktree copy may predate rule changes — quote this instruction verbatim in the prompt), then the **[conventions]** doc read order (project docs → plan → decisions → scoped plan/progress). When the orchestrator relays a project rule into a prompt, it QUOTES the conventions wording verbatim — paraphrasing has diluted rules into violations.
 2. **Scope**: "Work only inside your worktree. Touch only `<declared paths>`. One logical change. Keep it small."
-3. **Branch**: "Create branch `feat/<slug>` | `fix/<slug>` | `chore/<slug>` branched from **latest `origin/<default>`**. FIRST run `git fetch origin && git checkout -B <branch> origin/<default>`, then `git log -1 origin/<default>` and confirm your HEAD matches it. Do NOT branch from stale local state — if your worktree HEAD ≠ `origin/<default>`, reset onto it before writing a line of code."
+3. **Branch**: "Create branch `feat/<slug>` | `fix/<slug>` | `chore/<slug>` branched from **latest `origin/<default>`**. FIRST run `git fetch origin && git checkout -B <branch> origin/<default>`, then `git log -1 origin/<default>` and confirm your HEAD matches it. If your worktree HEAD ≠ `origin/<default>`, reset onto it before writing a line of code — stale local state is the trap."
 4. **Verify gate**: "Before returning, run the **[conventions]** verify commands (scoped). Do not return if any fail — fix or report."
-4b. **Code & test economy (be considerate — DEFAULT TO LESS)**: "Write the MINIMUM code that is correct, clear, and meets the task. Do NOT over-abstract, over-generalize, add speculative flexibility, or build machinery the requirement doesn't need. Prefer the simpler design that satisfies the spec. **Tests: cover OUR logic + the load-bearing edge cases + known bugs — NOT the framework/library's own behavior, NOT every input permutation.** A focused ~8–15 test suite beats 32. Match the surrounding code's density + comment level — don't pad with verbose JSDoc. **Comments: write LESS, compact + precise. Make the code self-describe (clear names, small functions, obvious structure) so it needs no narration. A comment earns its place only when it says WHY (non-obvious intent, a gotcha, an invariant, a spec/ADR ref) — never WHAT the code already shows.** If unsure whether something is needed, leave it out and note it in open_questions."
+4b. **Code & test economy (DEFAULT TO LESS)**: "Write the MINIMUM code that is correct, clear, and meets the task. Prefer the simpler design that satisfies the spec; skip speculative flexibility and machinery the requirement doesn't need. **Tests: cover OUR logic + the load-bearing edge cases + known bugs — the framework's own behavior and input permutations stay untested.** A focused ~8–15 test suite beats 32. Match the surrounding code's density + comment level. **Comments: make the code self-describe (clear names, small functions, obvious structure). A comment earns its place only when it says WHY (non-obvious intent, a gotcha, an invariant, a spec/ADR ref) — never WHAT the code already shows.** If unsure whether something is needed, leave it out and note it in open_questions."
 4c. **Project code rules**: paste the **[conventions]** worker code-rules block verbatim (banned APIs, required shared libs, style constraints) — some repos keep it as a marked section of the worker-scoped conventions file; paste that section.
 5. **PR labels**: "Open the PR with `--label <labels>`" — labels chosen per the **[conventions]** scheme from the paths the task touches.
 6. **Return structure**:
@@ -104,7 +104,7 @@ If a worker hits an ambiguity it cannot resolve (business logic, decision-record
 
 ## Worker tier policy (effort × model)
 
-Reasoning effort is pinned per worker agent definition (`.claude/agents/worker-*.md` frontmatter `effort:` — the Agent tool has no per-call effort param). The orchestrator picks the subagent type by estimated task complexity. Do NOT dispatch pipeline work as a generic agent type (it inherits the main session's effort — typically the most expensive tier — and breaks cost attribution). If the repo defines no worker agents, generate them from this skill repo's `templates/agents/` before dispatching.
+Reasoning effort is pinned per worker agent definition (`.claude/agents/worker-*.md` frontmatter `effort:` — the Agent tool has no per-call effort param). The orchestrator picks the subagent type by estimated task complexity. Dispatch pipeline work only as a worker type — a generic agent type inherits the main session's effort (usually the most expensive tier) and breaks cost attribution. If the repo defines no worker agents, generate them from this skill repo's `templates/agents/` before dispatching.
 
 | Estimated complexity | subagent_type | approval |
 |---|---|---|
@@ -123,8 +123,8 @@ Reasoning effort is pinned per worker agent definition (`.claude/agents/worker-*
 
 - **Default = ONE worker per task**, economy directives in the prompt (contract 4b), then the orchestrator review gate. This catches most over-build/wrong-trim without paying for a second arm.
 - **Dual independent arms ONLY for high-stakes judgment forks** — security, schema/migrations, auth, money, anything where shipping the wrong trim is expensive. Two workers, identical prompt, each in its own `isolation: "worktree"`, distinct branch slugs; compare diffs and **PR the better one, grafting the runner-up's edges**. Note dual-arm in the PR.
-- Dual-arm costs 2× — reserve it; don't reflexively pair routine UI/CRUD/bugfix tasks.
-- Do NOT inject style/tooling treatments (terseness directives, CLI wrappers) into worker prompts — measured net-negative or neutral.
+- Dual-arm costs 2× — reserve it for the high-stakes list above; routine UI/CRUD/bugfix tasks get one arm.
+- Keep worker prompts free of style/tooling treatments (terseness directives, CLI wrappers) — measured net-negative or neutral.
 
 ## Dispatch rules
 
@@ -135,8 +135,8 @@ Reasoning effort is pinned per worker agent definition (`.claude/agents/worker-*
 - **Independent tasks** → parallel `Agent` calls, `isolation: "worktree"`, `run_in_background: true`, max **5** concurrent.
 - **Same-shaped batch over a list** → `Workflow` with `pipeline()`.
 - **Sequential dependency** (task B needs task A's output) → chain: wait for A completion → dispatch B.
-- **Never** two workers touching the same files concurrently.
-- **Never send NEW SCOPE to a worker whose contract is locked.** Messaging a RUNNING worker is only for adjusting its in-flight task (clarification, narrowed scope, found-a-blocker). Anything beyond the dispatched contract = a separate, sequential worker with its own self-contained prompt.
+- **Concurrent workers get disjoint files** — same-file tasks run in sequence.
+- **New scope = a separate, sequential worker with its own self-contained prompt.** Message a RUNNING worker only to adjust its in-flight task (clarification, narrowed scope, found-a-blocker).
 
 ---
 
@@ -151,7 +151,7 @@ The worker already self-reviewed, got green, pushed, opened the labeled PR, and 
 5. **First-of-a-kind artifacts get eyeballed**: the first time a task produces a required artifact through a NEW harness/fixture (e.g. a package's first screenshot fixtures), open the artifact itself and look at it — a presence-check alone has passed visibly-broken artifacts.
 6. **PASS** → report the PR URL to the user. **FAIL/RED/wrong/unlabeled** → **re-dispatch a fresh worker** with the specific findings (fresh worktree, checking out the pushed branch). ⛔ Do NOT fix it yourself.
 
-Never accept a red PR. Never accept a PR missing a required artifact or label — bounce it back to a worker.
+Accept only green, labeled PRs with their required artifacts — anything else bounces to a fresh worker.
 
 ### Post-PASS merge watch (if the conventions define a PR-status service)
 
@@ -215,7 +215,7 @@ Dispatch workers as background tasks (`run_in_background: true`) so the main thr
 | Merge conflict on push | Rebase in worktree, re-run verify, then push. |
 | Ambiguity in `open_questions` | Bring to user immediately. Do not guess business logic. |
 | Scope grew too large | Split into 2+ tasks, dispatch separately, 2+ PRs. |
-| **Same task failed 3 worker rounds** | **HARD STOP — dispatch no 4th worker.** Report to the user with the accumulated findings/diffs from all rounds: at 3 failures the task spec or its premise is the problem, not the worker (goal-style turn cap; adopted 2026-07-07 from "Getting started with loops"). |
+| **Same task failed 3 worker rounds** | **HARD STOP — dispatch no 4th worker.** Report to the user with the accumulated findings/diffs from all rounds: at 3 failures the task spec or its premise is the problem, not the worker. |
 
 ---
 
@@ -223,8 +223,8 @@ Dispatch workers as background tasks (`run_in_background: true`) so the main thr
 
 - ⛔ **Don't fix a worker's mistakes yourself** (per the Roles rule — wrong/red PR = re-dispatch) and **don't touch the primary checkout** (per Dispatch rules — worktrees for everything, orchestrator included).
 - ⛔ **Workers spawn NO subagents except the review-gate reviewer.** Chain depth = manager → worker → reviewer, full stop — the reviewer spawns nothing, and there is no other sanctioned worker-spawned agent (no locators, no helpers, **no forks** — a forked agent inherits the worker's context AND shares its worktree, and can stash/push/PR/spawn on its own: treat any pipeline that forked as contaminated at final-check). One fresh reviewer per review round, explicit model. Put this instruction verbatim in every worker prompt.
-- ⛔ **Workers write ONLY inside their worktree.** Never to `~/.claude` (skills, hooks, settings, memory), never to the primary checkout, never to other worktrees. Rule/skill changes are the manager's own work — a worker that spots a rule gap REPORTS it as a checklist/skill candidate in its return, nothing more (a reviewer child once hand-edited a global skill mid-task: right idea, wrong actor).
-- Don't do the workers' work in the main thread — whatever the deliverable is (feature code, docs, research). If you're tempted to patch a PR, that's a re-dispatch.
-- Don't fabricate verify results — read actual command output.
+- ⛔ **Workers write ONLY inside their worktree.** Never to `~/.claude` (skills, hooks, settings, memory), never to the primary checkout, never to other worktrees. Rule/skill changes are the manager's own work — a worker that spots a rule gap REPORTS it as a checklist/skill candidate in its return, nothing more.
+- Workers produce the deliverable (feature code, docs, research); the main thread orchestrates. The urge to patch a PR is a re-dispatch signal.
+- Read actual command output before reporting verify results.
 - When reviewing a worker's diff, push back on bloat, not just bugs (the 4b economy bar applies to acceptance too).
-- Don't commit lockfiles, `.mcp.json`, or `.env` unless the task explicitly requires it.
+- Commit lockfiles, `.mcp.json`, or `.env` only when the task explicitly requires them.

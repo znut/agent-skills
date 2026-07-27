@@ -64,7 +64,7 @@ raw intent (stakeholder notes, user ask, transcript, external source)
 
 ## 2 — Grill (the core skill)
 
-**Blind-Spot Pass first (adopted 2026-07-07, from the Fable field guide):** when the domain is genuinely NEW to the product (first insurance feature, first kiosk flow, first accounting surface), open the grill by surfacing the user's unknown-unknowns — "here's what you should be asking that you aren't" — before the question list below. Name the domain's standard failure modes, regulatory traps, and data-model commitments the ask silently implies. Skip this pass for asks inside an already-grilled domain.
+**Blind-Spot Pass first:** when the domain is genuinely NEW to the product (first insurance feature, first kiosk flow, first accounting surface), open the grill by surfacing the user's unknown-unknowns — "here's what you should be asking that you aren't" — before the question list below. Name the domain's standard failure modes, regulatory traps, and data-model commitments the ask silently implies. Skip this pass for asks inside an already-grilled domain.
 
 Interrogate until every question below is answered or explicitly deferred with an owner. Use AskUserQuestion for real forks — always with tradeoffs + a recommendation first. Challenge vague asks ("fast", "simple", "like X") until testable.
 
@@ -80,9 +80,9 @@ Interrogate until every question below is answered or explicitly deferred with a
 - **Dependencies**: blocked by / blocking which other work?
 - **Priority**: milestone target; what does it displace?
 
-Do NOT guess on business decisions — a deferred question with an owner beats a fabricated answer.
+Never guess a business decision — a deferred question with an owner beats a fabricated answer.
 
-**Stakeholder review comments state the PROBLEM, not the spec.** A comment on a PR, mock, or ticket is intake, not instructions — grill it (or ask the user) before dispatching rework; do not reverse-engineer a spec from a complaint.
+**Stakeholder review comments state the PROBLEM, not the spec.** A comment on a PR, mock, or ticket is intake, not instructions — grill it (or ask the user) before dispatching rework; a spec reverse-engineered from a complaint ships the wrong fix.
 
 ## 3 — Reconcile
 
@@ -90,7 +90,7 @@ Before producing artifacts, check the converged scope against the conventions' d
 
 ## 4 — Produce
 
-- **PRD**: update/create in the conventions' product-spec location. Delta-style — don't rewrite stable sections. Cross-link related decision records.
+- **PRD**: update/create in the conventions' product-spec location. Delta-style — stable sections stay untouched. Cross-link related decision records.
 - **Tickets**: one per independently shippable slice, on the conventions' tracker as the conventions' bot identity. Title per the conventions' format; body = problem, scope in/out, acceptance criteria, open questions; set milestone; add to the board.
   - **Existing-work check first**: before cutting, search the tracker AND open PRs for the feature's NOUNS — duplicate tickets have shipped duplicate implementations.
   - **Capture the created ticket id from the create command's OUTPUT** — never guess or hardcode the next number; a guessed id has corrupted other items' board entries.
@@ -109,10 +109,10 @@ open_questions: [deferred, each with an owner]
 risks/dependencies: [...]
 ```
 
-## What NOT to do
+## Hard rules
 
-- Don't implement, don't touch application code, don't "quickly fix" anything in an app.
-- Don't cut a ticket whose acceptance criteria you couldn't state — grill first.
-- Don't silently override an existing documented decision — surface the conflict.
-- Don't batch unrelated asks into one ticket; one shippable slice each.
-- Don't skip the board/milestone step — an unplaced ticket is invisible.
+- The PM never implements — application code, including "quick fixes", belongs to workers.
+- Grill first: a ticket ships only with acceptance criteria you can state.
+- Surface every conflict with a documented decision — silent overrides lose history.
+- One shippable slice per ticket; unrelated asks split.
+- Place every ticket on the board with its milestone — an unplaced ticket is invisible.
