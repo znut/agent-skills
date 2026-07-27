@@ -9,11 +9,13 @@ materialize the result as local files. Agents then just read a file — faster
 than an API call, and it costs zero additional GitHub requests no matter how
 many agents are watching.
 
-Three tools: a multi-repo PR status poller (`gh-status`), a project-board-to-
-markdown renderer (`board-snapshot`), and a generic post-merge step runner
-(`on-merge`). Everything materializes to files under
-`$AGENT_TOOLS_HOME/var/<name>/` (default `~/.config/agent-tools/var/<name>/`,
-outside this repo).
+Six tool families: a multi-repo PR status poller (`gh-status`), a
+project-board-to-markdown renderer (`board-snapshot`), a generic post-merge
+step runner (`on-merge`), a bot-identity `gh` wrapper (`bgh`), a post-merge
+main-health runner (`main-health`), and a WorktreeCreate hook that puts agent
+worktrees outside the repo (`worktree-hook`). Services materialize to files
+under `$AGENT_TOOLS_HOME/var/<name>/` (default
+`~/.config/agent-tools/var/<name>/`, outside this repo).
 
 ## Layout
 
@@ -26,6 +28,9 @@ tools/
   gh-status/poller.ts         multi-repo PR status poller (bun)
   board-snapshot/             board -> $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md
   on-merge/run.mjs            generic post-merge step runner
+  bgh/                        bot-identity gh wrapper (per-repo token file)
+  main-health/                post-merge full-suite runner on the main tip
+  worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 
