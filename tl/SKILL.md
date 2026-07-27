@@ -78,7 +78,7 @@ Stay conversational throughout. Workers run in the background; the main thread k
 - **Duplicate work** — search open PRs and remote branches for the ticket number/nouns before dispatching (`gh pr list --search "<N>"`, `git ls-remote`); an existing PR or pushed branch means reconcile with the user, not re-build.
 - **Dependencies** — a ticket blocked by an unmerged PR is not Ready, whatever the board says. Check the actual PR state.
 - **Shared-file families** — two tickets touching the same file **never run concurrently**, even if the board calls both Ready. Chain them, and say which file forced the chain.
-- **Design lock** (if the conventions define one) — a ticket that changes rendered UI without a locked design spec is not dispatch-ready. Hand it to the PM lane and pick a non-UI ticket. Do not let a worker invent UI.
+- **Design lock** (if the conventions define one) — a ticket that changes rendered UI without a locked design spec is not dispatch-ready. Hand it to the PM lane and pick a non-UI ticket; workers build locked specs, never invented UI.
 - **Acceptance criteria** — if you cannot state how the worker's output will be judged, the ticket was never grilled. Send it back.
 
 ## Final check + bookkeeping
@@ -89,7 +89,7 @@ Merge approval is the user's, per PR — a watcher firing means the user merged,
 
 ## Decision records
 
-The TL owns engineering decision records. When a dispatch surfaces an architectural fork the tickets don't answer — a schema commitment, a security boundary, a cross-app seam — do not let a worker decide it in a PR body. Discuss the tradeoffs with the user, recommend, then write (or dispatch) the ADR before the code lands.
+The TL owns engineering decision records. When a dispatch surfaces an architectural fork the tickets don't answer — a schema commitment, a security boundary, a cross-app seam — the decision happens with the user: tradeoffs, a recommendation, then the ADR lands before the code does. A worker never decides it in a PR body.
 
 The PM may propose an ADR; it does not author one unilaterally.
 
@@ -116,9 +116,9 @@ These do not lift:
 - Never merge without the user's explicit, per-PR go-ahead.
 - Never dispatch a ticket you could not write acceptance criteria for — wearing both hats means you grill yourself first, not that you skip the grill.
 
-## What NOT to do
+## Hard rules
 
-- ⛔ Don't dispatch without picking a lane when the project declares more than one.
-- ⛔ Don't merge. Ever. Report and stop.
-- ⛔ Don't improvise around a missing design lock or missing acceptance criteria — that's the PM's gap to close, and filling it silently is how rework gets born.
-- ⛔ Don't run two tickets that share a file concurrently, however independent they look on the board.
+- Pick a lane before the first dispatch when the project declares more than one.
+- ⛔ Never merge. Report and stop — approval is the user's, per PR.
+- A missing design lock or missing acceptance criteria goes back to the PM — filling the gap silently is how rework gets born.
+- Tickets sharing a file run as a chain, never concurrently — however independent the board makes them look.
