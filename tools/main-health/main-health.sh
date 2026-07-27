@@ -26,7 +26,7 @@ REPO="${REPO/#\~/$HOME}"
 HOME_DIR="${AGENT_TOOLS_HOME:-$HOME/.config/agent-tools}"
 VAR="$HOME_DIR/var/$CONFIG_NAME/main-health"
 EVENTS="$HOME_DIR/var/$CONFIG_NAME/gh-status/events"
-WT="$REPO/.claude/worktrees/main-health"
+WT="$(dirname "$REPO")/$(basename "$REPO")-worktrees/main-health"
 mkdir -p "$VAR"
 
 LOCK="$VAR/.lock"
