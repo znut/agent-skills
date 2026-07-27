@@ -14,7 +14,7 @@ Optional split for large repos: move worker/reviewer-facing sections (identity, 
 
 ## Enforcement policy
 
-(Read by the optional PreToolUse gate hook — see the skill repo's `tools/hooks/`. The hook DEFAULTS to enforce; only a literal `off`, committed by the human, relaxes a guard. Delete values you don't mean.)
+(Read by the optional PreToolUse gate hook — see the skill repo's `tools/hooks/`. Semantics are asymmetric: the first three guards default ON and only a literal `off`, committed by the human, relaxes them; `draft_first`/`label_check` default OFF and only a literal `required` enables them. Delete values you don't mean.)
 
 - bot_identity: `<required | off — off when the repo uses the user's own gh auth>`
 - review_marker: `<required | off — match the review-gate strictness below>`

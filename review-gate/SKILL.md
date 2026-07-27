@@ -90,7 +90,7 @@ Fix blockers (and cheap should_fixes); unfixed should_fixes become follow-up not
 
 Only on `verdict: PASS`, pin the marker to the reviewed branch tip.
 
-**Preferred — the repo's committed marker script**, if the conventions file declares one (e.g. `scripts/review-mark.sh`; older repos may still name it `scripts/zcr-mark.sh`):
+**Preferred — the repo's committed marker script**, if the conventions file declares one (e.g. `scripts/review-mark.sh`):
 ```bash
 bash scripts/review-mark.sh <branch>
 ```
@@ -104,7 +104,7 @@ A PreToolUse hook blocks `gh pr create` unless the marker exists AND matches the
 
 **Always pass `--head <branch>` to `gh pr create`** — the hook keys the marker off `--head`, which keeps the gate correct even when the command runs from a different worktree/cwd.
 
-Escape hatch (rare, deliberate): `REVIEW_GATE_SKIP=1 gh pr create …` for a genuine pure-docs/non-code exception (legacy `ZCR_SKIP=1` is honored during the rename transition). Default is: review → marker → PR.
+Escape hatch (rare, deliberate): `REVIEW_GATE_SKIP=1 gh pr create …` for a genuine pure-docs/non-code exception. Default is: review → marker → PR.
 
 ## After the PR is opened
 
