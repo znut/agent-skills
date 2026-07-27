@@ -31,6 +31,10 @@ Declared lanes: `<none | list>`. <If >1: a `/tl` session picks one before dispat
 
 The primary checkout is reserved for `<the human>`. Every agent does ALL git work in its own worktree; `git fetch origin` is the only allowed primary-tree operation.
 
+### Worktrees location (optional)
+
+Default: the harness creates worktrees under `<repo>/.claude/worktrees/`. At multi-agent scale, move them OUTSIDE the repo to the sibling `<repo>-worktrees/` dir — install this skill repo's `tools/worktree-hook/` (committed script + `WorktreeCreate` hook in `.claude/settings.json`, run from the default-branch tip). Repo tooling then never sweeps nested checkouts, and worktree-relative paths can't escape into the primary tree. Delete this section if in-repo worktrees are fine.
+
 ## Agent read order
 
 `<README/AGENTS.md>` → `<plan doc>` → `<decision records dir>` → `<progress docs>`.
