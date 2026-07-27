@@ -19,6 +19,8 @@ Optional split for large repos: move worker/reviewer-facing sections (identity, 
 - bot_identity: `<required | off — off when the repo uses the user's own gh auth>`
 - review_marker: `<required | off — match the review-gate strictness below>`
 - verify_marker: `<required | off>`
+- draft_first: `<required | delete — opt-in: every PR must open --draft; orchestrator flips ready after final check>`
+- label_check: `<required | delete — opt-in: --label args validated against the repo's scripts/lib/pr-labels.mjs derivation>`
 
 ## Layout + lanes
 
