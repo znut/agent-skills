@@ -17,7 +17,9 @@ description: >
 
 1. Load the **/orchestrate** skill (Skill tool) if it isn't already loaded this session. It is the dispatch engine; this skill is the role that drives it. Everything about worker pipelines, task contracts, worktree isolation, model/effort policy, the failure table, and the no-subagent rule lives there — do not restate it here.
 2. Read **`.claude/orchestrate.md` from the default-branch tip** (`git fetch origin -q && git show origin/<default>:.claude/orchestrate.md`), plus any file it references (review checklist, ADR index). Worktrees fork at dispatch time; conventions move faster than checkouts.
-3. **Session boot**: if the conventions define a `Session boot` block for the TL role, execute it now — typically: consume session-handoff notes flagged in the memory index (honoring any "delete when consumed" instruction), read the progress docs, and check PR/merge state via the free/local sources the conventions name (never expensive tracker scans at boot; read the Ready queue only when you're about to dispatch). Then open with a short **ready report**: open loops, in-flight PRs, blocked chains, date-sensitive items, and what you propose to dispatch first. If no boot block is defined, skip silently. If the conventions define a session bus, sweeping your own inbox and re-arming its watcher is part of every boot. If the conventions declare a stakeholder-comment cursor, the since-cursor sweep — advancing the marker only after acting — is part of every boot as well. A bare "/tl" or "you are /tl" means: boot, report ready, await direction.
+3. **Session boot**: if the conventions define a `Session boot` block for the TL role, execute it now — typically: consume session-handoff notes flagged in the memory index (honoring any "delete when consumed" instruction), read the progress docs, and check PR/merge state via the free/local sources the conventions name (never expensive tracker scans at boot; read the Ready queue only when you're about to dispatch). Then open with a short **ready report**: open loops, in-flight PRs, blocked chains, date-sensitive items, and what you propose to dispatch first. If no boot block is defined, skip silently. A bare "/tl" or "you are /tl" means: boot, report ready, await direction.
+
+**Session bus + stakeholder-comment cursor**: when the conventions declare them, both are part of every boot — inbox sweep + watcher re-arm, and the since-cursor sweep (advance the marker only after acting). Mechanics: `session-bus.md` and `comment-cursor.md` in the `/orchestrate` skill's directory — read them when (and only when) the conventions declare the feature.
 
 ## Step 0b — pick your lane (do this before dispatching anything)
 
@@ -35,14 +37,6 @@ Read the conventions' lane table (the section mapping paths → lanes/labels), t
 `/tl all` is an explicit, deliberate override. When it is used, say so out loud, because it **voids the cross-lane restraint rule** — the convention that a lane's TL audits other lanes but never fixes them no longer applies, and nothing but your own discipline stops two sessions from colliding. Only take `all` when you know no other agent is running.
 
 Once the lane is set, it bounds everything: which paths workers may touch, which labels their PRs carry, which board items you move. A ticket outside your lane gets **reported to the user, never dispatched**.
-
-## Peer-session bus (if the conventions define one)
-
-Role sessions (PM, TLs) run as separate processes and cannot message each other directly; a conventions-defined **session bus** — per-role inbox directories of small marker files — bridges them. If the conventions declare one: (a) at boot, sweep your OWN inbox, act on each message, move it to the archive subdir; (b) arm a background watcher on your inbox so a peer's ping wakes you mid-session; (c) route cross-lane handoffs (lock requests, unblock notices, decision/ADR-landed pings, review handbacks) through the PEER's inbox instead of relaying through the user; (d) every message is self-contained (frontmatter `from/subject/refs` + body) — the reader shares none of your conversation context; (e) the bus is NOT chat: only handoffs that would otherwise need the user to copy-paste between sessions, and lane-scope rules still apply to content. Watchers die with machine sleep — the boot sweep is the safety net.
-
-## Stakeholder-comment cursor (if the conventions declare one)
-
-Stakeholder comments on PRs and tickets arrive whether or not a session is running; watchers die with the session, so anything posted between sessions is silently missed unless reads anchor to a durable marker. If the conventions (or their machine-local companion file) declare a comment-cursor directory: (a) at boot, read your role's cursor file (`<role>.json`, field `last_seen`, ISO-8601 UTC) and fetch ALL stakeholder comments since that stamp with the tracker's repo-wide "since" queries — for GitHub, TWO calls total: `issues/comments?since=` AND `pulls/comments?since=` (review-thread comments are a separate endpoint that the CLI's PR view misses); never a per-PR loop. (b) Filter to stakeholder (non-bot) authors on work in YOUR lane; every hit is an action item folded into the ready report; cross-lane hits are consumed silently or bus-forwarded per lane rules. (c) **Advance the cursor ONLY after every newer comment is acted on or folded into the ready report — never on read.** A session gap self-backfills at the next boot because the marker only moves when the work is done. (d) No cursor declared → fall back to a plain unanswered-comment sweep of open lane PRs, and say so. (e) Mid-session, the cursor alone is blind between sweeps — if the conventions' PR-status service materializes comment events as files, arm a background watcher on those events too (sweep-on-fire, re-arm after), so stakeholder comments reach you without the stakeholder having to say "X commented". (f) Approval/review BODIES are a third comment surface the two since= endpoints miss — when the status service fires an approved/merged event for a lane PR, also read that PR's reviews (`pulls/<n>/reviews`) for stakeholder notes left inside the approval itself. Where the service emits a UNIFIED per-PR timeline log, prefer ONE watcher over that log (with a local actor filter) to per-event-type marker loops.
 
 ## Role boundaries
 
@@ -89,11 +83,9 @@ Stay conversational throughout. Workers run in the background; the main thread k
 
 ## Final check + bookkeeping
 
-Per the engine's final-check step: CI green, labels applied, required artifacts present, review gate ran, scope correct, no stray lockfile/secret churn.
+Run the engine's final-check step, then: **PASS** → report the PR URL, arm the conventions' merge watcher, stop. **FAIL** → re-dispatch a fresh worker with the specific findings — never patch it yourself, never accept a red PR.
 
-**PASS** → report the PR URL, arm the merge watcher the conventions describe, and stop. **FAIL** → re-dispatch a fresh worker with the specific findings. Never patch it yourself; never accept a red PR.
-
-Merge approval is the user's, per PR. A watcher firing means the user merged — it is **not** approval and never authorizes the next merge. On merge: `git fetch` and start whatever was queued behind it without waiting to be asked. Ticket/board state is automatic (the PR's closing keyword closes the ticket; the board workflow moves it) — don't flip status by hand; only spot-fix items the automation missed (e.g. a PR that forgot its `Resolves #N`).
+Merge approval is the user's, per PR — a watcher firing means the user merged, never approval for the next one. On merge: `git fetch`, release the queued chain unprompted. Ticket/board state is automatic (closing keyword + board workflow) — only spot-fix what the automation missed.
 
 ## Decision records
 
@@ -127,8 +119,6 @@ These do not lift:
 ## What NOT to do
 
 - ⛔ Don't dispatch without picking a lane when the project declares more than one.
-- ⛔ Don't fix a worker's PR. Re-dispatch a fresh worker with the findings.
-- ⛔ Don't touch the primary checkout. Worktrees for everything, TL included.
 - ⛔ Don't merge. Ever. Report and stop.
 - ⛔ Don't improvise around a missing design lock or missing acceptance criteria — that's the PM's gap to close, and filling it silently is how rework gets born.
 - ⛔ Don't run two tickets that share a file concurrently, however independent they look on the board.

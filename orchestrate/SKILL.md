@@ -4,8 +4,8 @@ description: >
   Generic orchestration loop: stay conversational with the user, decompose
   intent into small independent tasks, dispatch subagent workers each in an
   isolated git worktree in parallel, verify their output against a quality
-  gate, then the worker commits → pushes → opens one small ready-for-review,
-  labeled PR per task via `gh` CLI. Project-specific facts (verify commands,
+  gate, then the worker commits → pushes → opens one small, labeled PR per
+  task via `gh` CLI (draft vs ready per the repo's conventions). Project-specific facts (verify commands,
   labels, review gates, artifact rules) come from the repo's conventions file
   — this skill is project-agnostic. It is the dispatch ENGINE, not a role:
   pair it with a lane skill (`/tl` for tech-lead work, `/pm` for
@@ -25,19 +25,9 @@ Before anything else, read **`.claude/orchestrate.md`** — from the **default b
 - **PR conventions**: label scheme + how to pick labels, issue-closing keywords, body template
 - **artifact rules** (e.g. screenshots for UI PRs) and how to produce/host them
 - project-specific code rules to inject into worker prompts (banned APIs, required libs)
+- optionally a **worker-scoped conventions file** — a leaner file holding what workers/reviewers need (identity, verify gate, review gate, PR conventions, code rules); worker contracts then name THAT file as their read order, and workers skip the orchestrator-side conventions entirely
 
-**If the file is missing — run the bootstrap interview (once per repo, explicit answers, never silent defaults).** DETECT first, cheaply: `git remote -v` (git service), `gh auth status` (identity available), the package manifest's scripts (verify-gate candidates), `gh label list` (label scheme), existing docs layout (`README`/`AGENTS.md`/decision docs). Then CONFIRM with the user via AskUserQuestion — detections pre-filled as recommendations, but every dimension gets an explicit answer:
-
-1. **Git service + PR flow**: `github` (full automation: issues, PRs, labels, comments) | `push-only` (any non-GitHub service, or by choice — pipeline ends at commit+push+structured report; no PR/label/marker steps).
-2. **Identity**: dedicated bot account + token file (inline `GH_TOKEN=` prefix convention) | the user's own `gh` CLI auth.
-3. **Tracker**: `github-projects` | `none` | `external-manual` (Jira/Linear/etc — agents format ticket text, the human files it; no API adapters).
-4. **Review gate strictness**: `strict` (fresh reviewer + sha-pinned marker + hook) | `lite` (fresh reviewer, no marker machinery) | `none`.
-5. **Merge policy**: `user-merges` | `agent-merges-after-user-confirm` (agent proposes on green, merges only on the user's explicit per-PR yes) | `auto-on-green` (explicit opt-in only — never recommend it).
-6. **Verify gate commands** (confirm the detected scripts; name the exact runner).
-7. **Labels**: use existing | create a scheme | none (`gh pr create --label` fails on undefined labels — never assume).
-8. **Docs read order**: full decision-record apparatus | lightweight fixed docs (e.g. `README.md → PAYROLL.md`).
-
-Write the answers into a generated `.claude/orchestrate.md` (from this skill repo's `templates/orchestrate.md` — including the `## Enforcement policy` section reflecting answers 2 and 4; the gate hook defaults to ENFORCE, so opt-outs must be written explicitly) plus `.claude/agents/` from `templates/agents/`, land them via the normal pipeline, and proceed. Never re-interview while the file exists — edit the file instead.
+**If the file is missing — run the bootstrap interview (once per repo): follow `bootstrap.md` in this skill's directory.** Detect cheaply, confirm every dimension with the user via AskUserQuestion, generate `.claude/orchestrate.md` + `.claude/agents/` from this skill repo's `templates/`, land them via the normal pipeline. Never re-interview while the file exists — edit the file instead.
 
 Everything below marked **[conventions]** means: the concrete value comes from that file.
 
@@ -54,7 +44,7 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 
 | Actor | Responsibility |
 |---|---|
-| **Orchestrator (main thread)** | Talk to user, refine questions, decompose tasks, dispatch workers, then **final-check the worker's opened PR**. Does NOT implement, does NOT fix the worker's mistakes, does NOT run lint for the worker, does NOT push or open PRs on the worker's behalf. Never edits files or switches branches in the primary checkout — that tree belongs to the user. |
+| **Orchestrator (main thread)** | Talk to user, refine questions, decompose tasks, dispatch workers, then **final-check the worker's opened PR**. Does NOT implement, and does NOT push or open PRs on the worker's behalf. |
 | **Workers (subagents)** | Own the ENTIRE pipeline for one task: implement → fresh-reviewer gate → fix until green → push → open labeled PR → attach required artifacts → return the PR URL. |
 
 > ⛔ **The orchestrator NEVER fixes a worker's mistakes by itself** (no inline lint/review-finding fixes, no "I'll just patch it"). If a returned PR is wrong or red, **re-dispatch a FRESH worker** with the findings. The only thing the main thread hand-edits is its OWN non-worker work (skills, memory, tiny chores it explicitly owns).
@@ -70,26 +60,12 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 3. **Review gate — fresh reviewer, never yourself**: spawn ONE fresh review subagent (the **[conventions]** reviewer agent type if defined, else a clean subagent with an explicit model) to run the **[conventions]** review gate on the diff. **The author of a diff never reviews it** — a clean context is the mechanism. Give the reviewer the branch + worktree path, the acceptance criteria, and the conventions' reviewer-contract items; never tell it what engine wrote the diff. Fold every must-fix, commit, then spawn a NEW fresh reviewer for the next round (never resume one). Cap 2 rounds; still failing → return to the orchestrator with the findings instead of opening a PR. (Chain depth caps at manager → worker → reviewer; the reviewer spawns NOTHING.)
 4. **Lint until green** exactly the way **[conventions]** says CI validates it (some setups need explicit file paths or a commit to trigger staged-file hooks — the conventions file documents the traps).
 5. **Push** the branch (`git push -u origin <branch>`).
-6. **Open the PR** (`gh pr create`, ready-for-review) **with the labels the conventions' scheme assigns** (`--label`), honoring any pre-PR enforcement hook the conventions define.
+6. **Open the PR** (`gh pr create`) **with the labels the conventions' scheme assigns** (`--label`) and the draft/ready state the conventions define, honoring any pre-PR enforcement hook.
 7. **Artifacts**: produce + attach whatever **[conventions]** requires for this diff type (e.g. screenshot for UI changes).
 8. **Self-clean**: attempt to remove your own worktree (see Worktree lifecycle — plain `git worktree remove <path>` from outside it, never `--force`). A harness pid-lock refusal is EXPECTED for harness-created worktrees (`isolation: "worktree"` trees stay locked for the session's lifetime) — report `worktree_cleanup: harness-locked` and move on. A modified/untracked-files refusal = unpushed work — report that loudly instead.
 9. **Return** the PR URL + a short summary. Done.
 
 Workers use the **[conventions]** bot identity for push / PR / uploads.
-
-## Loop
-
-```
-user feeds intent
-  └─ I refine open questions (AskUserQuestion for tech/business forks)
-     └─ I decompose into ≤5 independent tasks (disjoint files; shared-file tasks run sequentially)
-        └─ per task: spawn Agent, isolation:"worktree", run_in_background:true
-           └─ worker runs the FULL pipeline above → opens PR → returns PR URL
-        └─ on worker return: I do a FINAL CHECK of the opened PR
-           ├─ PASS → report PR URL to user (nothing for me to fix)
-           └─ FAIL/RED/wrong → RE-DISPATCH a worker with the findings (never fix it myself)
-  └─ keep talking with user the whole time (background = non-blocking)
-```
 
 ---
 
@@ -97,12 +73,12 @@ user feeds intent
 
 Every worker prompt MUST include:
 
-1. **Read order**: FIRST the conventions file + review checklist **from `origin/<default>` tip via `git show`** (your worktree copy may predate rule changes — quote this instruction verbatim in the prompt), then the **[conventions]** doc read order (project docs → plan → decisions → scoped plan/progress). When the orchestrator relays a project rule into a prompt, it QUOTES the conventions wording verbatim — paraphrasing has diluted rules into violations.
+1. **Read order**: FIRST the conventions file (the worker-scoped conventions file when the repo declares one) + review checklist **from `origin/<default>` tip via `git show`** (your worktree copy may predate rule changes — quote this instruction verbatim in the prompt), then the **[conventions]** doc read order (project docs → plan → decisions → scoped plan/progress). When the orchestrator relays a project rule into a prompt, it QUOTES the conventions wording verbatim — paraphrasing has diluted rules into violations.
 2. **Scope**: "Work only inside your worktree. Touch only `<declared paths>`. One logical change. Keep it small."
 3. **Branch**: "Create branch `feat/<slug>` | `fix/<slug>` | `chore/<slug>` branched from **latest `origin/<default>`**. FIRST run `git fetch origin && git checkout -B <branch> origin/<default>`, then `git log -1 origin/<default>` and confirm your HEAD matches it. Do NOT branch from stale local state — if your worktree HEAD ≠ `origin/<default>`, reset onto it before writing a line of code."
 4. **Verify gate**: "Before returning, run the **[conventions]** verify commands (scoped). Do not return if any fail — fix or report."
 4b. **Code & test economy (be considerate — DEFAULT TO LESS)**: "Write the MINIMUM code that is correct, clear, and meets the task. Do NOT over-abstract, over-generalize, add speculative flexibility, or build machinery the requirement doesn't need. Prefer the simpler design that satisfies the spec. **Tests: cover OUR logic + the load-bearing edge cases + known bugs — NOT the framework/library's own behavior, NOT every input permutation.** A focused ~8–15 test suite beats 32. Match the surrounding code's density + comment level — don't pad with verbose JSDoc. **Comments: write LESS, compact + precise. Make the code self-describe (clear names, small functions, obvious structure) so it needs no narration. A comment earns its place only when it says WHY (non-obvious intent, a gotcha, an invariant, a spec/ADR ref) — never WHAT the code already shows.** If unsure whether something is needed, leave it out and note it in open_questions."
-4c. **Project code rules**: paste the **[conventions]** "worker prompt rules" block verbatim (banned APIs, required shared libs, style constraints).
+4c. **Project code rules**: paste the **[conventions]** worker code-rules block verbatim (banned APIs, required shared libs, style constraints) — some repos keep it as a marked section of the worker-scoped conventions file; paste that section.
 5. **PR labels**: "Open the PR with `--label <labels>`" — labels chosen per the **[conventions]** scheme from the paths the task touches.
 6. **Return structure**:
    ```
@@ -152,6 +128,7 @@ Reasoning effort is pinned per worker agent definition (`.claude/agents/worker-*
 
 ## Dispatch rules
 
+- **Refine before dispatch**: resolve open questions with the user first (AskUserQuestion for real tech/business forks — tradeoffs + a recommendation), then decompose into small independent tasks (disjoint files; shared-file tasks run sequentially).
 - **⛔ The primary checkout is the USER'S — no agent works in it.** Every agent, the orchestrator included, does ALL file/git work in a worktree: workers via `isolation: "worktree"`, the orchestrator's own repo chores via `git worktree add` (or EnterWorktree). Never `git checkout`/`pull`/commit/edit in the primary tree — multiple agents share the machine, and branch-switching there corrupts each other's state. `git fetch origin` is the only allowed primary-tree operation.
 - **Pre-dispatch freshness (EVERY TIME)**: `git fetch origin` before spawning ANY worker (no checkout/pull — see the rule above). The worker contract (#3: branch from `origin/<default>` + HEAD confirmation) guarantees a fresh base regardless of what the worktree forked from.
 - **Pre-dispatch existing-work check (EVERY TIME)**: before dispatching a ticket, search for work that already exists — `gh pr list --search "<ticket # / feature nouns>"` plus `git ls-remote origin | grep <slug>`. An open PR or pushed branch for the same work means STOP and reconcile with the user, not re-build (two lanes once built the same ticket concurrently).
@@ -204,7 +181,7 @@ gh pr create \
   --body "<SHORT: goal/problem + why, decision notes, concerns + Resolves #N, per conventions template — no file lists/diff stats/verify checkmarks (GitHub UI shows those), don't repeat the what/how>"
 ```
 
-- PRs are **ready-for-review** (no `--draft`).
+- Draft vs ready: per **[conventions]** — default ready-for-review; some repos open every pipeline PR draft and the orchestrator flips it ready after final check.
 - **Auto-close tickets with a closing keyword**: `Resolves #<issue>` in the body closes it on merge. A bare `#N` only links — it does NOT close. Closing >1 ticket: repeat the keyword per issue (`Resolves #10, resolves #123`). For a parent/tracking issue that must stay open, use a plain `#N` link.
 - Keep small — if the diff grew beyond a single concern, split into two branches before pushing.
 - Report the PR URL to the user immediately.
@@ -244,15 +221,10 @@ Dispatch workers as background tasks (`run_in_background: true`) so the main thr
 
 ## What NOT to do
 
-- ⛔ **Don't fix a worker's mistakes yourself.** No inline lint/review-finding patches, no "I'll just hand-edit it", no producing the worker's artifacts, no committing on its behalf. A wrong/red PR → RE-DISPATCH. The main thread only hand-edits its OWN work (skills, memory, a chore it explicitly owns) — and any repo-file chore happens in a worktree, never the primary checkout.
-- ⛔ **Don't touch the primary checkout.** No branch switches, commits, or file edits there — it's reserved for the user. Worktrees for everything, orchestrator included.
+- ⛔ **Don't fix a worker's mistakes yourself** (per the Roles rule — wrong/red PR = re-dispatch) and **don't touch the primary checkout** (per Dispatch rules — worktrees for everything, orchestrator included).
 - ⛔ **Workers spawn NO subagents except the review-gate reviewer.** Chain depth = manager → worker → reviewer, full stop — the reviewer spawns nothing, and there is no other sanctioned worker-spawned agent (no locators, no helpers, **no forks** — a forked agent inherits the worker's context AND shares its worktree, and can stash/push/PR/spawn on its own: treat any pipeline that forked as contaminated at final-check). One fresh reviewer per review round, explicit model. Put this instruction verbatim in every worker prompt.
 - ⛔ **Workers write ONLY inside their worktree.** Never to `~/.claude` (skills, hooks, settings, memory), never to the primary checkout, never to other worktrees. Rule/skill changes are the manager's own work — a worker that spots a rule gap REPORTS it as a checklist/skill candidate in its return, nothing more (a reviewer child once hand-edited a global skill mid-task: right idea, wrong actor).
-- Don't do the workers' work in the main thread — whatever the deliverable is (feature code, docs, research). Workers own implement → fresh-reviewer gate → fix-green → push → PR → artifacts.
-- Don't accept a PR you had to fix. If you're tempted to patch it, that's a re-dispatch.
-- Don't open PRs with `--draft` unless the user explicitly requests it.
-- Don't run more than 5 concurrent workers.
-- Don't let a worker touch files outside its declared scope.
+- Don't do the workers' work in the main thread — whatever the deliverable is (feature code, docs, research). If you're tempted to patch a PR, that's a re-dispatch.
 - Don't fabricate verify results — read actual command output.
-- Don't over-write. No speculative abstractions the task doesn't need; no tests that re-verify the framework; no verbose JSDoc padding; comment only the non-obvious WHY. When reviewing a worker's diff, push back on bloat, not just bugs.
+- When reviewing a worker's diff, push back on bloat, not just bugs (the 4b economy bar applies to acceptance too).
 - Don't commit lockfiles, `.mcp.json`, or `.env` unless the task explicitly requires it.
