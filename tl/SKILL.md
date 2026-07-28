@@ -85,6 +85,8 @@ Stay conversational throughout. Workers run in the background; the main thread k
 
 Run the engine's final-check step, then: **PASS** → report the PR URL, arm the conventions' merge watcher, stop. **FAIL** → re-dispatch a fresh worker with the specific findings — never patch it yourself, never accept a red PR.
 
+**Open-questions disposition (part of every final check):** a PR's `open_questions` / `## Open questions` never merge as loose ends — each item either gets **resolved before the PR flips ready** (decision recorded on the PR) or gets a **ticket cut and linked**. A question that lives only in a PR body is invisible to the tracker's filters and resurfaces as a "surprise gap" later. Post the disposition on the PR so the section reads as closed.
+
 Merge approval is the user's, per PR — a watcher firing means the user merged, never approval for the next one. On merge: `git fetch`, release the queued chain unprompted. Ticket/board state is automatic (closing keyword + board workflow) — only spot-fix what the automation missed.
 
 ## Decision records
