@@ -11,7 +11,7 @@
  *   status/pr-<n>.json      — current snapshot per PR (overwritten every poll)
  *   status/state.json       — full snapshot of the last poll + comment cursors
  *   events/pr-<n>.log       — UNIFIED per-PR timeline (append-only JSONL:
- *     {at, type, actor?, body?, kind?, path?, line?, sha?}) — one watcher +
+ *     {at, type, id?, actor?, body?, kind?, path?, line?, sha?}) — one watcher +
  *     line-cursor backfill covers merge/close/checks/approval(+body)/comments.
  *     Legacy per-type markers below stay during the transition.
  *   events/pr-<n>.merged    — marker, touched once when the PR is seen merged
@@ -124,6 +124,7 @@ type PollState = {
 }
 
 type CommentPayload = {
+	id: number
 	author: string
 	createdAt: string
 	kind: "issue" | "review" | "review-thread"
@@ -159,12 +160,14 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 	if (!reviewRes.ok) throw new Error(`reviews fetch HTTP ${reviewRes.status}`)
 
 	const issueComments = (await issueRes.json()) as Array<{
+		id: number
 		user: { login: string } | null
 		created_at: string
 		updated_at: string
 		body: string | null
 	}>
 	const reviewComments = (await reviewCommentRes.json()) as Array<{
+		id: number
 		user: { login: string } | null
 		created_at: string
 		updated_at: string
@@ -174,6 +177,7 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 		original_line: number | null
 	}>
 	const reviews = (await reviewRes.json()) as Array<{
+		id: number
 		user: { login: string } | null
 		submitted_at: string | null
 		body: string | null
@@ -183,11 +187,12 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 
 	for (const c of issueComments) {
 		if (Date.parse(c.updated_at) <= sinceMs) continue
-		out.push({ author: c.user?.login ?? "unknown", createdAt: c.created_at, kind: "issue", body: capBody(c.body) })
+		out.push({ id: c.id, author: c.user?.login ?? "unknown", createdAt: c.created_at, kind: "issue", body: capBody(c.body) })
 	}
 	for (const c of reviewComments) {
 		if (Date.parse(c.updated_at) <= sinceMs) continue
 		out.push({
+			id: c.id,
 			author: c.user?.login ?? "unknown",
 			createdAt: c.created_at,
 			kind: "review-thread",
@@ -202,7 +207,7 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 		// changes-requested markers, so skip it here.
 		if (!r.submitted_at || Date.parse(r.submitted_at) <= sinceMs) continue
 		if (!r.body || !r.body.trim()) continue
-		out.push({ author: r.user?.login ?? "unknown", createdAt: r.submitted_at, kind: "review", body: capBody(r.body) })
+		out.push({ id: r.id, author: r.user?.login ?? "unknown", createdAt: r.submitted_at, kind: "review", body: capBody(r.body) })
 	}
 
 	out.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -325,6 +330,10 @@ async function bump(path: string): Promise<void> {
 
 type TimelineEvent = {
 	at: string
+	// GitHub object id of the comment/review behind a "commented" event —
+	// lets a session skip fires for events it posted itself (self-echo
+	// exclusion; watch-lane matches against the role's posted-ids file).
+	id?: number
 	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented"
 	actor?: string
 	body?: string
@@ -387,6 +396,7 @@ async function pollIssueComments(
 	})
 	if (!res.ok) throw new Error(`issue comments fetch HTTP ${res.status}`)
 	const comments = (await res.json()) as Array<{
+		id: number
 		issue_url: string
 		user: { login: string } | null
 		created_at: string
@@ -411,10 +421,10 @@ async function pollIssueComments(
 		const issueRes = await fetch(`${base}/issues/${n}`, { headers: ghHeaders(token) })
 		if (issueRes.ok && ((await issueRes.json()) as { pull_request?: unknown }).pull_request) continue
 
-		const payload = list.map((c) => ({ issue: n, author: c.user?.login ?? "unknown", createdAt: c.created_at, body: capBody(c.body) }))
+		const payload = list.map((c) => ({ issue: n, id: c.id, author: c.user?.login ?? "unknown", createdAt: c.created_at, body: capBody(c.body) }))
 		await writeAtomic(`${eventsDir}/issue-${n}.comments.json`, `${JSON.stringify(payload, null, "\t")}\n`)
 		for (const p of payload) {
-			await appendEvent(eventsDir, `issue-${n}`, { at: p.createdAt, type: "commented", actor: p.author, body: p.body })
+			await appendEvent(eventsDir, `issue-${n}`, { at: p.createdAt, type: "commented", id: p.id, actor: p.author, body: p.body })
 		}
 		await bump(`${eventsDir}/issue-${n}.commented`)
 	}
@@ -591,7 +601,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 				const newComments = await fetchNewComments(config.org, config.repo, pr.number, sinceAt, token)
 				await writeAtomic(`${eventsDir}/pr-${pr.number}.comments.json`, `${JSON.stringify(newComments, null, "\t")}\n`)
 				for (const c of newComments) {
-					await appendEvent(eventsDir, pr.number, { at: c.createdAt, type: "commented", actor: c.author, kind: c.kind, path: c.path, line: c.line, body: c.body })
+					await appendEvent(eventsDir, pr.number, { at: c.createdAt, type: "commented", id: c.id, actor: c.author, kind: c.kind, path: c.path, line: c.line, body: c.body })
 				}
 			} catch (e) {
 				console.error(`${new Date().toISOString()} pr-${pr.number} comments payload fetch failed: ${e instanceof Error ? e.message : e}`)

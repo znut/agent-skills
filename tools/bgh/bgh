@@ -22,4 +22,20 @@ if [ ! -r "$tf" ]; then
 	echo "bgh: token file not readable: $tf" >&2
 	exit 1
 fi
+# Self-event capture (opt-in): BGH_SELF_LOG=<file> appends the ids of
+# comments/reviews this call CREATED, so the session's watcher can skip its
+# own echoes (gh-status timeline events carry the same id). Fast path when
+# unset: plain exec, zero overhead.
+if [ -n "${BGH_SELF_LOG:-}" ]; then
+	rc=0
+	out=$(GH_TOKEN=$(cat "$tf") gh "$@") || rc=$?
+	[ -n "$out" ] && printf '%s\n' "$out"
+	{
+		printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -oE 'discussion_r[0-9]+' | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -oE '"id": ?[0-9]+' | head -1 | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -xE '[0-9]{6,}'
+	} 2>/dev/null | sort -u >> "$BGH_SELF_LOG" || true
+	exit $rc
+fi
 GH_TOKEN=$(cat "$tf") exec gh "$@"
