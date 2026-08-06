@@ -52,6 +52,20 @@ test("legacy settings work when the main file has none", () => {
 	assert.equal(result.status, 0)
 })
 
+test("legacy heading in the main file does not turn off a guard", () => {
+	const result = runHook({
+		".agent/orchestrate.md": "## Enforcement policy\n\n- bot_identity: off\n",
+	})
+	assert.equal(result.status, 2)
+})
+
+test("main heading in the legacy file does not turn off a guard", () => {
+	const result = runHook({
+		".claude/orchestrate.md": "## Hook settings\n\n- bot_identity: off\n",
+	})
+	assert.equal(result.status, 2)
+})
+
 test("missing settings keep guards on", () => {
 	const result = runHook({})
 	assert.equal(result.status, 2)
