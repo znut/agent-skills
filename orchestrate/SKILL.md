@@ -146,12 +146,15 @@ Every worker prompt must state all of the following.
 
 - Fetch before review. If new `origin/<default>` commits change the same files,
   merge them into the task branch, rerun the needed checks, and commit the
-  result before review.
+  result before review. Record the exact `origin/<default>` SHA after this work.
+  Finish every fetch and ref update before the worker pauses; the reviewer must
+  not fetch or write refs.
 - Ask a fresh agent of the repo's reviewer type to review the exact committed
   diff and run the repo's review check.
 - Pause the worker. Give the reviewer the worker's worktree, reviewed SHA,
-  branch, base SHA, task, acceptance rules, checklist, and changed paths. The
-  reviewer must confirm that `HEAD` equals the reviewed SHA and that
+  branch, base SHA, frozen default-branch SHA, task, acceptance rules,
+  checklist, and changed paths. The reviewer must confirm that `HEAD` equals
+  the reviewed SHA and that
   `git status --porcelain` prints nothing before and after review. Do not name
   the model that wrote the change.
 - A reviewer returns `PASS`, `BLOCK`, or `ERROR`. Each `BLOCK` must name a real

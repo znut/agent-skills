@@ -155,19 +155,26 @@ function apiIsMutation(args) {
 	return /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)\b/.test(args)
 }
 
-const offenders = []
+const normalizedCmd = shellCommands(cmd)
+	.map((words) => words.join(" "))
+	.join("\n")
+const offenders = new Set()
 let m
-while ((m = GH_MUT.exec(cmd))) {
-	if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.push(m[0])
+for (const identityCmd of new Set([cmd, normalizedCmd])) {
+	while ((m = GH_MUT.exec(identityCmd))) {
+		if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.add(m[0])
+	}
+	while ((m = GH_API.exec(identityCmd))) {
+		if (!apiIsMutation(m[2] || "")) continue
+		if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.add(m[0])
+	}
 }
-while ((m = GH_API.exec(cmd))) {
-	if (!apiIsMutation(m[2] || "")) continue
-	if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.push(m[0])
-}
-if (offenders.length && policy().identity) {
+if (offenders.size && policy().identity) {
 	process.stderr.write(
 		`⛔ bot-identity guard: mutating gh invocation(s) WITHOUT an inline GH_TOKEN= prefix — would author/post as the HUMAN keychain login:\n` +
-			offenders.map((o) => `  ✗ ${o.replace(/\s+/g, " ").trim().slice(0, 120)}`).join("\n") +
+			[...offenders]
+				.map((o) => `  ✗ ${o.replace(/\s+/g, " ").trim().slice(0, 120)}`)
+				.join("\n") +
 			`\nPreferred fix — the bgh wrapper (resolves the repo's \`git config agent.bot-token-file\`):\n` +
 				`  bgh <subcommand> …\n` +
 				`or an inline prefix on EACH gh invocation (\`GH_TOKEN=$(…); gh …\` does NOT work — the semicolon makes it an unexported shell var the gh child never sees):\n` +
@@ -346,11 +353,6 @@ function shellCommands(input) {
 			index = sub.end
 			continue
 		}
-		if (/\s/.test(char)) {
-			endWord()
-			index += 1
-			continue
-		}
 		if (char === "#" && !hasWord) {
 			while (index < input.length && input[index] !== "\n") index += 1
 			continue
@@ -358,6 +360,11 @@ function shellCommands(input) {
 		if (char === ";" || char === "\n" || char === "|" || char === "&") {
 			endCommand()
 			if ((char === "|" || char === "&") && input[index + 1] === char) index += 1
+			index += 1
+			continue
+		}
+		if (/\s/.test(char)) {
+			endWord()
 			index += 1
 			continue
 		}
@@ -451,14 +458,25 @@ function prCreateArgs(words) {
 	return null
 }
 
+const DRAFT_TRUE_VALUES = new Set(["1", "t", "T", "true", "TRUE", "True"])
+
 function hasDraftFlag(args) {
+	let draft = false
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index]
-		if (arg === "--") return false
-		if (arg === "--draft" || /^--draft=(?:1|t|T|true|TRUE|True)$/.test(arg)) return true
+		if (arg === "--") break
+		if (arg === "--draft") {
+			draft = true
+			continue
+		}
+		const match = /^--draft=(.*)$/.exec(arg)
+		if (match) {
+			draft = DRAFT_TRUE_VALUES.has(match[1])
+			continue
+		}
 		if (PR_CREATE_VALUE_OPTIONS.has(arg)) index += 1
 	}
-	return false
+	return draft
 }
 
 const prCreates = shellCommands(cmd)
