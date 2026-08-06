@@ -144,8 +144,9 @@ Every worker prompt must state all of the following.
 - A reviewer returns `PASS`, `BLOCK`, or `ERROR`. Each `BLOCK` must name a real
   flaw and give a file and line. A crash, timeout, or tool fault returns
   `ERROR` and does not use a review attempt.
-- After the first `BLOCK`, the same running worker fixes every finding, reruns
-  checks, and commits. A new reviewer then checks the new commit.
+- After each `BLOCK` below the allowed count, the same running worker fixes
+  every finding, reruns checks, and commits. A new reviewer then checks the new
+  commit.
 - After the repo's allowed number of `BLOCK` results, rerun lint, commit all
   work, push the branch, open no PR, and return every finding. The manager must
   send the pushed branch to the next worker type at once.

@@ -40,6 +40,28 @@ Add only the project agent files for the chosen runtime:
 Do not copy model names from one runtime to another. Do not replace unrelated
 settings.
 
-Commit, review, push, and open the rules PR through `/orchestrate`. Once the
-repo has `.agent/orchestrate.md`, edit that file when rules change. Do not run
-this setup again.
+## Deliver the first rules
+
+The normal worker process cannot read rules that have not reached the default
+branch. Use this setup process only for the first rules PR:
+
+1. Follow `/orchestrate` to choose the default-branch base and create a separate
+   worktree. The current setup agent owns this change.
+2. Add only `.agent/orchestrate.md`, the chosen runtime's project agent files,
+   and the hook files that the user approved.
+3. Run the checks found in the interview. Parse each config file with its
+   normal parser and format each doc.
+4. Commit, then ask a fresh general reviewer to check the exact commit. Give it
+   the approved answers, changed paths, and generic checks because the remote
+   default branch has no repo rules yet. Pass the reviewer model and effort
+   that the user chose when the runtime allows explicit settings.
+5. After each `BLOCK` below the approved count, the same setup agent fixes all
+   findings, runs checks, commits, and asks a new reviewer. If the count reaches
+   the limit, stop and report the saved commit and findings.
+6. After `PASS`, make no source or doc change. Write the SHA marker if the new
+   hook needs one, push, open the setup PR, report its URL, and wait for the
+   user. Never merge.
+
+Do not send the first setup through the normal worker sequence. Once the user
+merges the rules, normal runs read `.agent/orchestrate.md`. Edit that file when
+rules change. Do not run this setup again.
