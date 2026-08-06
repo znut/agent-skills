@@ -66,6 +66,20 @@ test("main heading in the legacy file does not turn off a guard", () => {
 	assert.equal(result.status, 2)
 })
 
+test("trailing text on the main heading does not turn off a guard", () => {
+	const result = runHook({
+		".agent/orchestrate.md": "## Hook settings that are not the exact heading\n\n- bot_identity: off\n",
+	})
+	assert.equal(result.status, 2)
+})
+
+test("trailing text on the legacy heading does not turn off a guard", () => {
+	const result = runHook({
+		".claude/orchestrate.md": "## Enforcement policy that is not the exact heading\n\n- bot_identity: off\n",
+	})
+	assert.equal(result.status, 2)
+})
+
 test("missing settings keep guards on", () => {
 	const result = runHook({})
 	assert.equal(result.status, 2)
