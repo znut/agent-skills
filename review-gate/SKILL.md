@@ -20,7 +20,7 @@ choose them.
 ## 1. Confirm the reviewed tip
 
 Use the paused worker's worktree. Do not create another worktree. The task must
-give the worktree path and reviewed SHA.
+give the worktree path, reviewed SHA, and frozen default-branch SHA.
 
 Run `git rev-parse HEAD` and confirm that it matches the named review commit.
 Run `git status --porcelain` and require no output. Return `ERROR` if the commit
@@ -28,16 +28,17 @@ does not match or the worktree is not clean. Do not edit source or doc files.
 
 ## 2. Read current rules
 
-Run `git fetch origin -q`. Read `.agent/orchestrate.md` from the remote default
-branch with `git show origin/<default>:.agent/orchestrate.md`. Read the review
-checklist path, script, marker, hook, and default branch from that file.
+Use the frozen default-branch SHA supplied by the worker. Do not fetch, update a
+ref, or run any other Git write. Read `.agent/orchestrate.md` with
+`git show <frozen-default-sha>:.agent/orchestrate.md`. Read the review checklist
+path, script, marker, hook, and default branch from that file.
 
 If the main file does not exist, read `.claude/orchestrate.md`. Follow its link
 when it points to the main file. A full legacy `.claude/orchestrate.md` may
 supply the rules for this run. Note that the repo should move those rules to
 `.agent/orchestrate.md`.
 
-Read the named checklist from the same remote default tip. If no repo rules or
+Read the named checklist from the same frozen commit. If no repo rules or
 checklist exist, use this list and tell the parent:
 
 - correctness;
@@ -55,8 +56,8 @@ and generic checks because the remote default branch has no rules yet.
 From the worker worktree, run:
 
 ```sh
-git diff origin/<default>...HEAD
-git diff --name-status origin/<default>...HEAD
+git diff <frozen-default-sha>...HEAD
+git diff --name-status <frozen-default-sha>...HEAD
 ```
 
 Check only that diff and the task's acceptance rules. Do not add scope.

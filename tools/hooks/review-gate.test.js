@@ -110,6 +110,21 @@ test("allowed headings permit trailing horizontal whitespace", () => {
 
 const draftFirstSettings =
 	"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: required\n"
+const identitySettings =
+	"## Hook settings\n\n- review_marker: off\n- verify_marker: off\n"
+
+test("bot identity recognizes shell line continuations", () => {
+	for (const lineBreak of ["\n", "\r\n"]) {
+		for (const command of [
+			`gh pr \\${lineBreak}create --draft --title test`,
+			`gh "p\\${lineBreak}r" create --draft --title test`,
+		]) {
+			const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+			assert.equal(result.status, 2, JSON.stringify(command))
+			assert.match(result.stderr, /bot-identity guard/, JSON.stringify(command))
+		}
+	}
+})
 
 test("draft-first setting blocks a PR without --draft", () => {
 	const result = runHook(
@@ -158,12 +173,32 @@ test("draft-first setting rejects false and invalid boolean spellings", () => {
 	}
 })
 
+test("draft-first setting uses the last repeated draft value", () => {
+	for (const command of [
+		"gh pr create --draft --draft=false --title test",
+		"gh pr create --draft=true --draft=0 --title test",
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 2, command)
+		assert.match(result.stderr, /draft-first gate/, command)
+	}
+	for (const command of [
+		"gh pr create --draft=false --draft --title test",
+		"gh pr create --draft=f --draft=T --title test",
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 0, command)
+	}
+})
+
 test("draft-first setting checks every PR creation", () => {
-	const result = runHook(
-		{ ".agent/orchestrate.md": draftFirstSettings },
+	for (const command of [
 		"gh pr create --draft --title one; gh pr create --title two",
-	)
-	assert.equal(result.status, 2)
+		"gh pr create --draft --title one\ngh pr create --title two",
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 2, command)
+	}
 })
 
 test("draft-first setting recognizes command and env wrappers", () => {
