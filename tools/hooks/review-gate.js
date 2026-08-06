@@ -8,7 +8,7 @@
  *    explicit GET) — must carry GH_TOKEN= as a DIRECT inline prefix on that
  *    invocation. A token assignment elsewhere on the line proves nothing:
  *    `GH_TOKEN=$(…); gh …` sets an UNexported shell var the gh child never
- *    sees (comments have shipped authored as the human login this way
+ *    sees (agents have posted comments as the human login this way
  *    before), and env vars never persist across tool calls either.
  *    Reads (list/view/status/checks, api GET) are exempt. Applies even under
  *    ZCR_SKIP. Known false-positive: a quoted string containing something
@@ -116,6 +116,45 @@ function policy() {
 	}
 }
 
+// ── bare-gh contract ────────────────────────────────────────────────────────
+// The gate recognizes exactly `[VAR=val …] gh …` (plus the repo's configured
+// wrapper, below) as a gh invocation. It deliberately unwraps NOTHING — no
+// `env`, no `command`, no `nohup`, no `sh -c`. Wrapper behavior differs by
+// platform (GNU and BSD env -S split differently; -C is GNU-only), and each
+// accepted wrapper is one more way for a model's next habit to slip past the
+// gate. Instead, anything gh-shaped that the bare parse cannot account for
+// BLOCKS with an unwrap message (see the tripwire at the bottom): the parse
+// catches the normal shapes, the tripwire catches the rest, and when they
+// disagree the gate blocks.
+// The gate guards against an honest agent that drifts, not an attacker — it
+// turns drift into loud blocks; it cannot stop deliberate evasion.
+//
+// Repo wrapper: `git config agent.gh-wrapper` (e.g. `bgh`) names a wrapper
+// that injects the bot token per call. A wrapper call needs no token prefix —
+// injecting the token is the wrapper's job — and still gets draft and marker
+// checks.
+let _wrapper
+function ghWrapper() {
+	if (_wrapper !== undefined) return _wrapper
+	try {
+		_wrapper =
+			execSync("git config agent.gh-wrapper", {
+				cwd,
+				stdio: ["ignore", "pipe", "ignore"],
+			})
+				.toString()
+				.trim() || null
+	} catch {
+		_wrapper = null
+	}
+	if (_wrapper && !/^[A-Za-z0-9_.-]+$/.test(_wrapper)) _wrapper = null
+	return _wrapper
+}
+function ghWordRe() {
+	const wrapper = ghWrapper()
+	return wrapper ? `(?:gh|${wrapper.replace(/\./g, "\\.")})` : "gh"
+}
+
 // ── shared regex pieces ──────────────────────────────────────────────────────
 // Command position: start of string, after ; && || | ` newline, or inside $( .
 // Env-var values may contain spaces inside quotes or $(…) — e.g.
@@ -131,7 +170,9 @@ function policy() {
 // `GH_TOKEN=$(cat …)` inside a `VAR=$( … gh … )` capture; deeper nesting
 // mis-parses toward a false block, never a false allow.
 const ENV_VAL = `(?:"[^"]*"|'[^']*'|\\$\\((?:[^()]|\\$\\([^)]*\\))*\\)|[^\\s;&|\`()])*`
-const CMD_POS = `(?:^|[;&|\`\\n]|\\$\\()\\s*(?:env\\s+)?`
+// Bare-gh: no `(?:env\s+)?` here — `env VAR=x gh …` is not a recognized shape;
+// the tripwire blocks it with a rewrite-as-plain-prefix message.
+const CMD_POS = `(?:^|[;&|\`\\n]|\\$\\()\\s*`
 const ENV_PREFIX = `((?:[A-Za-z_][A-Za-z0-9_]*=${ENV_VAL}\\s+)*)`
 // Global flags between `gh` and the subcommand (e.g. `-R owner/repo`). Token
 // filler cannot cross a statement separator or a paren, so one invocation
@@ -144,8 +185,8 @@ const MUT_SUB =
 	`|project\\s+(?:create|copy|close|delete|edit|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit|link|unlink|mark-template)` +
 	`|(?:release|label)\\s+(?:create|edit|delete|clone|upload|delete-asset)` +
 	`|repo\\s+(?:create|edit|delete|rename|archive|unarchive|sync)`
-const GH_MUT = new RegExp(`${CMD_POS}${ENV_PREFIX}gh\\s+${FILLER}(?:${MUT_SUB})\\b`, "g")
-const GH_API = new RegExp(`${CMD_POS}${ENV_PREFIX}gh\\s+${FILLER}api\\s+([^;&|\`\\n]*)`, "g")
+const GH_MUT = new RegExp(`${CMD_POS}${ENV_PREFIX}(${ghWordRe()})\\s+${FILLER}(?:${MUT_SUB})\\b`, "g")
+const GH_API = new RegExp(`${CMD_POS}${ENV_PREFIX}(${ghWordRe()})\\s+${FILLER}api\\s+([^;&|\`\\n]*)`, "g")
 
 // gh api auto-switches to POST when field/body flags are present; an explicit
 // --method wins either way.
@@ -165,13 +206,16 @@ function prefixHasGhToken(prefix) {
 }
 
 function collectIdentityOffenders(input, inlineToken, offenders) {
+	const wrapper = ghWrapper()
 	let match
 	while ((match = GH_MUT.exec(input))) {
+		if (match[2] === wrapper) continue // injecting the token is the wrapper's job
 		const hasToken = inlineToken === undefined ? prefixHasGhToken(match[1] || "") : inlineToken
 		if (!hasToken) offenders.add(match[0])
 	}
 	while ((match = GH_API.exec(input))) {
-		if (!apiIsMutation(match[2] || "")) continue
+		if (!apiIsMutation(match[3] || "")) continue
+		if (match[2] === wrapper) continue
 		const hasToken = inlineToken === undefined ? prefixHasGhToken(match[1] || "") : inlineToken
 		if (!hasToken) offenders.add(match[0])
 	}
@@ -195,8 +239,8 @@ function blockIdentity(offenders) {
 
 // ── 2. draft-first and review/verify markers for `gh pr create` ─────────────
 // This small lexer preserves shell word boundaries, so body text and comments
-// cannot pose as options. It recognizes the `command` and `env` wrappers that
-// still execute `gh` directly.
+// cannot pose as options. Per the bare-gh contract it recognizes NO wrappers —
+// the command word after the assignments prefix must be gh (or the wrapper).
 function commandSubstitution(input, start) {
 	let depth = 1
 	let quote = ""
@@ -385,7 +429,6 @@ function shellCommands(input) {
 }
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-const ENV_VALUE_OPTIONS = new Set(["-C", "-u", "--chdir", "--unset"])
 const GH_VALUE_OPTIONS = new Set([
 	"-R",
 	"--browser",
@@ -426,31 +469,19 @@ const PR_CREATE_VALUE_OPTIONS = new Set([
 	"--title",
 ])
 
+// Bare-gh: an assignments prefix, then the command word must BE `gh` (or the
+// configured wrapper). Wrapped forms (`env …`, `command …`, `nohup …`) are
+// deliberately NOT parsed — the tripwire below blocks anything gh-shaped they
+// might hide. Because only ASSIGNMENT-matching words are skipped, the prefix
+// zone [0, index) can hold nothing but assignments —
+// an option value like `-C GH_TOKEN=decoy` can never land in it.
 function ghCommandIndex(words) {
 	let index = 0
 	while (ASSIGNMENT.test(words[index] || "")) index += 1
-	while (words[index] === "command" || words[index] === "env") {
-		if (words[index] === "command") {
-			index += 1
-			while (words[index] && words[index].startsWith("-")) index += 1
-			continue
-		}
-		index += 1
-		while (words[index]) {
-			const word = words[index]
-			if (word === "--") {
-				index += 1
-				break
-			}
-			if (ASSIGNMENT.test(word)) {
-				index += 1
-				continue
-			}
-			if (!word.startsWith("-")) break
-			index += ENV_VALUE_OPTIONS.has(word) ? 2 : 1
-		}
-	}
-	return words[index] === "gh" ? index : -1
+	const word = words[index]
+	if (word === "gh") return index
+	if (ghWrapper() && word === ghWrapper()) return index
+	return -1
 }
 
 function prCreateArgs(words) {
@@ -499,6 +530,90 @@ for (const words of shellCommands(cmd)) {
 	)
 }
 if (identityOffenders.size && policy().identity) blockIdentity(identityOffenders)
+
+// ── bare-gh tripwire ────────────────────────────────────────────────────────
+// Catches what the bare parse misses; runs whenever ANY guard is active.
+// Two rules, both fail-CLOSED:
+//   A) a single shell WORD that itself starts with `gh ` is a quoted gh
+//      command passed as an argument — the `env -S "gh …"` / `sh -c "gh …"`
+//      shape. Blocked outright.
+//   B) counting rule over the UNQUOTED text (quote contents stripped, so
+//      PR-body prose never trips): more mutating-gh sightings than the
+//      structural CMD_POS parse accounts for means a wrapper (`nohup`, `env`,
+//      `xargs`, …) is hiding one. Blocked.
+// Known false positive: UNQUOTED prose mentioning a mutating gh command
+// (`echo run gh pr create later`) — blocks in the closed direction; quote the
+// text or use --body-file.
+function unquotedView(input) {
+	let out = ""
+	let quote = ""
+	for (let index = 0; index < input.length; index += 1) {
+		const char = input[index]
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				index += 1
+				continue
+			}
+			if (char === quote) quote = ""
+			continue
+		}
+		if (char === "'" || char === '"') {
+			quote = char
+			out += " "
+			continue
+		}
+		if (char === "\\") {
+			out += " "
+			index += 1
+			continue
+		}
+		out += char
+	}
+	return out
+}
+
+function blockBareGh(reason, sample) {
+	const wrapper = ghWrapper()
+	process.stderr.write(
+		`⛔ review-gate (bare-gh): ${reason}:\n  ✗ ${sample.replace(/\s+/g, " ").trim().slice(0, 120)}\n` +
+			`The gate parses only \`[VAR=val …] gh …\`${wrapper ? ` (or \`${wrapper} …\`)` : ""} — no env/command/nohup/sh -c wrappers, no quoted gh command strings.\n` +
+			`Rewrite as a bare invocation, e.g. \`GH_TOKEN=$(…) gh <subcommand> …\`${wrapper ? ` or \`${wrapper} <subcommand> …\`` : ""}.\n` +
+			`Prose mentioning a gh command? Quote it or move it to --body-file.`,
+	)
+	process.exit(2)
+}
+
+const anyGuardActive = policy().identity || policy().draft || policy().review || policy().verify
+if (anyGuardActive) {
+	const GH_WORD_START = new RegExp(`^${ghWordRe()}\\s`)
+	for (const words of shellCommands(cmd)) {
+		for (const word of words) {
+			if (GH_WORD_START.test(word))
+				blockBareGh("a quoted gh command is passed as an argument (env -S / sh -c shape)", word)
+		}
+	}
+
+	// Shell line-continuations are transparent to the shell but opaque to the
+	// structural regexes — collapse them BEFORE both counters so a legal
+	// `gh pr \<newline>create` counts identically on both sides.
+	const joined = cmd.replace(/\\\r?\n/g, " ")
+	const stripped = unquotedView(joined)
+	const TRIP_MUT = new RegExp(`\\b${ghWordRe()}\\s+${FILLER}(?:${MUT_SUB})\\b`, "g")
+	const TRIP_API = new RegExp(`\\b${ghWordRe()}\\s+${FILLER}api\\s+([^;&|\`\\n]*)`, "g")
+	let tripCount = 0
+	while (TRIP_MUT.exec(stripped)) tripCount += 1
+	let match
+	while ((match = TRIP_API.exec(stripped))) {
+		if (apiIsMutation(match[1] || "")) tripCount += 1
+	}
+	let structuralCount = 0
+	while (GH_MUT.exec(joined)) structuralCount += 1
+	while ((match = GH_API.exec(joined))) {
+		if (apiIsMutation(match[3] || "")) structuralCount += 1
+	}
+	if (tripCount > structuralCount)
+		blockBareGh("a mutating gh invocation sits inside an unparsed wrapper or construct", cmd)
+}
 
 const prCreates = shellCommands(cmd)
 	.map(prCreateArgs)

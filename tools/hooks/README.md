@@ -92,9 +92,35 @@ Add this entry to `~/.codex/hooks.json`:
 
 Run `/hooks` in Codex and trust the hook after you add or change it.
 
+## Bare-gh contract
+
+The gate recognizes exactly `[VAR=val …] gh …` as a gh invocation — it unwraps
+nothing. `env`, `command`, `nohup`, `sh -c`, `xargs`, and quoted command
+strings (`env -S "gh …"`) all BLOCK with a rewrite-as-bare message instead of
+passing unseen. Wrapper behavior differs by platform (GNU and BSD `env -S`
+split differently; `-C` is GNU-only), and each accepted wrapper is one more
+way for a new model's habit to slip past the gate. A loud refusal teaches the
+agent to rewrite, and it works the same everywhere.
+
+A repo whose conventions route gh through a token-injecting wrapper declares
+it once per clone:
+
+    git config agent.gh-wrapper bgh
+
+A wrapper call needs no token prefix — injecting the token is the wrapper's
+job — and still gets draft-first and marker checks.
+Without the config, the wrapper name is just an unknown command — declare it
+or the gate cannot see those PRs.
+
+The gate guards against an honest agent that drifts, not an attacker. It
+turns drift into loud blocks; no hook can stop deliberate evasion.
+
 ## Limits
 
 - The hook allows a command when it cannot read or parse its input. A broken
   global hook must not block every repo.
-- A quoted shell string that contains a GitHub write may cause a false block.
-  Reword the string or use `--body-file`.
+- An UNQUOTED shell fragment that mentions a GitHub write (`echo run gh pr
+  create later`) trips the bare-gh backstop — a false block, in the closed
+  direction. Quote the text or use `--body-file`. Quoted prose never trips.
+- Subshell-parenthesized or `if`-guarded gh mutations (`(gh pr comment …)`)
+  read as unparsed constructs and block — rewrite bare.
