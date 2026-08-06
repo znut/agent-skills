@@ -73,15 +73,24 @@ function policy() {
 		})
 			.toString()
 			.trim()
-		const files = [path.join(top, ".agent", "orchestrate.md"), path.join(top, ".claude", "orchestrate.md")]
-		for (const file of files) {
+		const sources = [
+			{
+				file: path.join(top, ".agent", "orchestrate.md"),
+				section: /^##\s+Hook settings[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+			},
+			{
+				file: path.join(top, ".claude", "orchestrate.md"),
+				section: /^##\s+Enforcement policy[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+			},
+		]
+		for (const { file, section } of sources) {
 			let text
 			try {
 				text = fs.readFileSync(file, "utf8")
 			} catch {
 				continue
 			}
-			const sec = /^##\s+(?:Hook settings|Enforcement policy)[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(text)
+			const sec = section.exec(text)
 			if (!sec) continue
 			const isOff = (key) => {
 				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
