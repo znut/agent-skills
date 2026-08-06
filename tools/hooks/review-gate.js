@@ -271,6 +271,14 @@ function shellCommands(input) {
 				index += 1
 				continue
 			}
+			if (
+				char === "\\" &&
+				(input[index + 1] === "\n" ||
+					(input[index + 1] === "\r" && input[index + 2] === "\n"))
+			) {
+				index += input[index + 1] === "\r" ? 3 : 2
+				continue
+			}
 			if (char === "$") {
 				if (input[index + 1] === "(") {
 					const sub = commandSubstitution(input, index)
@@ -304,6 +312,14 @@ function shellCommands(input) {
 			quote = char
 			hasWord = true
 			index += 1
+			continue
+		}
+		if (
+			char === "\\" &&
+			(input[index + 1] === "\n" ||
+				(input[index + 1] === "\r" && input[index + 2] === "\n"))
+		) {
+			index += input[index + 1] === "\r" ? 3 : 2
 			continue
 		}
 		if (char === "\\" && index + 1 < input.length) {
@@ -439,7 +455,7 @@ function hasDraftFlag(args) {
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index]
 		if (arg === "--") return false
-		if (arg === "--draft" || /^--draft=(?:true|1)$/i.test(arg)) return true
+		if (arg === "--draft" || /^--draft=(?:1|t|T|true|TRUE|True)$/.test(arg)) return true
 		if (PR_CREATE_VALUE_OPTIONS.has(arg)) index += 1
 	}
 	return false
