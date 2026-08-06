@@ -7,7 +7,7 @@ const test = require("node:test")
 
 const hook = path.join(__dirname, "review-gate.js")
 
-function runHook(files) {
+function runHook(files, command = "gh issue create --title test") {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-test-"))
 	try {
 		execFileSync("git", ["init", "-q"], { cwd: repo })
@@ -21,7 +21,7 @@ function runHook(files) {
 			encoding: "utf8",
 			input: JSON.stringify({
 				cwd: repo,
-				tool_input: { command: "gh issue create --title test" },
+				tool_input: { command },
 			}),
 		})
 	} finally {
@@ -78,6 +78,67 @@ test("trailing text on the legacy heading does not turn off a guard", () => {
 		".claude/orchestrate.md": "## Enforcement policy that is not the exact heading\n\n- bot_identity: off\n",
 	})
 	assert.equal(result.status, 2)
+})
+
+const draftFirstSettings =
+	"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: required\n"
+
+test("draft-first setting blocks a PR without --draft", () => {
+	const result = runHook(
+		{ ".agent/orchestrate.md": draftFirstSettings },
+		"gh pr create --title test",
+	)
+	assert.equal(result.status, 2)
+	assert.match(result.stderr, /draft-first gate/)
+})
+
+test("draft-first setting permits a draft PR", () => {
+	const result = runHook(
+		{ ".agent/orchestrate.md": draftFirstSettings },
+		"gh pr create --draft --title test",
+	)
+	assert.equal(result.status, 0)
+})
+
+test("draft-first setting checks every PR creation", () => {
+	const result = runHook(
+		{ ".agent/orchestrate.md": draftFirstSettings },
+		"gh pr create --draft --title one; gh pr create --title two",
+	)
+	assert.equal(result.status, 2)
+})
+
+test("missing draft-first setting does not require a draft PR", () => {
+	const result = runHook(
+		{
+			".agent/orchestrate.md":
+				"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n",
+		},
+		"gh pr create --title test",
+	)
+	assert.equal(result.status, 0)
+})
+
+test("legacy draft-first setting blocks a PR without --draft", () => {
+	const result = runHook(
+		{
+			".claude/orchestrate.md":
+				"## Enforcement policy\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: required\n",
+		},
+		"gh pr create --title test",
+	)
+	assert.equal(result.status, 2)
+})
+
+test("only literal required enables draft-first", () => {
+	const result = runHook(
+		{
+			".agent/orchestrate.md":
+				"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: requiredish\n",
+		},
+		"gh pr create --title test",
+	)
+	assert.equal(result.status, 0)
 })
 
 test("missing settings keep guards on", () => {

@@ -65,6 +65,8 @@ done:
 - a fresh reviewer returns `PASS` for the final commit with no open `BLOCK`;
 - the branch exists on the remote;
 - a PR exists with all required labels, text, and artifacts;
+- for `draft_first: required`, the manager has checked the draft and marked its
+  unchanged PR ready;
 - the agent reports the PR URL.
 
 Then wait for the user's review and clear approval. Never merge.
@@ -177,12 +179,14 @@ Every worker prompt must state all of the following.
 - If the repo rules choose push-only delivery, report the pushed branch and
   skip the rest of the PR and artifact steps.
 - On `PASS`, open the PR with `gh pr create --base <default> --head <branch>`.
-  Apply the required labels and draft state. Follow any check that runs before
-  PR creation.
+  When `draft_first: required` is set, pass `--draft`. Apply required labels
+  and follow any check that runs before PR creation.
 - Use `Resolves #N` for each ticket that should close on merge. A plain `#N`
   only links the ticket.
 - Add each required artifact. Open and inspect the first artifact made by a
   new tool or fixture.
+- Wait for required checks. With `draft_first: required`, report the draft to
+  the manager and do not mark it ready.
 - After push and PR work, run plain `git worktree remove <path>` from outside
   the worktree. Never use `--force` or a broad `git worktree prune`. A runtime
   lock means `worktree_cleanup: harness-locked`. A refusal due to changed or
@@ -236,17 +240,20 @@ create a new type.
 
 The manager checks the PR but does not fix it.
 
-1. Confirm that the remote branch tip matches the reviewed commit.
+1. Confirm that the exact PR head and remote branch tip match the reviewed
+   commit.
 2. Open the PR diff and inspect at least one changed file.
 3. Confirm that CI passes, labels and text are right, and required artifacts
    exist and look right.
 4. Confirm that the final review came from a fresh reviewer, its marker names
    the PR tip when the repo uses markers, and no `BLOCK` remains.
 5. Check scope, decision records, secrets, `.env` files, and lockfile changes.
+6. With `draft_first: required`, check the PR head again, then mark that exact
+   PR ready.
 
 If any check fails, send a fresh worker the exact findings and the pushed
-branch. Do not edit the PR yourself. If all checks pass, report the URL and
-wait for the user.
+branch. Do not edit the PR yourself. If all checks pass, report the ready URL
+and wait for the user. The user does not review a draft PR.
 
 If the repo provides a local PR status service, watch it after reporting the
 PR. A merge notice says what happened; it does not grant approval. After the

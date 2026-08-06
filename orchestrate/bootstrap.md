@@ -21,10 +21,12 @@ not choose a silent default.
 3. Work tracker: GitHub Projects, none, or a service that a person updates.
 4. Review: fresh reviewer with a SHA marker and hook, or fresh reviewer without
    a marker.
-5. User review: for PR delivery, confirm that the agent will open each clean PR
-   and wait while the user reviews and merges it. For push-only delivery,
-   confirm that the agent stops after it reports the pushed branch. Do not
-   offer an automatic merge.
+5. User review: for PR delivery, choose ready PRs or draft-first. With
+   draft-first, the worker opens with `--draft`, adds artifacts, and waits for
+   checks; the manager checks the exact PR and SHA, CI, labels, text, and
+   artifacts, then marks it ready for the user. For push-only delivery, confirm
+   that the agent stops after it reports the pushed branch. Do not offer an
+   automatic merge.
 6. Exact check commands and command runner.
 7. Existing labels, new labels, or no labels.
 8. Doc read order.
@@ -34,8 +36,8 @@ not choose a silent default.
     runtime's project agent files.
 
 Write answers 1 through 9 to `.agent/orchestrate.md`. Include any identity or
-review hook rules. Require identity and SHA checks unless the user rejects
-them.
+review hook rules. Write `draft_first: required` only when the user chooses
+draft-first. Require identity and SHA checks unless the user rejects them.
 
 Add only the project agent files for the chosen runtime:
 
@@ -72,8 +74,10 @@ branch. Use this setup process only for the first rules change:
    report the saved work after its third `BLOCK`.
 7. After `PASS`, make no source or doc change and push the reviewed commit. For
    push-only delivery, report the branch and stop. For PR delivery, write the
-   SHA marker if the new hook needs one, open the setup PR, report its URL, and
-   wait for the user. Never merge.
+   SHA marker if the new hook needs one, open the setup PR with `--draft` when
+   draft-first is set, add artifacts, and wait for checks. The manager checks
+   the exact PR and SHA, CI, labels, text, and artifacts before marking it
+   ready for the user. Never merge.
 
 Do not send the first setup through the normal worker sequence. Once the user
 merges the rules, normal runs read `.agent/orchestrate.md`. Edit that file when

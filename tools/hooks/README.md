@@ -3,11 +3,12 @@
 `review-gate.js` checks Bash commands before they run. It works with Claude
 Code and Codex.
 
-It has three guards:
+It has four guards:
 
 1. A GitHub write must pass `GH_TOKEN=` on the same `gh` command.
-2. `gh pr create` needs a review marker for the branch tip.
-3. `gh pr create` needs a check marker for the branch tip.
+2. With `draft_first: required`, `gh pr create` must pass `--draft`.
+3. `gh pr create` needs a review marker for the branch tip.
+4. `gh pr create` needs a check marker for the branch tip.
 
 The hook lets reads such as `gh pr view` run without a token prefix.
 
@@ -22,11 +23,12 @@ The hook keeps all guards on by default. A person may turn off a guard in the
 - bot_identity: off
 - review_marker: off
 - verify_marker: off
+- draft_first: required
 ```
 
-Anything but `off` keeps the guard on. A missing file, section, or key also
-keeps it on. `/orchestrate` asks the user for these values. An agent must not
-choose `off`.
+The first three settings are on unless set to `off`. `draft_first` is off
+unless it is exactly `required`; a missing setting does not require drafts.
+`/orchestrate` asks the user for these values. An agent must not choose them.
 
 The hook reads `.agent/orchestrate.md` first. If that file has no settings
 section, it checks the old `## Enforcement policy` section in
