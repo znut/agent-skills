@@ -50,12 +50,14 @@ const cwd = (data && data.cwd) || process.cwd()
 
 // ── per-repo opt-OUT (default-enforce, per-repo opt-out) ───────────────────────────────
 // Default is ENFORCE (identical to the original machine-global behavior).
-// A repo may relax individual guards ONLY via an explicit, human-committed
-// `## Enforcement policy` section in its .claude/orchestrate.md:
-//   ## Enforcement policy
+// A repo may relax a guard only through a human-committed `## Hook settings`
+// section in .agent/orchestrate.md:
+//   ## Hook settings
 //   - bot_identity: off      # repo uses the human's own gh auth — no bot
 //   - review_marker: off
 //   - verify_marker: off
+// A legacy `## Enforcement policy` section in .claude/orchestrate.md also
+// works. The main file wins when both files hold a settings section.
 // Anything other than the literal value `off` (absent section, absent file,
 // unreadable repo) keeps that guard ON. The /orchestrate bootstrap interview
 // writes this section from the user's explicit answers — agents never author
@@ -71,18 +73,27 @@ function policy() {
 		})
 			.toString()
 			.trim()
-		const text = fs.readFileSync(path.join(top, ".claude", "orchestrate.md"), "utf8")
-		const sec = /^##\s+Enforcement policy[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(text)
-		if (!sec) return (_policy = on)
-		const isOff = (k) => {
-			const m = new RegExp(`^[-*]\\s*${k}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
-			return !!m && m[1] === "off"
+		const files = [path.join(top, ".agent", "orchestrate.md"), path.join(top, ".claude", "orchestrate.md")]
+		for (const file of files) {
+			let text
+			try {
+				text = fs.readFileSync(file, "utf8")
+			} catch {
+				continue
+			}
+			const sec = /^##\s+(?:Hook settings|Enforcement policy)[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(text)
+			if (!sec) continue
+			const isOff = (key) => {
+				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
+				return !!match && match[1] === "off"
+			}
+			return (_policy = {
+				identity: !isOff("bot_identity"),
+				review: !isOff("review_marker"),
+				verify: !isOff("verify_marker"),
+			})
 		}
-		return (_policy = {
-			identity: !isOff("bot_identity"),
-			review: !isOff("review_marker"),
-			verify: !isOff("verify_marker"),
-		})
+		return (_policy = on)
 	} catch {
 		return (_policy = on)
 	}
@@ -145,7 +156,7 @@ if (offenders.length && policy().identity) {
 				`or an inline prefix on EACH gh invocation (\`GH_TOKEN=$(…); gh …\` does NOT work — the semicolon makes it an unexported shell var the gh child never sees):\n` +
 			`  GH_TOKEN=$(cat <token-file per the repo conventions>) gh <subcommand> …\n` +
 			`Applies even under REVIEW_GATE_SKIP/ZCR_SKIP. Reads (gh pr list/view, gh api GET) are exempt.\n` +
-			`(Repo with no bot identity? The human can commit an "## Enforcement policy" section with "- bot_identity: off" in .claude/orchestrate.md.)`,
+			`(Repo with no bot identity? The human can commit a "## Hook settings" section with "- bot_identity: off" in .agent/orchestrate.md.)`,
 	)
 	process.exit(2)
 }
@@ -245,7 +256,7 @@ if (policy().verify && !/\bVERIFY_SKIP=1\b/.test(cmd)) {
 	function blockVerify(reason) {
 		process.stderr.write(
 			`⛔ verify-green gate: ${reason} (branch "${branch}").\n` +
-				`Run the local verify gate (typecheck/lint/test/build per .claude/orchestrate.md), then pin it: bash scripts/verify-mark.sh ${branch} — then retry.\n` +
+				`Run the local checks from the repo rules, then pin them: bash scripts/verify-mark.sh ${branch} — then retry.\n` +
 				`If you committed after verifying, re-run the gate.\n` +
 				`Deliberate exception (rare): prefix the command with VERIFY_SKIP=1.`,
 		)

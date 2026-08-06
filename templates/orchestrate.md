@@ -55,9 +55,10 @@ Read only the files that exist and that the changed paths need.
 
 - Runtime: `<Codex | Claude Code | other>`.
 - Project agent files: `<paths>`.
-- Worker types in order: `<type 1>`, `<type 2>`, `<last type>`.
+- Worker types in order: `<one or more types, first to last>`.
 - Reviewer type: `<type>`.
-- At most `<number>` agents may run at once.
+- At most `<number>` workers may run at once. The manager and reviewers do not
+  count toward this project limit.
 
 Provider files choose models and effort. This file names logical agent types.
 Do not copy model names from another runtime.
