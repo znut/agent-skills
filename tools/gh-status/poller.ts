@@ -71,6 +71,7 @@ query($owner: String!, $name: String!) {
       nodes {
         number
         state
+        isDraft
         merged
         mergedAt
         headRefName
@@ -104,6 +105,7 @@ type RepoConfig = {
 type Pr = {
 	number: number
 	state: "OPEN" | "CLOSED" | "MERGED"
+	isDraft: boolean
 	merged: boolean
 	mergedAt: string | null
 	headRefName: string
@@ -502,9 +504,18 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		const commentCount = commentsTotal + reviewsTotal
 		const lastCommentAt = [commentsLatest, reviewsLatest].filter((d): d is string => !!d).sort().pop() ?? null
 
+		// Previous snapshot feeds the ready-stale check below — read BEFORE overwrite.
+		let prev: { state?: string; isDraft?: boolean; headOid?: string | null } | null = null
+		try {
+			prev = JSON.parse(await Bun.file(`${statusDir}/pr-${pr.number}.json`).text())
+		} catch {
+			prev = null
+		}
+
 		const snapshot = {
 			number: pr.number,
 			state: pr.state,
+			isDraft: pr.isDraft,
 			merged: pr.merged,
 			mergedAt: pr.mergedAt,
 			branch: pr.headRefName,
@@ -514,9 +525,26 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			commentCount, // issue comments + reviews combined (see Pr.reviews note above)
 			lastCommentAt,
 			updatedAt: pr.updatedAt,
+			headOid: sha,
 			fetchedAt,
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
+
+		// Ready-stale: a READY (non-draft, open) PR whose head moved while ready —
+		// someone pushed without flipping draft first. Alarm for the push gate's
+		// blind spots (pushes from machines without the hook). Marker clears when
+		// the PR goes back to draft or leaves OPEN.
+		const staleMarker = `${eventsDir}/pr-${pr.number}.ready-stale`
+		if (pr.state === "OPEN" && !pr.isDraft) {
+			if (prev && prev.state === "OPEN" && prev.isDraft === false && prev.headOid && sha && prev.headOid !== sha) {
+				if (!(await Bun.file(staleMarker).exists())) {
+					await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "ready-stale", sha })
+					await touch(staleMarker)
+				}
+			}
+		} else {
+			await rm(staleMarker)
+		}
 
 		if (pr.merged) {
 			const marker = `${eventsDir}/pr-${pr.number}.merged`

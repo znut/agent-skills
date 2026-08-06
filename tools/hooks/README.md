@@ -124,3 +124,17 @@ turns drift into loud blocks; no hook can stop deliberate evasion.
   direction. Quote the text or use `--body-file`. Quoted prose never trips.
 - Subshell-parenthesized or `if`-guarded gh mutations (`(gh pr comment …)`)
   read as unparsed constructs and block — rewrite bare.
+
+## Ready-push gate
+
+A push to a branch whose OPEN PR is READY (not draft) blocks: new commits
+void the manager's ready vouch while the user still reads "ready" as
+merge-safe. Flip the PR to draft, push, re-check, re-ready. The gate reads
+the local PR status snapshots — declare once per clone:
+
+    git config agent.pr-status-dir <the repo's gh-status dir, e.g. ~/.config/agent-tools/var/<name>/gh-status>
+
+Fail-open without the config or on pre-upgrade snapshots (no `isDraft`).
+Override for a deliberate case: `READY_PUSH_OK=1 git push …`. Repo opt-out:
+`- ready_push_gate: off` under `## Hook settings`. The gh-status poller's
+`ready-stale` event is the alarm for pushes the hook never saw.
