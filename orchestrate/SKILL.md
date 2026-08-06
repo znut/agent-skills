@@ -214,7 +214,7 @@ models.
 
 Start with the first worker type unless the repo rules allow another start.
 Do not raise the type because a task looks hard. Do not pass a model or effort
-override unless the repo rules require one.
+override. Provider agent files choose both.
 
 When a worker uses all allowed `BLOCK` results, treat that result as work in
 progress. Send a new worker of the next type the pushed branch and every
