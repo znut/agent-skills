@@ -138,3 +138,39 @@ Fail-open without the config or on pre-upgrade snapshots (no `isDraft`).
 Override for a deliberate case: `READY_PUSH_OK=1 git push …`. Repo opt-out:
 `- ready_push_gate: off` under `## Hook settings`. The gh-status poller's
 `ready-stale` event is the alarm for pushes the hook never saw.
+
+## Park-guard (SubagentStop)
+
+`park-guard.js` refuses a subagent's stop while a Bash task it backgrounded —
+explicitly (`run_in_background: true`) or by the harness moving a long
+foreground command to the background at its time limit — is still
+unaccounted for. A stopped subagent never receives the task's completion
+notification: the command finishes with nobody alive to read, push, or
+report the result. The guard converts that silent death into a bounced
+instruction: poll the task's output file to completion, act on it, then
+acknowledge the task with TaskStop (pure bookkeeping on a finished task)
+and return.
+
+Wire it as a `SubagentStop` hook (user or project settings):
+
+    "SubagentStop": [
+      { "hooks": [ { "type": "command",
+        "command": "node <path-to>/tools/hooks/park-guard.js",
+        "timeout": 5, "statusMessage": "park-guard" } ] }
+    ]
+
+Mechanics and edges:
+
+- Detection parses the stopping subagent's own transcript (`transcript_path`
+  on stdin): background starts minus task-notifications minus TaskStop
+  calls. Monitor tasks are not counted — a Monitor is the harness's
+  sanctioned re-invoking waiter.
+- Standing watchers are exempt by shape (they are designed to outlive the
+  turn): `bash scripts/watch-lane.sh <args>` exact shape by default; extend
+  per repo with `git config agent.park-guard-exempt <regex>`.
+- Loop cap: after 8 blocks for the same agent the guard stands down — a
+  task that never ends must not wedge the harness.
+- Fail-open: unreadable stdin/transcript, foreign event, parse errors →
+  allow. Repo opt-out: `- park_guard: off` under `## Hook settings`.
+- Wiring validation: `PARK_GUARD_DEBUG=1` in the harness environment
+  appends each stop payload to `/tmp/park-guard-debug.jsonl`.
