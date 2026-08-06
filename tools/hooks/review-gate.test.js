@@ -126,6 +126,25 @@ test("bot identity recognizes shell line continuations", () => {
 	}
 })
 
+test("bot identity ignores token text inside another assignment", () => {
+	for (const lineBreak of ["\n", "\r\n"]) {
+		for (const command of [
+			`NOTE="value GH_TOKEN=decoy" gh pr \\${lineBreak}create --draft --title test`,
+			`NOTE="value GH_TOKEN=decoy" gh "p\\${lineBreak}r" create --draft --title test`,
+		]) {
+			const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+			assert.equal(result.status, 2, JSON.stringify(command))
+			assert.match(result.stderr, /bot-identity guard/, JSON.stringify(command))
+		}
+	}
+})
+
+test("bot identity accepts an exact token assignment after normalization", () => {
+	const command = 'NOTE="value GH_TOKEN=decoy" GH_TOKEN=real gh "p\\\nr" create --draft'
+	const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+	assert.equal(result.status, 0)
+})
+
 test("draft-first setting blocks a PR without --draft", () => {
 	const result = runHook(
 		{ ".agent/orchestrate.md": draftFirstSettings },
