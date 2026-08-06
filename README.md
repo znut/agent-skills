@@ -1,81 +1,81 @@
 # agent-skills
 
-Project-agnostic Claude Code skills for running a small multi-agent software team: a PM role, a TL role, a dispatch engine, and a pre-PR review gate. One person + one Claude session can wear any hat; workers (subagents) do all implementation in isolated git worktrees and open small labeled PRs.
+These skills help one person run product and engineering work through
+subagents. Workers use separate git worktrees and own each task through checks,
+review, push, and one small PR.
 
-## Two-tier architecture
-
-These skills contain **zero project facts**. Every project-specific value — verify commands, label scheme, board identity, artifact rules, design principles — lives in a **conventions file committed in the target repo** at `.claude/orchestrate.md`. The skills read it at step 0 and resolve every `[conventions]` slot from it.
-
-```
-tier 1 (this repo, reusable)          tier 2 (each project repo, committed)
-─────────────────────────────        ──────────────────────────────────────
-orchestrate/SKILL.md  engine    ←──  .claude/orchestrate.md   conventions SSOT
-pm/SKILL.md           role      ←──  .claude/review-checklist.md
-tl/SKILL.md           role      ←──  docs (PRD / ADRs / plan / progress)
-review-gate/          gate      ←──  repo-local hooks + helper scripts
-```
-
-New project = copy `templates/orchestrate.md` into the repo, fill it in, done. The skills work day one.
+The skills contain no project facts or model choices. Each repo keeps its rules
+in `.agent/orchestrate.md` and its agent definitions in the active runtime's
+project files. Claude Code and Codex can read the same repo rules while each
+uses its own agent file format.
 
 ## Skills
 
-| Skill | Role |
-|---|---|
-| `orchestrate` | Dispatch engine: decompose → worker-per-task in worktrees → verify/review gates → worker opens labeled PR → orchestrator final-checks. Not a role — pair with `/pm` or `/tl`. |
-| `pm` | Product manager: requirements grill, PRD deltas, tickets + board, design direction + design locks. Auto-loads the engine, runs the conventions' PM session boot, reports ready. |
-| `tl` | Tech lead: gates Ready tickets, dispatches workers, final-checks PRs, owns ADRs. Auto-loads the engine, runs the conventions' TL session boot, reports ready. |
-| `review-gate` | Pre-PR review gate: deterministic banned-pattern/script pass + diff-scoped judgment review against the repo's checklist; sha-pinned PASS marker for hook enforcement. |
+| Skill         | Work                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------- |
+| `orchestrate` | Splits work, sends workers, requires fresh review, and checks each PR. Pair it with `/pm` or `/tl`. |
+| `pm`          | Settles product choices, updates product docs, creates tickets, and gives ready work to the TL.     |
+| `tl`          | Checks ready tickets, sends engineering tasks, checks PRs, and owns engineering decision records.   |
+| `review-gate` | Scans the diff and runs a fresh review before PR creation. It can write a SHA-bound PASS marker.    |
 
 ## Install
 
-```bash
-git clone <this repo> ~/src/agent-skills
-for s in orchestrate pm tl review-gate; do
-  rm -rf ~/.claude/skills/$s
-  ln -s ~/src/agent-skills/$s ~/.claude/skills/$s
-done
-```
+Clone this repo. Link each skill folder into the skill folder for the runtime
+you use:
 
-Symlinks keep bare skill names (`/pm`, not `plugin:pm`) and make edits in the clone live immediately.
+- Claude Code: `~/.claude/skills/`
+- Codex: `~/.codex/skills/`
 
-## The conventions-file contract
+Link `orchestrate`, `pm`, `tl`, and `review-gate`. A link lets a pull in this
+repo update the installed skill at once.
 
-`.claude/orchestrate.md` in the target repo. Sections the skills read (★ = required, others optional — skills skip silently when absent):
+## Set up a repo
 
-| Section | Read by | Contents |
-|---|---|---|
-| ★ Repo + identity | all | repo/remote/default branch, bot identity + token source, package manager |
-| Layout + lanes | tl, orchestrate | paths → lane table; lane = concurrency mutex when >1 declared |
-| Working-tree rule | all | who may touch the primary checkout (recommended: nobody but the human) |
-| ★ Agent read order | all | ordered doc list workers read before coding (plan → decisions → progress) |
-| Worker effort policy | orchestrate, tl | complexity → subagent type/effort table, approval gates |
-| ★ Verify gate | orchestrate, tl | exact typecheck/lint/test/build commands + known traps |
-| Review gate | orchestrate, review-gate | gate skill name, checklist path, marker script, enforcing hooks |
-| PR merge/CI watch | orchestrate, tl | local PR-status service paths for merge watchers (else `gh` fallback) |
-| ★ PR conventions | all | label table (paths → labels), body template, closing-keyword rules |
-| Ticket conventions | pm, tl | tracker + board identity, required fields, native relationship APIs |
-| TL conventions | tl | artifact rules (e.g. UI screenshots), worker-prompt rules block (pasted verbatim into every worker prompt), design-lock gate |
-| PM conventions | pm | milestones, doc locations, design ideation flow + design-principles doc pointer, external requirements sources, confidentiality rules |
-| Session boot (PM) / (TL) | pm, tl | cheap/local sources to check at role start (handoff notes, progress docs, PR-status files) + what the ready report covers |
+Run `/orchestrate` in a repo that lacks `.agent/orchestrate.md`. It reads
+`orchestrate/bootstrap.md`, checks what the repo already uses, and asks the
+user for each missing choice. It then adds:
 
-`templates/orchestrate.md` is a fill-in starter covering all of the above.
+- `.agent/orchestrate.md` with project rules;
+- Codex, Claude Code, or other project agent files for the chosen runtime;
+- review hooks or marker tools that the user chose.
 
-## Design notes
+You may also start from `templates/orchestrate.md`. Do not copy model names
+between runtimes.
 
-- **Engine vs role**: `orchestrate` never decides what work is yours; `/pm` and `/tl` never restate how dispatch works. Both may load together on a small project.
-- **Workers own the whole pipeline** (implement → self-review → green → push → PR → artifacts). The orchestrator never fixes a worker's output — it re-dispatches fresh with findings.
-- **Chain depth 3 max**: manager → worker → reviewer. The review-gate reviewer is the ONE sanctioned worker-spawned subagent — and it spawns nothing.
-- **Merge approval is always the human's**, per PR. Watchers detect merges; they never authorize them.
+Setup happens once. Normal runs read `.agent/orchestrate.md` from the remote
+default branch and do not read the setup file or template.
+
+## Repo rules
+
+The repo file states:
+
+- remote, default branch, identity, and package tool;
+- work areas, worktree rules, and doc read order;
+- logical worker types in order, reviewer type, review count, and worker limit;
+- check commands and known limits;
+- review checklist, marker, and hook rules;
+- PR labels, title, body, issue links, state, and artifacts;
+- ticket, TL, PM, and session-start rules.
+
+Provider project files choose the model and effort for each logical agent type.
+The shared skills do not choose or map models.
+
+## Work rules
+
+- The user owns the main checkout. Agents use separate worktrees.
+- First work starts from the newer linear descendant of local or remote
+  default. Split refs stop the work. Commit dates do not decide the base.
+- The repo's first worker type starts each task.
+- The same worker fixes the first `BLOCK`; a new reviewer checks the new commit.
+- After the allowed `BLOCK` count, a new worker of the next type continues from
+  the pushed task branch.
+- A reviewer error does not count as a `BLOCK`.
+- Only green checks, a fresh `PASS`, no open `BLOCK`, a pushed branch, and an
+  open PR count as delivery. A repo may choose push-only delivery.
+- The user reviews and merges each PR. Agents never merge.
 
 ## Tools
 
-`tools/` is a separate, config-driven family of local tooling these skills
-lean on but don't require: a multi-repo GitHub PR status poller (`gh-status`),
-a project-board-to-markdown renderer (`board-snapshot`), a generic post-merge
-step runner (`on-merge`), a bot-identity `gh` wrapper (`bgh`), a post-merge
-main-health runner (`main-health`), and a WorktreeCreate hook that puts agent
-worktrees outside the repo (`worktree-hook`). Each target repo gets one JSON
-file under `$AGENT_TOOLS_HOME/config/` (outside this repo — see
-`tools/config/example.json` for the shape). See `tools/README.md` for the
-config contract, `tools/install.sh` usage, and the migration checklist from
-any prior per-repo service.
+`tools/` contains optional local programs for PR status, board summaries,
+post-merge commands, bot identity, default-branch checks, and worktree paths.
+Each program documents its own setup in `tools/README.md`.
