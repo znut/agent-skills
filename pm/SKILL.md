@@ -48,12 +48,15 @@ The PM does not:
 
 Small product doc changes may stay with the PM, but they still follow the full
 `/orchestrate` process: the right default tip, a separate worktree, green
-checks, a fresh `PASS` with no open `BLOCK`, push, PR, and user approval. Send
-large doc sets or separate research tasks to workers through `/orchestrate`.
+checks, a fresh `PASS` with no open `BLOCK`, push, and the repo's delivery mode.
+PR delivery adds a PR and user approval. Push-only delivery reports the
+reviewed branch and stops. Send large doc sets or separate research tasks to
+workers through `/orchestrate`.
 
 A blocked worker result stays inside the agent process. Send its pushed branch
-and findings to the next worker type. Report only the clean PR URL, then wait
-for the user's review and clear approval. Never merge.
+and findings to the next worker type. On success, report the clean PR URL or,
+for push-only delivery, the reviewed branch. Wait when the repo uses PRs. Never
+merge.
 
 ## Product area
 
@@ -127,8 +130,8 @@ title and body form. Include:
 Read the ticket number from the create command's output. Never guess the next
 number. Use the repo's identity and label rules.
 
-Product doc PRs must follow the repo's review, issue-link, label, artifact, and
-approval rules.
+When the repo uses PRs, product doc PRs must follow its review, issue-link,
+label, artifact, and approval rules.
 
 ## Give work to the TL
 
@@ -138,7 +141,7 @@ Return this record:
 tickets: ["#N"]
 milestone: <name>
 board_state: <state>
-product_doc: <path or PR URL>
+product_doc: <path, pushed branch, or PR URL>
 priority: [<ticket and reason>]
 open_questions: [<question, owner, due date>]
 risks_and_dependencies: [<item>]
@@ -161,5 +164,6 @@ send their tasks, but it must still:
 - Put one part that can ship alone in each ticket.
 - Put each ticket on the board with a milestone when the repo uses them.
 - Keep worker escalation inside the agent process.
-- Deliver repo changes only as green PRs with no open `BLOCK`.
+- Deliver repo changes only through the repo's chosen mode, with green checks
+  and no open `BLOCK`.
 - Never write application code. Never merge.
