@@ -60,9 +60,7 @@ Read only the files that exist and that the changed paths need.
 - Runtime: `<Codex | Claude Code | other>`.
 - Project agent files: `<paths>`.
 - Worker types in order: `<type 1>`, `<type 2>`, `<last type>`.
-- Model and effort for each worker type: `<provider values>`.
 - Reviewer type: `<type>`.
-- Reviewer model and effort: `<provider values>`.
 - Each worker type may receive `<number>` real `BLOCK` results.
 - At most `<number>` agents may run at once.
 

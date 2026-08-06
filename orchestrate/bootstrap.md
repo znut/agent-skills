@@ -19,17 +19,21 @@ not choose a silent default.
 3. Work tracker: GitHub Projects, none, or a service that a person updates.
 4. Review: fresh reviewer with a SHA marker and hook, or fresh reviewer without
    a marker.
-5. User review: confirm that the agent will open each clean PR and wait. The
-   user reviews and merges it. Do not offer an automatic merge.
+5. User review: for PR delivery, confirm that the agent will open each clean PR
+   and wait while the user reviews and merges it. For push-only delivery,
+   confirm that the agent stops after it reports the pushed branch. Do not
+   offer an automatic merge.
 6. Exact check commands and command runner.
 7. Existing labels, new labels, or no labels.
 8. Doc read order.
-9. Runtime, project agent file format, worker types in order, model and effort
-   for each type, reviewer type, allowed `BLOCK` results per worker type, and
-   worker limit.
+9. Runtime, project agent file format, worker types in order, reviewer type,
+   allowed `BLOCK` results per worker type, and worker limit.
+10. Model and effort for each type. Put these values only in the chosen
+    runtime's project agent files.
 
-Write the answers to `.agent/orchestrate.md`. Include any identity or review
-hook rules. Require identity and SHA checks unless the user rejects them.
+Write answers 1 through 9 to `.agent/orchestrate.md`. Include any identity or
+review hook rules. Require identity and SHA checks unless the user rejects
+them.
 
 Add only the project agent files for the chosen runtime:
 
@@ -44,7 +48,7 @@ settings.
 ## Deliver the first rules
 
 The normal worker process cannot read rules that have not reached the default
-branch. Use this setup process only for the first rules PR:
+branch. Use this setup process only for the first rules change:
 
 1. Follow `/orchestrate` to choose the default-branch base and create a separate
    worktree. The current setup agent owns this change.
@@ -55,16 +59,17 @@ branch. Use this setup process only for the first rules PR:
 4. Commit, then start the declared reviewer type in its own detached worktree
    at that commit. Give it the approved answers, changed paths, and generic
    checks because the remote default branch has no repo rules yet. Let the
-   provider agent file choose the model and effort.
+   provider agent definition choose the model and effort.
 5. A reviewer crash, timeout, or tool fault returns `ERROR` and does not use a
    review attempt. Start a new reviewer of the same type.
 6. After each `BLOCK` below the approved count, the same setup agent fixes all
    findings, runs checks, commits, and asks a new reviewer. At the limit, push
    the branch, open no PR, and send the branch and findings to the next worker
    type. Only the last worker type may stop and report the saved work.
-7. After `PASS`, make no source or doc change. Write the SHA marker if the new
-   hook needs one, push, open the setup PR, report its URL, and wait for the
-   user. Never merge.
+7. After `PASS`, make no source or doc change and push the reviewed commit. For
+   push-only delivery, report the branch and stop. For PR delivery, write the
+   SHA marker if the new hook needs one, open the setup PR, report its URL, and
+   wait for the user. Never merge.
 
 Do not send the first setup through the normal worker sequence. Once the user
 merges the rules, normal runs read `.agent/orchestrate.md`. Edit that file when
