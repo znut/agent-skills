@@ -24,8 +24,9 @@ not choose a silent default.
 6. Exact check commands and command runner.
 7. Existing labels, new labels, or no labels.
 8. Doc read order.
-9. Runtime, project agent file format, worker types in order, reviewer type,
-   allowed `BLOCK` results per worker type, and worker limit.
+9. Runtime, project agent file format, worker types in order, model and effort
+   for each type, reviewer type, allowed `BLOCK` results per worker type, and
+   worker limit.
 
 Write the answers to `.agent/orchestrate.md`. Include any identity or review
 hook rules. Require identity and SHA checks unless the user rejects them.
@@ -51,14 +52,17 @@ branch. Use this setup process only for the first rules PR:
    and the hook files that the user approved.
 3. Run the checks found in the interview. Parse each config file with its
    normal parser and format each doc.
-4. Commit, then ask a fresh general reviewer to check the exact commit. Give it
-   the approved answers, changed paths, and generic checks because the remote
-   default branch has no repo rules yet. Pass the reviewer model and effort
-   that the user chose when the runtime allows explicit settings.
-5. After each `BLOCK` below the approved count, the same setup agent fixes all
-   findings, runs checks, commits, and asks a new reviewer. If the count reaches
-   the limit, stop and report the saved commit and findings.
-6. After `PASS`, make no source or doc change. Write the SHA marker if the new
+4. Commit, then start the declared reviewer type in its own detached worktree
+   at that commit. Give it the approved answers, changed paths, and generic
+   checks because the remote default branch has no repo rules yet. Let the
+   provider agent file choose the model and effort.
+5. A reviewer crash, timeout, or tool fault returns `ERROR` and does not use a
+   review attempt. Start a new reviewer of the same type.
+6. After each `BLOCK` below the approved count, the same setup agent fixes all
+   findings, runs checks, commits, and asks a new reviewer. At the limit, push
+   the branch, open no PR, and send the branch and findings to the next worker
+   type. Only the last worker type may stop and report the saved work.
+7. After `PASS`, make no source or doc change. Write the SHA marker if the new
    hook needs one, push, open the setup PR, report its URL, and wait for the
    user. Never merge.
 

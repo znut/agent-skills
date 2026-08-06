@@ -14,10 +14,11 @@ description: >
 
 Load `/orchestrate`. Follow its rules for each repo file change.
 
-Read `.agent/orchestrate.md` and each file it names from the remote default
-branch tip. Pay close attention to the tracker, board, ticket form, milestones,
-product doc paths, labels, and outside sources of requirements. If the rules do
-not exist, use the `/orchestrate` setup process.
+Read the repo rules and each file they name from the remote default branch tip
+as `/orchestrate` directs. Pay close attention to the tracker, board, ticket
+form, milestones, product doc paths, labels, and outside sources of
+requirements. If neither the main file nor a full legacy file supplies rules,
+use the `/orchestrate` setup process.
 
 If the repo rules give the PM a session-start list, run it. Read saved notes,
 current docs, and local PR status from the sources they name. If the rules use
