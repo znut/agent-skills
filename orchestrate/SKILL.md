@@ -62,12 +62,25 @@ Both may be loaded at once on a small project. If neither is loaded and the work
 
 > **A wrong or red PR gets a FRESH worker re-dispatched with the findings** — the orchestrator fixes nothing inline. The main thread hand-edits only its OWN work (skills, memory, chores it owns).
 
+Orchestrator-owned in-repo work is not exempt from delivery: start it from the
+freshest linear default tip in an isolated worktree, obtain a zero-`BLOCK` PASS,
+push, open the PR, and wait for user approval.
+
 > **Every worker-tier dispatch and every review round = a NEW agent** with a
 > fully self-contained prompt: branch name + current state, findings verbatim,
 > pipeline steps. A still-running worker folds findings from its first blocked
 > review; never resume a completed worker or reviewer. One exception: message a
 > STILL-RUNNING worker to adjust its in-flight scope. The orchestrator's session
 > is the only long-running context.
+
+**End-to-end ownership belongs to the delivery chain.** A tier returning
+`blocked` is an internal handoff, not task completion: the orchestrator
+immediately dispatches the next declared tier with the pushed branch and every
+finding, without handing partial work to the user. Success has one terminal
+state: verification is green, a fresh review returns PASS with zero unresolved
+`BLOCK` findings, the final branch is pushed, the PR is open with required
+metadata/artifacts, and its URL is reported to the user. Then stop and wait for
+the user's review and explicit merge approval. Never merge.
 
 ---
 
@@ -93,7 +106,7 @@ Every worker prompt MUST include:
 
 1. **Read order**: FIRST the conventions file (the worker-scoped conventions file when the repo declares one) + review checklist **from `origin/<default>` tip via `git show`** (your worktree copy may predate rule changes — quote this instruction verbatim in the prompt), then the **[conventions]** doc read order (project docs → plan → decisions → scoped plan/progress). When the orchestrator relays a project rule into a prompt, it QUOTES the conventions wording verbatim — paraphrasing has diluted rules into violations.
 2. **Scope**: "Work only inside your worktree. Touch only `<declared paths>`. One logical change. Keep it small."
-3. **Branch**: "Create branch `feat/<slug>` | `fix/<slug>` | `chore/<slug>` branched from **latest `origin/<default>`**. FIRST run `git fetch origin && git checkout -B <branch> origin/<default>`, then `git log -1 origin/<default>` and confirm your HEAD matches it. If your worktree HEAD ≠ `origin/<default>`, reset onto it before writing a line of code — stale local state is the trap."
+3. **Base + branch**: "Work only in an isolated worktree. FIRST run `git fetch origin`. For an initial worker, select the freshest **linear** default-branch tip: if local `<default>` is missing, use `origin/<default>`; if one ref is an ancestor of the other, use the descendant; if equal, use either; if they diverged, STOP and report instead of guessing. Never choose by commit timestamp. Create `feat/<slug>` | `fix/<slug>` | `chore/<slug>` from that selected tip and confirm HEAD equals it before editing. For an escalated/rework worker, continue from the pushed `origin/<branch>` tip instead of resetting to the default branch."
 4. **Verify gate**: "Before returning, run the **[conventions]** verify commands (scoped). Do not return if any fail — fix or report."
    4b. **Code & test economy (DEFAULT TO LESS)**: "Write the MINIMUM code that is correct, clear, and meets the task. Prefer the simpler design that satisfies the spec; skip speculative flexibility and machinery the requirement doesn't need. **Tests: cover OUR logic + the load-bearing edge cases + known bugs — the framework's own behavior and input permutations stay untested.** A focused ~8–15 test suite beats 32. Match the surrounding code's density + comment level. **Comments: none unless necessary — make the code self-describe (clear names, small functions, obvious structure). A comment must ADD VALUE the code cannot: non-obvious why, a gotcha/invariant, or a decision-record/spec ref for business rules. Never provenance (names/dates/'per <person>' as authority — that lives in git blame and tickets), never WHAT the code already shows.** If unsure whether something is needed, leave it out and note it in open_questions."
    4c. **Project code rules**: paste the **[conventions]** worker code-rules block verbatim (banned APIs, required shared libs, style constraints) — some repos keep it as a marked section of the worker-scoped conventions file; paste that section.
@@ -117,7 +130,7 @@ Every worker prompt MUST include:
    artifacts: <URL(s) if the conventions require any for this diff type, else "n/a">
    open_questions: [unresolved tech/business questions — note in the PR body too]
    ```
-7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. PASS path: verify gate green → fresh-reviewer gate PASS (findings folded) → lint green the way CI checks it → `git push -u origin <branch>` → open a labeled PR in the conventions' draft/ready state (honoring any pre-PR hook) → attach required artifacts → attempt to remove your own worktree (plain `git worktree remove` from outside it, never `--force`; harness pid-lock = expected, report `harness-locked`; modified/untracked refusal = unpushed work, report loudly) → return the PR URL. BLOCKED path after the review allowance is exhausted: lint → commit all work → push the continuation branch → open no PR → attempt cleanup → return `blocked` with every finding verbatim."
+7. **Full pipeline**: "You own the whole pipeline — do NOT hand back uncommitted work. PASS path: verify gate green → fresh-reviewer gate PASS with zero unresolved `BLOCK` findings (findings folded) → lint green the way CI checks it → `git push -u origin <branch>` → open a labeled PR in the conventions' draft/ready state (honoring any pre-PR hook) → attach required artifacts → attempt to remove your own worktree (plain `git worktree remove` from outside it, never `--force`; harness pid-lock = expected, report `harness-locked`; modified/untracked refusal = unpushed work, report loudly) → return the PR URL → wait for the user's review and explicit merge approval; never merge. BLOCKED path after the review allowance is exhausted: lint → commit all work → push the continuation branch → open no PR → attempt cleanup → return `blocked` with every finding verbatim for immediate next-tier dispatch."
 
 If a worker hits an ambiguity it cannot resolve (business logic, decision-record conflict, scope unclear), it MUST surface it in `open_questions` (in the PR body + its return) — do not guess on business decisions.
 
@@ -140,6 +153,9 @@ types.
   NEW reviewer checks the revision. After the configured number of `BLOCK`
   verdicts, the worker returns without a PR; dispatch a FRESH worker at the next
   tier with every finding verbatim.
+- Treat every non-final blocked return as an internal continuation. Keep
+  ownership in the orchestration loop and dispatch the next tier immediately;
+  do not present the pushed continuation branch as completed delivery.
 - Exhausting the final tier is a HARD STOP. Report the accumulated findings and
   diffs; do not invent another tier.
 - Reviewer crashes, timeouts, and tooling failures get a fresh replacement at
@@ -161,7 +177,7 @@ bootstrap flow. Do not guess a provider's model names or inheritance behavior.
 
 - **Refine before dispatch**: resolve open questions with the user first using the runtime's user-input mechanism for real tech/business forks — tradeoffs + a recommendation — then decompose into small independent tasks (disjoint files; shared-file tasks run sequentially).
 - **⛔ The primary checkout is the USER'S — no agent works in it.** Every agent, the orchestrator included, does ALL file/git work in a worktree: use the runtime's isolated-worktree option when available, otherwise create one explicitly with `git worktree add`. Never `git checkout`/`pull`/commit/edit in the primary tree — multiple agents share the machine, and branch-switching there corrupts each other's state. `git fetch origin` is the only allowed primary-tree operation.
-- **Pre-dispatch freshness (EVERY TIME)**: `git fetch origin` before spawning ANY worker (no checkout/pull — see the rule above). The worker contract (#3: branch from `origin/<default>` + HEAD confirmation) guarantees a fresh base regardless of what the worktree forked from.
+- **Pre-dispatch freshness (EVERY TIME)**: `git fetch origin` before spawning ANY worker (no checkout/pull in the primary tree — see the rule above). For initial work, resolve the freshest linear tip between local `<default>` and `origin/<default>` exactly as task contract #3 defines; divergence is a stop, never a timestamp guess. For escalation/rework, use the pushed continuation branch tip.
 - **Pre-dispatch existing-work check (EVERY TIME)**: before dispatching a ticket, search for work that already exists — `gh pr list --search "<ticket # / feature nouns>"` plus `git ls-remote origin | grep <slug>`. An open PR or pushed branch for the same work means STOP and reconcile with the user, not re-build (two lanes once built the same ticket concurrently).
 - **Independent tasks** → parallel background subagent calls in isolated worktrees, capped by **[conventions]** and the runtime's concurrency limit.
 - **Same-shaped batch over a list** → use the runtime's batch primitive when available; otherwise dispatch bounded parallel workers.
@@ -180,7 +196,7 @@ The worker already self-reviewed, got green, pushed, opened the labeled PR, and 
 3. Confirm the review gate ran in a fresh reviewer and findings were folded (the PR body should note it).
 4. Spot-check: scope is right, no secrets/`.env`/lockfile churn beyond a real dep change, decision-record compliance.
 5. **First-of-a-kind artifacts get eyeballed**: the first time a task produces a required artifact through a NEW harness/fixture (e.g. a package's first screenshot fixtures), open the artifact itself and look at it — a presence-check alone has passed visibly-broken artifacts.
-6. **PASS** → report the PR URL to the user. **FAIL/RED/wrong/unlabeled** → **re-dispatch a fresh worker** with the specific findings (fresh worktree, checking out the pushed branch). ⛔ Do NOT fix it yourself.
+6. **PASS** → report the PR URL and wait for the user's review and explicit merge approval. **FAIL/RED/wrong/unlabeled or any unresolved `BLOCK`** → **re-dispatch a fresh worker** with the specific findings (fresh worktree, checking out the pushed branch). ⛔ Do NOT fix it yourself and do not present the PR as ready.
 
 Accept only green, labeled PRs with their required artifacts — anything else bounces to a fresh worker.
 
@@ -215,13 +231,14 @@ gh pr create \
 - Draft vs ready: per **[conventions]** — default ready-for-review; some repos open every pipeline PR draft and the orchestrator flips it ready after final check.
 - **Auto-close tickets with a closing keyword**: `Resolves #<issue>` in the body closes it on merge. A bare `#N` only links — it does NOT close. Closing >1 ticket: repeat the keyword per issue (`Resolves #10, resolves #123`). For a parent/tracking issue that must stay open, use a plain `#N` link.
 - Keep small — if the diff grew beyond a single concern, split into two branches before pushing.
-- Report the PR URL to the user immediately.
+- Report the PR URL to the user immediately, then wait for their review and
+  explicit merge approval. Never merge on the user's behalf.
 
 ---
 
 ## Worktree lifecycle
 
-- **Born** at dispatch: use the runtime's isolated-worktree support when available; otherwise create an explicit worktree at the latest default tip. Runtime-created worktrees may be detached or session-locked; the repo's cleanup mechanism is the backstop.
+- **Born** at dispatch: use the runtime's isolated-worktree support when available; otherwise create an explicit worktree. Initial work starts at the freshest linear local/remote default tip from task contract #3; escalation/rework starts at the pushed continuation branch tip. Runtime-created worktrees may be detached or session-locked; the repo's cleanup mechanism is the backstop.
 - **Live**: the worker does ALL its work inside it; no other agent touches it.
 - **Dies with its worker**: after the PR is open and required artifacts are attached, the worker attempts to remove its OWN worktree as the last pipeline step — by explicit path, plain `git worktree remove <path>` (run from outside the tree). **NEVER `--force`, NEVER a bare `git worktree prune`** (a bare prune once deleted a live lane's tree). Two refusal cases, different meanings: a **harness pid-lock** is expected for harness-created worktrees (locked for the whole session; the harness/cleanup mechanism reclaims them) — report `harness-locked`, not an error; **modified/untracked files** means something never got committed or pushed — REPORT that loudly instead of forcing. Self-clean fully applies to self-made worktrees (`git worktree add` — orchestrator chores, doc edits).
 - **Rework = fresh tree**: a re-dispatched worker always gets a FRESH worktree and continues from the pushed branch — never revive or reuse a previous worker's tree. Trap: the original worker's still-locked worktree usually HOLDS the branch checkout, so a second worktree cannot check it out — work detached from `origin/<branch>`, push via `git push origin HEAD:refs/heads/<branch>`, then fast-forward the shared local branch ref to the pushed tip BEFORE running any tip-pinned marker script (they resolve `refs/heads/<branch>`; a stale local ref pins stale markers that a review-gate hook will happily accept).

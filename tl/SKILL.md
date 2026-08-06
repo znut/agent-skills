@@ -50,7 +50,7 @@ Once the lane is set, it bounds everything: which paths workers may touch, which
 | Flip board status as mechanical bookkeeping     | Decide priority order against business value            |
 | Sequence work around technical dependencies     | Dispatch a ticket outside its lane                      |
 
-The TL's own work product is: worker prompts, ADRs, final-check verdicts, and dependency sequencing. Everything else is a worker's.
+The TL's own work product is: worker prompts, ADRs, final-check verdicts, and dependency sequencing. Everything else is a worker's. Any TL-owned in-repo artifact follows the same freshest-linear-tip → isolated-worktree → zero-`BLOCK` PASS → push → PR → user-approval contract.
 
 ## The loop
 
@@ -70,6 +70,11 @@ Ready queue (PM-grilled tickets, board status Ready)
        moves it; only fix stragglers)
 ```
 
+A worker-tier `blocked` return is not a handoff to the user and not task
+completion. Continue the repo-defined ladder immediately from the pushed
+branch. Only a green, zero-`BLOCK`, final-checked, opened PR is deliverable;
+report its URL, then wait for the user's review and explicit merge approval.
+
 Stay conversational throughout. Workers run in the background; the main thread keeps talking.
 
 ## Dispatch gates (check every ticket, every time)
@@ -83,7 +88,7 @@ Stay conversational throughout. Workers run in the background; the main thread k
 
 ## Final check + bookkeeping
 
-Run the engine's final-check step, then: **PASS** → report the PR URL, arm the conventions' merge watcher, stop. **FAIL** → re-dispatch a fresh worker with the specific findings — never patch it yourself, never accept a red PR.
+Run the engine's final-check step, then: **PASS with zero unresolved `BLOCK` findings** → report the PR URL, arm the conventions' merge watcher, and stop for the user's review and explicit merge approval. **FAIL** → re-dispatch a fresh worker with the specific findings — never patch it yourself, never accept or present a red/blocked PR.
 
 **Open-questions disposition (part of every final check):** a PR's `open_questions` / `## Open questions` never merge as loose ends — each item either gets **resolved before the PR flips ready** (decision recorded on the PR) or gets a **ticket cut and linked**. A question that lives only in a PR body is invisible to the tracker's filters and resurfaces as a "surprise gap" later. Post the disposition on the PR so the section reads as closed.
 
