@@ -155,21 +155,29 @@ function apiIsMutation(args) {
 	return /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)\b/.test(args)
 }
 
-const normalizedCmd = shellCommands(cmd)
-	.map((words) => words.join(" "))
-	.join("\n")
-const offenders = new Set()
-let m
-for (const identityCmd of new Set([cmd, normalizedCmd])) {
-	while ((m = GH_MUT.exec(identityCmd))) {
-		if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.add(m[0])
+function hasGhTokenAssignment(words) {
+	return words.some((word) => /^GH_TOKEN=/.test(word))
+}
+
+function prefixHasGhToken(prefix) {
+	const commands = shellCommands(prefix)
+	return hasGhTokenAssignment(commands[commands.length - 1] || [])
+}
+
+function collectIdentityOffenders(input, inlineToken, offenders) {
+	let match
+	while ((match = GH_MUT.exec(input))) {
+		const hasToken = inlineToken === undefined ? prefixHasGhToken(match[1] || "") : inlineToken
+		if (!hasToken) offenders.add(match[0])
 	}
-	while ((m = GH_API.exec(identityCmd))) {
-		if (!apiIsMutation(m[2] || "")) continue
-		if (!/(?:^|\s)GH_TOKEN=/.test(m[1] || "")) offenders.add(m[0])
+	while ((match = GH_API.exec(input))) {
+		if (!apiIsMutation(match[2] || "")) continue
+		const hasToken = inlineToken === undefined ? prefixHasGhToken(match[1] || "") : inlineToken
+		if (!hasToken) offenders.add(match[0])
 	}
 }
-if (offenders.size && policy().identity) {
+
+function blockIdentity(offenders) {
 	process.stderr.write(
 		`⛔ bot-identity guard: mutating gh invocation(s) WITHOUT an inline GH_TOKEN= prefix — would author/post as the HUMAN keychain login:\n` +
 			[...offenders]
@@ -478,6 +486,19 @@ function hasDraftFlag(args) {
 	}
 	return draft
 }
+
+const identityOffenders = new Set()
+collectIdentityOffenders(cmd, undefined, identityOffenders)
+for (const words of shellCommands(cmd)) {
+	const index = ghCommandIndex(words)
+	if (index < 0) continue
+	collectIdentityOffenders(
+		words.slice(index).join(" "),
+		hasGhTokenAssignment(words.slice(0, index)),
+		identityOffenders,
+	)
+}
+if (identityOffenders.size && policy().identity) blockIdentity(identityOffenders)
 
 const prCreates = shellCommands(cmd)
 	.map(prCreateArgs)
