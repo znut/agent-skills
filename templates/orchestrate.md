@@ -24,7 +24,6 @@ documents.
 - review_marker: `<required | off>`
 - verify_marker: `<required | off>`
 - draft_first: `<required | delete this line>`
-- label_check: `<required | delete this line>`
 
 ## Work areas
 
@@ -90,6 +89,13 @@ without marker>`.
 ## PRs
 
 Delete this section when delivery stops after commit and push.
+
+### Draft-first
+
+When `draft_first: required` is set, the worker opens with `--draft`, adds
+required artifacts, and waits for checks. The manager checks the exact PR and
+SHA, CI, labels, text, and artifacts, then marks it ready. The user reviews the
+ready PR.
 
 ### Labels
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PreToolUse/Bash gate, two jobs:
+ * PreToolUse/Bash gate, three jobs:
  *
  * 1. Bot-identity guard: EVERY mutating
  *    `gh` invocation — pr/issue/project/label/release/repo mutations and
@@ -15,7 +15,10 @@
  *    like `; gh pr comment …` can trip the guard — fails in the block
  *    direction; reword the string or use --body-file.
  *
- * 2. Review/verify markers for `gh pr create` (unchanged): block unless BOTH
+ * 2. Draft-first: an explicit repo setting requires `--draft` on every
+ *    `gh pr create`.
+ *
+ * 3. Review/verify markers for `gh pr create` (unchanged): block unless BOTH
  *    markers are fresh for the head branch (each pinned to the branch tip
  *    sha — commits after invalidate):
  *      review marker  (<git-common-dir>/.review-gate/<branch>; legacy
@@ -27,8 +30,8 @@
  * Fail-OPEN by design: any error / non-repo / parse failure → exit 0 (allow).
  * A broken gate must never block PRs globally. Escape hatches:
  * `REVIEW_GATE_SKIP=1` (legacy alias `ZCR_SKIP=1`) skips the marker checks
- * (pure-docs exception; NEVER the identity guard); `VERIFY_SKIP=1` skips only
- * the verify marker.
+ * (pure-docs exception; NEVER the identity or draft-first guard);
+ * `VERIFY_SKIP=1` skips only the verify marker.
  */
 const fs = require("fs")
 const path = require("path")
@@ -48,24 +51,24 @@ try {
 const cmd = (data && data.tool_input && data.tool_input.command) || ""
 const cwd = (data && data.cwd) || process.cwd()
 
-// ── per-repo opt-OUT (default-enforce, per-repo opt-out) ───────────────────────────────
-// Default is ENFORCE (identical to the original machine-global behavior).
-// A repo may relax a guard only through a human-committed `## Hook settings`
+// ── per-repo settings ──────────────────────────────────────────────────────
+// A repo may set a guard only through a human-committed `## Hook settings`
 // section in .agent/orchestrate.md:
 //   ## Hook settings
 //   - bot_identity: off      # repo uses the human's own gh auth — no bot
 //   - review_marker: off
 //   - verify_marker: off
+//   - draft_first: required
 // A legacy `## Enforcement policy` section in .claude/orchestrate.md also
 // works. The main file wins when both files hold a settings section.
-// Anything other than the literal value `off` (absent section, absent file,
-// unreadable repo) keeps that guard ON. The /orchestrate bootstrap interview
-// writes this section from the user's explicit answers — agents never author
-// an `off` themselves.
+// Identity, review, and verify default ON and only literal `off` relaxes them.
+// Draft-first defaults OFF and only literal `required` enables it. The
+// /orchestrate bootstrap interview writes this section from the user's explicit
+// answers — agents never author an `off` or `required` themselves.
 let _policy
 function policy() {
 	if (_policy) return _policy
-	const on = { identity: true, review: true, verify: true }
+	const on = { identity: true, review: true, verify: true, draft: false }
 	try {
 		const top = execSync("git rev-parse --show-toplevel", {
 			cwd,
@@ -96,10 +99,15 @@ function policy() {
 				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
 				return !!match && match[1] === "off"
 			}
+			const isRequired = (key) => {
+				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
+				return !!match && match[1] === "required"
+			}
 			return (_policy = {
 				identity: !isOff("bot_identity"),
 				review: !isOff("review_marker"),
 				verify: !isOff("verify_marker"),
+				draft: isRequired("draft_first"),
 			})
 		}
 		return (_policy = on)
@@ -170,9 +178,21 @@ if (offenders.length && policy().identity) {
 	process.exit(2)
 }
 
-// ── 2. review/verify markers for `gh pr create` ─────────────────────────────
-const GH_PR_CREATE = new RegExp(`${CMD_POS}${ENV_PREFIX}gh\\s+${FILLER}pr\\s+create\\b`)
-if (!GH_PR_CREATE.test(cmd)) allow()
+// ── 2. draft-first and review/verify markers for `gh pr create` ─────────────
+const GH_PR_CREATE = new RegExp(`${CMD_POS}${ENV_PREFIX}gh\\s+${FILLER}pr\\s+create\\b([^;&|\`\\n]*)`, "g")
+const prCreates = [...cmd.matchAll(GH_PR_CREATE)]
+if (prCreates.length === 0) allow()
+
+if (policy().draft) {
+	const hasDraftFlag = (args) => /(?:^|\s)--draft(?:\s|$|=(?:true|1)(?=\s|$))/i.test(args)
+	if (prCreates.some((pr) => !hasDraftFlag(pr[2] || ""))) {
+		process.stderr.write(
+			"⛔ draft-first gate: each gh pr create requires --draft. Add required artifacts and wait for checks before the manager marks the PR ready.\n",
+		)
+		process.exit(2)
+	}
+}
+
 // Deliberate, explicit override (markers only — identity guard already ran).
 if (/\b(?:REVIEW_GATE_SKIP|ZCR_SKIP)=1\b/.test(cmd)) allow()
 // Explicit human-committed per-repo opt-out (see policy() above); default ON.

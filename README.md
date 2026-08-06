@@ -84,6 +84,9 @@ every repo that links these skills.
 - All delivery needs green checks, a fresh `PASS`, no open `BLOCK`, and a pushed
   branch. PR delivery also needs an open PR. Push-only delivery reports the
   reviewed branch and stops.
+- With `draft_first: required`, a worker opens with `--draft`, adds artifacts,
+  and waits for checks. The manager checks the exact PR and SHA, CI, labels,
+  text, and artifacts before marking it ready for the user.
 - The user reviews and merges each PR. Agents never merge.
 
 ## Tools
