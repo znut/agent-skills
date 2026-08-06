@@ -80,6 +80,34 @@ test("trailing text on the legacy heading does not turn off a guard", () => {
 	assert.equal(result.status, 2)
 })
 
+test("main hook settings require one literal space after ##", () => {
+	for (const heading of ["##\tHook settings", "##  Hook settings"]) {
+		const result = runHook({
+			".agent/orchestrate.md": `${heading}\n\n- bot_identity: off\n`,
+		})
+		assert.equal(result.status, 2, heading)
+	}
+})
+
+test("legacy settings require one literal space after ##", () => {
+	for (const heading of ["##\tEnforcement policy", "##  Enforcement policy"]) {
+		const result = runHook({
+			".claude/orchestrate.md": `${heading}\n\n- bot_identity: off\n`,
+		})
+		assert.equal(result.status, 2, heading)
+	}
+})
+
+test("allowed headings permit trailing horizontal whitespace", () => {
+	for (const [file, heading] of [
+		[".agent/orchestrate.md", "## Hook settings \t"],
+		[".claude/orchestrate.md", "## Enforcement policy \t"],
+	]) {
+		const result = runHook({ [file]: `${heading}\n\n- bot_identity: off\n` })
+		assert.equal(result.status, 0, file)
+	}
+})
+
 const draftFirstSettings =
 	"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: required\n"
 
@@ -108,6 +136,31 @@ test("draft-first setting checks every PR creation", () => {
 	assert.equal(result.status, 2)
 })
 
+test("draft-first setting recognizes command and env wrappers", () => {
+	for (const command of [
+		"command gh pr create --title test",
+		"env -i gh pr create --title test",
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 2, command)
+	}
+})
+
+test("draft-first ignores text and comments that only look like --draft", () => {
+	for (const command of [
+		'gh pr create --title "--draft"',
+		'gh pr create --body "--draft"',
+		"gh pr create -F --draft",
+		"gh pr create -T --draft",
+		"gh pr create --draft=false",
+		"gh pr create --title test # --draft",
+		"gh pr create -- --draft",
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 2, command)
+	}
+})
+
 test("missing draft-first setting does not require a draft PR", () => {
 	const result = runHook(
 		{
@@ -117,6 +170,20 @@ test("missing draft-first setting does not require a draft PR", () => {
 		"gh pr create --title test",
 	)
 	assert.equal(result.status, 0)
+})
+
+test("level-one and level-two headings end hook settings", () => {
+	for (const heading of ["# Other rules", "## Other rules", "#", "##"]) {
+		const result = runHook(
+			{
+				".agent/orchestrate.md":
+					"## Hook settings\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n\n" +
+						`${heading}\n\n- draft_first: required\n`,
+			},
+			"gh pr create --title test",
+		)
+		assert.equal(result.status, 0, heading)
+	}
 })
 
 test("legacy draft-first setting blocks a PR without --draft", () => {

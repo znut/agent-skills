@@ -79,11 +79,11 @@ function policy() {
 		const sources = [
 			{
 				file: path.join(top, ".agent", "orchestrate.md"),
-				section: /^##[ \t]+Hook settings[ \t]*\r?$\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+				section: /^## Hook settings[ \t]*\r?$\n([\s\S]*?)(?=^#{1,2}(?:[ \t]|\r?$)|$(?![\s\S]))/m,
 			},
 			{
 				file: path.join(top, ".claude", "orchestrate.md"),
-				section: /^##[ \t]+Enforcement policy[ \t]*\r?$\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+				section: /^## Enforcement policy[ \t]*\r?$\n([\s\S]*?)(?=^#{1,2}(?:[ \t]|\r?$)|$(?![\s\S]))/m,
 			},
 		]
 		for (const { file, section } of sources) {
@@ -179,13 +179,279 @@ if (offenders.length && policy().identity) {
 }
 
 // ── 2. draft-first and review/verify markers for `gh pr create` ─────────────
-const GH_PR_CREATE = new RegExp(`${CMD_POS}${ENV_PREFIX}gh\\s+${FILLER}pr\\s+create\\b([^;&|\`\\n]*)`, "g")
-const prCreates = [...cmd.matchAll(GH_PR_CREATE)]
+// This small lexer preserves shell word boundaries, so body text and comments
+// cannot pose as options. It recognizes the `command` and `env` wrappers that
+// still execute `gh` directly.
+function commandSubstitution(input, start) {
+	let depth = 1
+	let quote = ""
+	let index = start + 2
+	while (index < input.length) {
+		const char = input[index]
+		if (quote) {
+			if (char === quote) quote = ""
+			else if (char === "\\") index += 1
+			index += 1
+			continue
+		}
+		if (char === "'" || char === '"') {
+			quote = char
+			index += 1
+			continue
+		}
+		if (char === "\\") {
+			index += 2
+			continue
+		}
+		if (char === "$") {
+			if (input[index + 1] === "(") {
+				depth += 1
+				index += 2
+				continue
+			}
+		}
+		if (char === "(") {
+			depth += 1
+			index += 1
+			continue
+		}
+		if (char === ")") {
+			depth -= 1
+			index += 1
+			if (depth === 0) return { end: index, contentEnd: index - 1 }
+			continue
+		}
+		index += 1
+	}
+	return { end: input.length, contentEnd: input.length }
+}
+
+function backtickSubstitution(input, start) {
+	let index = start + 1
+	while (index < input.length) {
+		if (input[index] === "\\") {
+			index += 2
+			continue
+		}
+		if (input[index] === "`") return { end: index + 1, contentEnd: index }
+		index += 1
+	}
+	return { end: input.length, contentEnd: input.length }
+}
+
+function shellCommands(input) {
+	const commands = []
+	let words = []
+	let word = ""
+	let hasWord = false
+	let quote = ""
+	let index = 0
+	const endWord = () => {
+		if (!hasWord) return
+		words.push(word)
+		word = ""
+		hasWord = false
+	}
+	const endCommand = () => {
+		endWord()
+		if (words.length) commands.push(words)
+		words = []
+	}
+	while (index < input.length) {
+		const char = input[index]
+		if (quote === "'") {
+			if (char === "'") quote = ""
+			else word += char
+			index += 1
+			continue
+		}
+		if (quote === '"') {
+			if (char === '"') {
+				quote = ""
+				index += 1
+				continue
+			}
+			if (char === "$") {
+				if (input[index + 1] === "(") {
+					const sub = commandSubstitution(input, index)
+					commands.push(...shellCommands(input.slice(index + 2, sub.contentEnd)))
+					word += input.slice(index, sub.end)
+					hasWord = true
+					index = sub.end
+					continue
+				}
+			}
+			if (char === "`") {
+				const sub = backtickSubstitution(input, index)
+				commands.push(...shellCommands(input.slice(index + 1, sub.contentEnd)))
+				word += input.slice(index, sub.end)
+				hasWord = true
+				index = sub.end
+				continue
+			}
+			if (char === "\\" && index + 1 < input.length) {
+				word += input[index + 1]
+				hasWord = true
+				index += 2
+				continue
+			}
+			word += char
+			hasWord = true
+			index += 1
+			continue
+		}
+		if (char === "'" || char === '"') {
+			quote = char
+			hasWord = true
+			index += 1
+			continue
+		}
+		if (char === "\\" && index + 1 < input.length) {
+			word += input[index + 1]
+			hasWord = true
+			index += 2
+			continue
+		}
+		if (char === "$") {
+			if (input[index + 1] === "(") {
+				const sub = commandSubstitution(input, index)
+				commands.push(...shellCommands(input.slice(index + 2, sub.contentEnd)))
+				word += input.slice(index, sub.end)
+				hasWord = true
+				index = sub.end
+				continue
+			}
+		}
+		if (char === "`") {
+			const sub = backtickSubstitution(input, index)
+			commands.push(...shellCommands(input.slice(index + 1, sub.contentEnd)))
+			word += input.slice(index, sub.end)
+			hasWord = true
+			index = sub.end
+			continue
+		}
+		if (/\s/.test(char)) {
+			endWord()
+			index += 1
+			continue
+		}
+		if (char === "#" && !hasWord) {
+			while (index < input.length && input[index] !== "\n") index += 1
+			continue
+		}
+		if (char === ";" || char === "\n" || char === "|" || char === "&") {
+			endCommand()
+			if ((char === "|" || char === "&") && input[index + 1] === char) index += 1
+			index += 1
+			continue
+		}
+		word += char
+		hasWord = true
+		index += 1
+	}
+	endCommand()
+	return commands
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+const ENV_VALUE_OPTIONS = new Set(["-C", "-u", "--chdir", "--unset"])
+const GH_VALUE_OPTIONS = new Set([
+	"-R",
+	"--browser",
+	"--config",
+	"--hostname",
+	"--pager",
+	"--repo",
+])
+const PR_CREATE_VALUE_OPTIONS = new Set([
+	"-R",
+	"-a",
+	"-B",
+	"-b",
+	"-F",
+	"-H",
+	"-l",
+	"-m",
+	"-p",
+	"-r",
+	"-T",
+	"-t",
+	"--assignee",
+	"--base",
+	"--body",
+	"--body-file",
+	"--browser",
+	"--config",
+	"--head",
+	"--hostname",
+	"--label",
+	"--milestone",
+	"--pager",
+	"--project",
+	"--recover",
+	"--repo",
+	"--reviewer",
+	"--template",
+	"--title",
+])
+
+function ghCommandIndex(words) {
+	let index = 0
+	while (ASSIGNMENT.test(words[index] || "")) index += 1
+	while (words[index] === "command" || words[index] === "env") {
+		if (words[index] === "command") {
+			index += 1
+			while (words[index] && words[index].startsWith("-")) index += 1
+			continue
+		}
+		index += 1
+		while (words[index]) {
+			const word = words[index]
+			if (word === "--") {
+				index += 1
+				break
+			}
+			if (ASSIGNMENT.test(word)) {
+				index += 1
+				continue
+			}
+			if (!word.startsWith("-")) break
+			index += ENV_VALUE_OPTIONS.has(word) ? 2 : 1
+		}
+	}
+	return words[index] === "gh" ? index : -1
+}
+
+function prCreateArgs(words) {
+	let index = ghCommandIndex(words)
+	if (index < 0) return null
+	index += 1
+	while (words[index]) {
+		const word = words[index]
+		if (word === "pr" && words[index + 1] === "create") return words.slice(index + 2)
+		if (word === "--" || !word.startsWith("-")) return null
+		index += GH_VALUE_OPTIONS.has(word) ? 2 : 1
+	}
+	return null
+}
+
+function hasDraftFlag(args) {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index]
+		if (arg === "--") return false
+		if (arg === "--draft" || /^--draft=(?:true|1)$/i.test(arg)) return true
+		if (PR_CREATE_VALUE_OPTIONS.has(arg)) index += 1
+	}
+	return false
+}
+
+const prCreates = shellCommands(cmd)
+	.map(prCreateArgs)
+	.filter((args) => args !== null)
 if (prCreates.length === 0) allow()
 
 if (policy().draft) {
-	const hasDraftFlag = (args) => /(?:^|\s)--draft(?:\s|$|=(?:true|1)(?=\s|$))/i.test(args)
-	if (prCreates.some((pr) => !hasDraftFlag(pr[2] || ""))) {
+	if (prCreates.some((args) => !hasDraftFlag(args))) {
 		process.stderr.write(
 			"⛔ draft-first gate: each gh pr create requires --draft. Add required artifacts and wait for checks before the manager marks the PR ready.\n",
 		)
