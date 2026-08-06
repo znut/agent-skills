@@ -66,7 +66,8 @@ The shared skills do not choose or map models.
 - First work starts from the newer linear descendant of local or remote
   default. Split refs stop the work. Commit dates do not decide the base.
 - The repo's first worker type starts each task.
-- The same worker fixes the first `BLOCK`; a new reviewer checks the new commit.
+- The same worker fixes each `BLOCK` below the allowed count; a new reviewer
+  checks each new commit.
 - After the allowed `BLOCK` count, a new worker of the next type continues from
   the pushed task branch.
 - A reviewer error does not count as a `BLOCK`.

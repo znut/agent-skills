@@ -95,10 +95,10 @@ without marker>`.
 - Marker command: `<command | none>`.
 - PR hook: `<path | none>`.
 
-Commit before review. A fresh reviewer checks each commit. After the first
-`BLOCK`, the same worker fixes every finding and a new reviewer checks the new
-commit. Open no PR until a fresh reviewer returns `PASS` with no open `BLOCK`.
-Make no source or doc change after that `PASS`.
+Commit before review. A fresh reviewer checks each commit. After each `BLOCK`
+below the allowed count, the same worker fixes every finding and a new reviewer
+checks the new commit. Open no PR until a fresh reviewer returns `PASS` with no
+open `BLOCK`. Make no source or doc change after that `PASS`.
 
 ## PRs
 
