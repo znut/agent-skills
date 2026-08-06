@@ -128,6 +128,36 @@ test("draft-first setting permits a draft PR", () => {
 	assert.equal(result.status, 0)
 })
 
+test("draft-first setting recognizes shell line continuations", () => {
+	for (const lineBreak of ["\n", "\r\n"]) {
+		for (const command of [
+			`gh pr \\${lineBreak}create --title test`,
+			`gh "p\\${lineBreak}r" create --title test`,
+		]) {
+			const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+			assert.equal(result.status, 2, JSON.stringify(command))
+			assert.match(result.stderr, /draft-first gate/, JSON.stringify(command))
+		}
+	}
+})
+
+test("draft-first setting accepts every true boolean spelling", () => {
+	for (const value of ["1", "t", "T", "true", "TRUE", "True"]) {
+		const command = `gh pr create --draft=${value} --title test`
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 0, command)
+	}
+})
+
+test("draft-first setting rejects false and invalid boolean spellings", () => {
+	for (const value of ["0", "f", "F", "false", "FALSE", "False", "TrUe", "yes"]) {
+		const command = `gh pr create --draft=${value} --title test`
+		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
+		assert.equal(result.status, 2, command)
+		assert.match(result.stderr, /draft-first gate/, command)
+	}
+})
+
 test("draft-first setting checks every PR creation", () => {
 	const result = runHook(
 		{ ".agent/orchestrate.md": draftFirstSettings },
