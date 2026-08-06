@@ -31,7 +31,17 @@ description: >
 | Lock designs before UI tickets are dispatch-ready      | Merge PRs or override engineering tradeoffs                                    |
 | Hand off build-ready packages to the tech lead (`/tl`) | Sequence work around technical dependencies                                    |
 
-Docs and tickets are the PM's own work product — author small ones directly. For large doc batches or parallel research, delegate via the **/orchestrate** engine (workers open PRs labeled per the conventions' pm lane).
+Docs and tickets are the PM's own work product. Author small docs directly only
+through the engine's freshest-linear-tip → isolated-worktree → zero-`BLOCK`
+PASS → push → PR → user-approval contract. For large doc batches or parallel
+research, delegate via the **/orchestrate** engine (workers open PRs labeled per
+the conventions' PM lane).
+
+Delegated PM work follows the engine's full delivery contract: start from the
+freshest linear default tip in an isolated worktree, resolve every review
+`BLOCK`, push, and open the PR. A blocked continuation branch is internal work,
+not delivery. Report only the clean PR URL, then wait for the user's review and
+explicit merge approval; never merge.
 
 ## Design direction is a first-class PM deliverable
 
