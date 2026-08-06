@@ -2,7 +2,8 @@
 
 Copy this file to `.agent/orchestrate.md` only when you set up a repo. Fill in
 each required value and delete notes that do not apply. Normal agent runs read
-the copied repo file, not this template.
+the copied repo file, not this template. Do not copy the worker or review
+process from the shared skills into the repo file.
 
 ## Repo and delivery
 
@@ -33,15 +34,10 @@ documents.
 Areas: `<none | names>`. If the repo has more than one, a TL chooses one before
 it sends work.
 
-## Worktrees and base
+## Worktree settings
 
 - The main checkout belongs to `<person>`. Agents may run `git fetch origin`
   there and make no other change.
-- Each agent works in a separate git worktree.
-- For first work, fetch and compare local and remote default branches by
-  ancestry. Use the newer descendant. Use either if they match. Stop if they
-  have split. Do not compare commit dates.
-- For later work, use the pushed task branch in a new worktree.
 - Worktree folder or runtime setting: `<value>`.
 
 ## Read before work
@@ -61,17 +57,10 @@ Read only the files that exist and that the changed paths need.
 - Project agent files: `<paths>`.
 - Worker types in order: `<type 1>`, `<type 2>`, `<last type>`.
 - Reviewer type: `<type>`.
-- Each worker type may receive `<number>` real `BLOCK` results.
 - At most `<number>` agents may run at once.
 
 Provider files choose models and effort. This file names logical agent types.
 Do not copy model names from another runtime.
-
-Start each task with the first worker type. After it uses all allowed `BLOCK`
-results, push the task branch and send it with every finding to the next type.
-Stop and ask the user if the last type also uses all allowed `BLOCK` results.
-A reviewer crash or tool fault returns `ERROR` and does not count as a
-`BLOCK`.
 
 ## Checks
 
@@ -94,14 +83,8 @@ Known command limits: `<facts or none>`.
 without marker>`.
 - Marker command: `<command | none>`.
 - PR hook: `<path | none>`.
-
-Commit before review. A fresh reviewer checks each commit. After each `BLOCK`
-below the allowed count, the same worker fixes every finding and a new reviewer
-checks the new commit. Open no PR until a fresh reviewer returns `PASS` with no
-open `BLOCK`. Make no source or doc change after that `PASS`.
-
-Give each reviewer a separate detached worktree at the commit under review. A
-reviewer must not use the author's worktree.
+- Blocking findings: `<severities or rules that prevent PASS>`.
+- Nonblocking findings: `<severities, required action, or none>`.
 
 ## PRs
 

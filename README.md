@@ -2,7 +2,7 @@
 
 These skills help one person run product and engineering work through
 subagents. Workers use separate git worktrees and own each task through checks,
-review, push, and one small PR.
+review, and push. Repos that use PRs get one small PR per task.
 
 The skills contain no project facts or model choices. Each repo keeps its rules
 in `.agent/orchestrate.md` and its agent definitions in the active runtime's
@@ -31,9 +31,10 @@ repo update the installed skill at once.
 
 ## Set up a repo
 
-Run `/orchestrate` in a repo that lacks `.agent/orchestrate.md`. It reads
-`orchestrate/bootstrap.md`, checks what the repo already uses, and asks the
-user for each missing choice. It then adds:
+Run `/orchestrate` when a repo has neither `.agent/orchestrate.md` nor a full
+legacy `.claude/orchestrate.md`. It reads `orchestrate/bootstrap.md`, checks
+what the repo already uses, and asks the user for each missing choice. It then
+adds:
 
 - `.agent/orchestrate.md` with project rules;
 - Codex, Claude Code, or other project agent files for the chosen runtime;
@@ -43,7 +44,9 @@ You may also start from `templates/orchestrate.md`. Do not copy model names
 between runtimes.
 
 Setup happens once. Normal runs read `.agent/orchestrate.md` from the remote
-default branch and do not read the setup file or template.
+default branch and do not read the setup file or template. A full legacy
+`.claude/orchestrate.md` may supply rules until the user moves them to the main
+file.
 
 ## Repo rules
 
@@ -51,7 +54,7 @@ The repo file states:
 
 - remote, default branch, identity, and package tool;
 - work areas, worktree rules, and doc read order;
-- logical worker types in order, reviewer type, review count, and worker limit;
+- logical worker types in order, reviewer type, and worker limit;
 - check commands and known limits;
 - review checklist, marker, and hook rules;
 - PR labels, title, body, issue links, state, and artifacts;
@@ -60,20 +63,27 @@ The repo file states:
 Provider project files choose the model and effort for each logical agent type.
 The shared skills do not choose or map models.
 
+The shared skills own the worker and review process. Repo files supply values
+and exceptions; they do not copy that process. A skill update therefore changes
+every repo that links these skills.
+
 ## Work rules
 
 - The user owns the main checkout. Agents use separate worktrees.
-- First work starts from the newer linear descendant of local or remote
-  default. Split refs stop the work. Commit dates do not decide the base.
+- First work may use either default tip when they match. A remote tip ahead of
+  local wins. A local tip ahead of remote, or split refs, stops the work.
+  Commit dates do not decide the base.
 - The repo's first worker type starts each task.
-- Each reviewer uses its own detached worktree at the commit under review.
-- The same worker fixes each `BLOCK` below the allowed count; a new reviewer
-  checks each new commit.
-- After the allowed `BLOCK` count, a new worker of the next type continues from
-  the pushed task branch.
+- A fresh reviewer uses the paused worker's clean worktree and checks its exact
+  committed tip without changing files.
+- The same worker fixes the first and second `BLOCK`; a fresh reviewer checks
+  each new clean commit.
+- After the third `BLOCK`, a new worker of the next type continues from the
+  pushed task branch.
 - A reviewer error does not count as a `BLOCK`.
-- Only green checks, a fresh `PASS`, no open `BLOCK`, a pushed branch, and an
-  open PR count as delivery. A repo may choose push-only delivery.
+- All delivery needs green checks, a fresh `PASS`, no open `BLOCK`, and a pushed
+  branch. PR delivery also needs an open PR. Push-only delivery reports the
+  reviewed branch and stops.
 - The user reviews and merges each PR. Agents never merge.
 
 ## Tools

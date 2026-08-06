@@ -3,10 +3,10 @@ name: orchestrate
 description: >
   Run repo work through subagents. Split work into small tasks, give each worker
   an isolated git worktree, check the result, and require the worker to commit,
-  push, and open one small PR. Read project rules from the repo. Pair this skill
-  with /tl for engineering work or /pm for product work. Trigger: "orchestrate",
-  "fan out agents", "dispatch subagents", "parallel agents", "multi-agent",
-  or "/orchestrate".
+  pass review, and deliver through the repo's chosen mode. Read project rules
+  from the repo. Pair this skill with /tl for engineering work or /pm for
+  product work. Trigger: "orchestrate", "fan out agents", "dispatch subagents",
+  "parallel agents", "multi-agent", or "/orchestrate".
 ---
 
 # Orchestrate
@@ -33,8 +33,7 @@ The repo rules must state:
 - PR labels, state, body, and issue links;
 - artifact rules;
 - code rules for workers;
-- worker types in order, the reviewer type, allowed `BLOCK` results, and the
-  worker limit.
+- worker types in order, the reviewer type, and the worker limit.
 
 If the repo has no rules, read [bootstrap.md](bootstrap.md), ask the user for
 the missing facts, and add the files through this process. Do this once. Later
@@ -49,14 +48,15 @@ The manager talks with the user, settles open choices, splits the work, sends
 tasks to workers, and checks each open PR. The manager does not edit a worker's
 change.
 
-One worker owns one task from its first edit through checks, review, push, and
-PR. A worker may start one fresh reviewer for each review. Give each reviewer
-its own detached worktree at the commit under review. The worker may start no
-other agent. A reviewer may start no agent.
+The active worker owns the task from its first edit through checks, review,
+push, and, when the repo uses PRs, the open PR. After a third `BLOCK`, the next
+worker takes ownership. A worker may start one fresh reviewer for each review.
+The reviewer uses the worker's worktree while the worker pauses. The worker may
+start no other agent. A reviewer may start no agent.
 
 The same rules apply when the manager changes repo files. Start from the right
 default-branch tip, use a separate worktree, pass review with no open `BLOCK`,
-push, open a PR, and wait for the user.
+and deliver through the repo's chosen mode.
 
 Unless the repo rules choose push-only delivery, only this result counts as
 done:
@@ -80,19 +80,22 @@ Before each first dispatch:
 1. Run `git fetch origin` in the main checkout. Do not edit, switch branches,
    pull, commit, or merge there.
 2. Compare local `<default>` with `origin/<default>` by ancestry.
-3. If one points to an ancestor of the other, use the newer descendant. If
-   both point to the same commit, use either. If they have split, stop and ask
-   the user. Do not compare commit dates.
-4. Create a new branch and worktree at that commit. Record the base SHA and
-   confirm that `HEAD` matches it before any edit.
+3. If both point to the same commit, use either. If local `<default>` is an
+   ancestor of `origin/<default>`, use the remote tip.
+4. If local `<default>` is ahead of `origin/<default>`, stop before work and
+   ask the user to publish or undo the local commits. A PR from that base would
+   include commits that the remote default branch lacks.
+5. If the refs have split, stop and ask the user. Neither ref is the newer
+   linear tip. Do not compare commit dates.
+6. Create a new branch and worktree at the selected commit. Record the base
+   SHA and confirm that `HEAD` matches it before any edit.
 
-For a fix or a higher worker type, start a new worktree at the pushed
-`origin/<branch>` tip. Do not restart from the default branch.
+For a replacement worker or a higher worker type, start a new worktree at the
+pushed `origin/<branch>` tip. Do not restart from the default branch. The same
+running worker makes its first two review fixes in its current worktree.
 
-Before opening a PR, confirm that the recorded base belongs to
-`origin/<default>`. If local `<default>` supplied a newer base that the remote
-does not yet contain, stop. A PR at that point would include those extra
-commits.
+Before opening a PR, confirm again that the recorded base belongs to
+`origin/<default>`.
 
 ## Before dispatch
 
@@ -134,6 +137,8 @@ Every worker prompt must state all of the following.
 - Run every check that the repo rules require for the changed paths. Read the
   command output. Fix each failure or report the exact failure.
 - Stage only task files. Do not use `git add .`. Commit before review.
+- Run `git status --porcelain` after the commit. Do not start review until it
+  prints nothing.
 
 ### Review
 
@@ -142,27 +147,33 @@ Every worker prompt must state all of the following.
   result before review.
 - Ask a fresh agent of the repo's reviewer type to review the exact committed
   diff and run the repo's review check.
-- Create a separate detached worktree at that commit for the reviewer. Give it
-  that worktree, the author worktree path only for an identity check, the
-  branch, base SHA, task, acceptance rules, checklist, and changed paths. No
-  reviewer may use the author's worktree. Do not name the model that wrote the
-  change.
+- Pause the worker. Give the reviewer the worker's worktree, reviewed SHA,
+  branch, base SHA, task, acceptance rules, checklist, and changed paths. The
+  reviewer must confirm that `HEAD` equals the reviewed SHA and that
+  `git status --porcelain` prints nothing before and after review. Do not name
+  the model that wrote the change.
 - A reviewer returns `PASS`, `BLOCK`, or `ERROR`. Each `BLOCK` must name a real
   flaw and give a file and line. A crash, timeout, or tool fault returns
   `ERROR` and does not use a review attempt.
-- After each `BLOCK` below the allowed count, the same running worker fixes
-  every finding, reruns checks, and commits. A new reviewer then checks the new
-  commit.
-- After the repo's allowed number of `BLOCK` results, rerun lint, commit all
-  remaining task changes, push the branch, open no PR, and return every
-  finding. The manager must send the pushed branch to the next worker type at
-  once.
-- On `PASS`, make no more code or doc changes. Push that reviewed commit and
-  open the PR.
+- On the first `BLOCK`, the same running worker fixes every finding, reruns
+  checks, commits, confirms a clean worktree, and starts a new reviewer.
+- On the second `BLOCK`, the same worker gets one more fix. It repeats the
+  checks, commit, clean-worktree check, and fresh review.
+- On the third `BLOCK`, rerun the required checks, commit only remaining task
+  changes, confirm a clean worktree, push the continuation branch, open no PR,
+  and return every finding. The manager must send the pushed branch to the next
+  worker type at once.
+- A project checklist may define nonblocking findings. A reviewer may return
+  `PASS` with those findings; handle them as the project rules require.
+- On `PASS`, make no more source or doc changes. Confirm that `HEAD` still
+  equals the reviewed SHA and that `git status --porcelain` prints nothing.
+  Push that exact commit. Open a PR only when the repo uses PR delivery.
 
 ### PR and cleanup
 
 - Push with `git push -u origin <branch>`.
+- Confirm that `git ls-remote origin refs/heads/<branch>` equals the reviewed
+  SHA. Do not open a PR when they differ.
 - If the repo rules choose push-only delivery, report the pushed branch and
   skip the rest of the PR and artifact steps.
 - On `PASS`, open the PR with `gh pr create --base <default> --head <branch>`.
@@ -176,8 +187,6 @@ Every worker prompt must state all of the following.
   the worktree. Never use `--force` or a broad `git worktree prune`. A runtime
   lock means `worktree_cleanup: harness-locked`. A refusal due to changed or
   untracked files means work remains; report it.
-- Remove each reviewer worktree after its reviewer returns. Apply the same
-  plain-remove and no-force rules.
 - Wait for the user's review and clear approval. Never merge.
 
 ### Return form
@@ -197,6 +206,7 @@ verify:
   lint: pass | n/a
   test: pass | n/a
 review: <rounds and final result>
+reviewed_sha: <sha that passed and was pushed>
 review_findings: [<open BLOCK findings copied word for word>]
 artifacts: <urls or n/a>
 open_questions: [<question and owner>]
@@ -216,11 +226,11 @@ Start with the first worker type unless the repo rules allow another start.
 Do not raise the type because a task looks hard. Do not pass a model or effort
 override. Provider agent files choose both.
 
-When a worker uses all allowed `BLOCK` results, treat that result as work in
-progress. Send a new worker of the next type the pushed branch and every
-finding. Do not hand the branch to the user as the finished result. If the last
-worker type also uses all allowed `BLOCK` results, stop and report the commits,
-checks, and findings. Do not create a new type.
+When a worker gets a third `BLOCK`, treat that result as work in progress. Send
+a new worker of the next type the pushed branch and every finding. Do not hand
+the branch to the user as the finished result. If the last worker type also
+gets a third `BLOCK`, stop and report the commits, checks, and findings. Do not
+create a new type.
 
 ## Review after the PR opens
 
@@ -244,9 +254,10 @@ user merges, fetch and start any task that depended on that merge.
 
 ## Worktree rules
 
-- Each worker gets a new worktree. No two agents share one.
-- Each reviewer gets a new detached worktree at the commit it reviews. It must
-  not use the author's worktree.
+- Each worker gets a new worktree. No two workers share one.
+- A fresh reviewer may use the active worker's worktree only while the worker
+  pauses and only to read the committed tip. It may write only a required
+  review marker outside the worktree files.
 - Keep all edits and git writes out of the main checkout. `git fetch origin`
   is the only allowed main-checkout git write.
 - A later worker may need a detached worktree because an old runtime worktree
@@ -268,11 +279,12 @@ user merges, fetch and start any task that depended on that merge.
 | A push conflicts                                | Update in the worktree, rerun checks and review, then push.                                                       |
 | Scope grows                                     | Split it into small tasks and separate PRs.                                                                       |
 | A product choice remains open                   | Ask the user. Do not guess.                                                                                       |
-| The last worker type uses all `BLOCK` results   | Stop and report every finding and saved commit.                                                                   |
+| The last worker type gets a third `BLOCK`       | Stop and report every finding and saved commit.                                                                   |
 
 ## Hard rules
 
-- The worker owns the task through the open PR.
+- The worker owns the task through the reviewed pushed branch and, when the
+  repo uses PRs, the open PR.
 - Only a green PR with a fresh `PASS` and no open `BLOCK` counts as delivery,
   except when repo rules choose push-only delivery.
 - The manager never fixes a worker's change.

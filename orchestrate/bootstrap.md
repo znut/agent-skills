@@ -1,6 +1,8 @@
 # Add repo rules
 
-Use this file only when a repo lacks `.agent/orchestrate.md`.
+Use this file only when a repo has neither `.agent/orchestrate.md` nor a full
+legacy `.claude/orchestrate.md`. A link to a missing main file does not supply
+rules.
 
 First inspect what the repo already uses:
 
@@ -27,7 +29,7 @@ not choose a silent default.
 7. Existing labels, new labels, or no labels.
 8. Doc read order.
 9. Runtime, project agent file format, worker types in order, reviewer type,
-   allowed `BLOCK` results per worker type, and worker limit.
+   and worker limit.
 10. Model and effort for each type. Put these values only in the chosen
     runtime's project agent files.
 
@@ -56,16 +58,18 @@ branch. Use this setup process only for the first rules change:
    and the hook files that the user approved.
 3. Run the checks found in the interview. Parse each config file with its
    normal parser and format each doc.
-4. Commit, then start the declared reviewer type in its own detached worktree
-   at that commit. Give it the approved answers, changed paths, and generic
-   checks because the remote default branch has no repo rules yet. Let the
-   provider agent definition choose the model and effort.
+4. Commit, confirm that the worktree is clean, pause the setup worker, then
+   start the declared reviewer type on that worktree. Give it the reviewed SHA,
+   approved answers, changed paths, and generic checks because the remote
+   default branch has no repo rules yet. Let the provider agent definition
+   choose the model and effort.
 5. A reviewer crash, timeout, or tool fault returns `ERROR` and does not use a
    review attempt. Start a new reviewer of the same type.
-6. After each `BLOCK` below the approved count, the same setup agent fixes all
-   findings, runs checks, commits, and asks a new reviewer. At the limit, push
-   the branch, open no PR, and send the branch and findings to the next worker
-   type. Only the last worker type may stop and report the saved work.
+6. After the first and second `BLOCK`, the same setup worker fixes all findings,
+   runs checks, commits, confirms a clean worktree, and asks a new reviewer.
+   After the third `BLOCK`, push the branch, open no PR, and send the branch and
+   findings to the next worker type. Only the last worker type may stop and
+   report the saved work after its third `BLOCK`.
 7. After `PASS`, make no source or doc change and push the reviewed commit. For
    push-only delivery, report the branch and stop. For PR delivery, write the
    SHA marker if the new hook needs one, open the setup PR, report its URL, and

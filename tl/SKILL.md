@@ -63,7 +63,9 @@ The TL does not:
 
 If the TL changes a decision record or another repo file, that change must use
 the full `/orchestrate` process: the right default tip, a separate worktree,
-green checks, a fresh `PASS` with no open `BLOCK`, push, PR, and user approval.
+green checks, a fresh `PASS` with no open `BLOCK`, push, and the repo's delivery
+mode. PR delivery adds a PR and user approval. Push-only delivery reports the
+reviewed branch and stops.
 
 ## Work process
 
@@ -81,13 +83,13 @@ For each ready ticket:
 7. Send each task through `/orchestrate` with a full prompt.
 8. Keep a blocked worker result inside the agent process. Send the pushed
    branch and all findings to the next worker type at once.
-9. Check the open PR as `/orchestrate` requires.
-10. On a clean result, report the PR URL and wait for the user's review and
-    clear approval. Never merge.
+9. For PR delivery, check the open PR as `/orchestrate` requires.
+10. On a clean result, report the PR URL or, for push-only delivery, the
+    reviewed branch. Wait when the repo uses PRs. Never merge.
 
-Only a green PR with a fresh `PASS` and no open `BLOCK` counts as delivery.
-If the PR fails the last check, send a fresh worker the exact findings. Do not
-edit it yourself.
+All delivery needs green checks, a fresh `PASS`, no open `BLOCK`, and a pushed
+branch. PR delivery also needs a clean open PR. If the last check fails, send a
+fresh worker the exact findings. Do not edit the change yourself.
 
 When the repo has a PR status service, watch after you report the PR. A status
 notice does not grant merge approval. After the user merges, fetch and start
@@ -95,8 +97,8 @@ work that waited on that PR.
 
 ## Open questions
 
-Resolve each open PR question before the PR becomes ready, or create and link
-a ticket with an owner. Record the result on the PR.
+Resolve each open question before delivery, or create and link a ticket with an
+owner. Record the result on the PR or in the push-only return.
 
 If a ticket lacks a product choice, conflicts with an approved design, or grows
 beyond its stated scope, return this note to the PM and user:
@@ -135,5 +137,6 @@ but it must still:
 - Send work that shares a file in order.
 - Return missing product choices to the PM and user.
 - Keep worker escalation inside the agent process.
-- Deliver only a green PR with no open `BLOCK`.
+- Deliver only through the repo's chosen mode, with green checks and no open
+  `BLOCK`.
 - Never write application code. Never merge.
