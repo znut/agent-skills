@@ -1,111 +1,156 @@
 ---
 name: review-gate
 description: >
-  Pre-PR review gate. Run ONCE on a finished
-  branch diff BEFORE opening the PR: deterministic script/grep pass over the
-  repo's banned-pattern list, then a diff-scoped judgment review — delegated
-  to the harness's built-in code-review skill with the repo's
-  recurring-mistakes checklist injected — plus file-type sub-skills. Returns
-  a structured BLOCK/PASS verdict; on PASS writes a sha-pinned marker that a
-  PreToolUse hook checks at `gh pr create` (commits after review invalidate
-  the marker). Repo specifics live in the committed
-  `.claude/review-checklist.md` — this skill is project-agnostic.
-  Trigger: "/review-gate", "review gate", "pre-PR review", or automatically
-  from orchestrate's review gate.
+  Check a finished branch before PR creation. Read the repo's current review
+  rules, scan added lines, review the exact committed diff, and return PASS,
+  BLOCK, or ERROR. On PASS, write a marker bound to the reviewed commit.
+  Trigger: "/review-gate", "review gate", "pre-PR review", or a review request
+  from /orchestrate.
 ---
 
-# review-gate — pre-PR review gate
+# Review gate
 
-Goal: catch the repo's recurring review findings BEFORE the PR is opened, so the human review loop shrinks. Run once per finished diff; re-run after any fix commits (the marker is sha-pinned — new commits un-gate).
+Run this skill once for each committed tip before a PR opens. Run it again
+after any fix commit.
 
-## Step 0 — load the repo checklist (LATEST, not your fork's copy)
+The diff author must start a fresh reviewer of the type named in the repo
+rules. Provider agent files choose its model and effort. This skill does not
+choose them.
 
-Read the checklist from the **default branch tip**, not the worktree's possibly-stale copy: `git fetch origin -q && git show origin/<default>:.claude/review-checklist.md`. Rules move faster than worktree fork points — reviewing against a stale checklist has shipped violations of freshly-banked rules. It defines:
-- the **mechanical pass**: a committed review script and/or a grep table (banned patterns + severity + allowed exceptions)
-- **judgment sections**, each tagged with the paths it applies to
-- **file-type sub-skills** (e.g. Svelte best-practices for `.svelte`)
-- per-item **severity**: `BLOCK` vs `FIX` (fix before PR if cheap, else note a follow-up in the PR)
+## 1. Confirm the reviewed tip
 
-If the file is missing: fall back to a generic pass — correctness, security (injection, secrets, authz), dead code, test quality, economy/bloat — all severities judged by impact, and tell the user the repo has no banked checklist (offer to create one).
+Use the paused worker's worktree. Do not create another worktree. The task must
+give the worktree path, reviewed SHA, and frozen default-branch SHA.
 
-## Step 1 — resolve the diff
+Run `git rev-parse HEAD` and confirm that it matches the named review commit.
+Run `git status --porcelain` and require no output. Return `ERROR` if the commit
+does not match or the worktree is not clean. Do not edit source or doc files.
 
-Identify the branch under review (the one about to be PRed). From its worktree:
-```bash
-git fetch origin
-git diff origin/<default>...<branch>          # the diff under review
-git diff --name-status origin/<default>...<branch>   # changed-path list for scoping
+## 2. Read current rules
+
+Use the frozen default-branch SHA supplied by the worker. Do not fetch, update a
+ref, or run any other Git write. Read `.agent/orchestrate.md` with
+`git show <frozen-default-sha>:.agent/orchestrate.md`. Read the review checklist
+path, script, marker, hook, and default branch from that file.
+
+If the main file does not exist, read `.claude/orchestrate.md`. Follow its link
+when it points to the main file. A full legacy `.claude/orchestrate.md` may
+supply the rules for this run; the repo should later move them to
+`.agent/orchestrate.md`.
+
+Read the named checklist from the same frozen commit. If no repo rules or
+checklist exist, use this list and tell the parent:
+
+- correctness;
+- auth and access control;
+- injection, secrets, and unsafe data use;
+- dead code;
+- test quality;
+- extra code or process that the task does not need.
+
+During the first rules PR, the task supplies the user's approved setup facts
+and generic checks because the remote default branch has no rules yet.
+
+## 3. Resolve the diff
+
+From the worker worktree, run:
+
+```sh
+git diff <frozen-default-sha>...HEAD
+git diff --name-status <frozen-default-sha>...HEAD
 ```
 
-## Step 2 — mechanical pass (deterministic, before any LLM)
+Check only that diff and the task's acceptance rules. Do not add scope.
 
-If the checklist/conventions declare a **committed review script** (e.g. `scripts/review-grep.sh <base> <branch>`), run it ONCE — it implements every banked mechanical rule and prints findings with rule ids + severities. No script → run the checklist's grep table by hand against the **added lines** of the diff (`git diff -U0 ... | grep '^+'`). Every hit = a finding at the banked severity. Hits on patterns with documented exceptions (e.g. "raw SQL is correct when there's no binding") are handed to the judgment pass to adjudicate, not silently dropped.
+## 4. Scan added lines
 
-## Step 3 — scope the checklist
+If the repo rules name a review script, run it once with the base and branch or
+commit that its help text requires.
 
-Match the changed paths against each judgment section's path tags. Only sections that match run (docs-only diff skips DB checks; no `.svelte` changed → no Svelte sub-skill). Sections tagged `always` always run.
+If the checklist gives a table instead, scan only added diff lines for each
+pattern. Keep each hit at the stated severity. When a rule names an exception,
+decide from the diff whether it applies. Do not drop the hit without checking.
 
-## Step 4 — judgment pass (delegate to the built-in code-review skill)
+## 5. Apply the right sections
 
-**You are the reviewer — run the judgment pass INLINE and spawn nothing.** This skill executes inside the review-gate agent: a FRESH subagent with a clean context, dispatched by the diff's author-worker (or by the orchestrator for engines that can't spawn agents). The author of a diff never reviews it — the clean context is the mechanism, not a nicety. Chain depth caps at manager → worker → reviewer; a reviewer spawning its own child made 4-level chains and broke cost/model attribution.
+Match changed paths to the checklist's path tags. Apply only matching sections
+and every section marked `always`. Run each extra skill that the checklist maps
+to a changed file type.
 
-Delegate the bug-hunting to the harness's **built-in `code-review` skill** — its finder/dedup/gap-sweep machinery is maintained upstream and beats a hand-rolled prompt:
+Review the diff yourself. Start no agent. The author must not review its own
+work.
 
-```
-Skill(code-review, args: "high origin/<default>...<branch> <injected instructions>")
-```
+Each finding uses one line:
 
-where `<injected instructions>` = the selected checklist sections (rule id + one-line rule each), the mechanical-pass hits needing adjudication, and the task's acceptance criteria. Effort `high` is the default; `medium` is acceptable for trivial mechanical diffs. **The built-in reports findings; the verdict, severities, and marker below stay THIS skill's job.**
-
-Fallback (built-in skill unavailable in this context): run the judgment yourself against the selected checklist sections plus generic correctness/security/economy — same findings contract.
-
-Exception — ad-hoc review from the top-level interactive session (no author-worker in the chain): dispatch **ONE reviewer subagent** (the conventions' reviewer agent type, else a clean general subagent) — **ALWAYS with an explicit `model`** (an omitted model inherits the TOP session's model, not the caller's — review children silently ran on the most expensive tier). Give it: the diff, the selected checklist sections, and the mechanical hits needing adjudication.
-
-**Findings contract** (every path): ONE line per finding —
-```
+```text
 path:line: <severity>: <rule> — <problem>. <fix>.
 ```
-Must-fix focus. No praise, no scope creep, no formatting nits unless they change meaning. Plus **checklist candidates** (recurring-looking mistakes not yet banked).
 
-## Step 5 — file-type sub-skills
+Report real flaws. Do not praise, widen scope, or report style points that do
+not change meaning. The project checklist decides which severities block a
+`PASS` and how to handle nonblocking findings. List a new checklist candidate
+only when the same mistake could recur.
 
-Run each sub-skill the checklist maps to changed file types (e.g. `svelte-core-bestpractices` on changed `.svelte`).
+## 6. Return a result
 
-## Step 6 — verdict (structured, no prose-parsing)
+Use this form:
 
-Collate into:
+```yaml
+verdict: PASS | BLOCK | ERROR
+blockers:
+  - path:line: <place>
+    rule: <rule>
+    problem: <problem>
+    fix: <fix>
+should_fix:
+  - path:line: <place>
+    rule: <rule>
+    problem: <problem>
+    fix: <fix>
+checklist_candidates: [<candidate>]
+error: <why review could not finish, or null>
 ```
-verdict: BLOCK | PASS
-blockers:     [{path:line, rule, problem, fix}]   # any BLOCK-severity finding
-should_fix:   [{path:line, rule, problem, fix}]   # FIX-severity
-checklist_candidates: [suggested new recurring patterns — user decides to bank]
+
+Run `git rev-parse HEAD` and `git status --porcelain` again after review. Return
+`ERROR` if the SHA moved or status is not clean. Return `BLOCK` when `blockers`
+has an item. Return `PASS` only after the full scan and review with no blocker.
+A `PASS` may include nonblocking findings when project rules define them.
+Return `ERROR` when a tool, runtime, dirty worktree, changed SHA, or missing
+input stops the full review. `ERROR` does not use a review attempt.
+
+## 7. After `BLOCK`
+
+After the first or second `BLOCK`, the same running worker fixes every finding,
+runs checks, commits, confirms a clean worktree, and starts a fresh reviewer on
+the new tip in the same worktree.
+
+After the third `BLOCK`, the worker confirms a clean committed tip, pushes its
+task branch, and opens no PR. The manager sends the branch and all findings to
+the next worker type. The last worker type stops and reports to the user after
+its third `BLOCK`.
+
+## 8. Write the PASS marker
+
+Only after `PASS`, bind the marker to the reviewed branch tip.
+
+Use the marker command from the repo rules when one exists:
+
+```sh
+bash <marker-script> <branch>
 ```
-`verdict: BLOCK` ⇔ `blockers` is non-empty.
 
-## Step 7 — fold + re-verify
+Otherwise run these commands one at a time. Do not join them with command
+substitution.
 
-Fix blockers (and cheap should_fixes); unfixed should_fixes become follow-up notes in the PR body. Re-run the repo verify gate after fixes. Fix commits move the branch tip — re-run this gate (cheap: the mechanical pass + only affected sections).
-
-## Step 8 — write the sha-pinned marker (REQUIRED — hook-enforced)
-
-Only on `verdict: PASS`, pin the marker to the reviewed branch tip.
-
-**Preferred — the repo's committed marker script**, if the conventions file declares one (e.g. `scripts/review-mark.sh`):
-```bash
-bash scripts/review-mark.sh <branch>
-```
-**Fallback — split commands**, only if no such script exists on your base. Each command must start with the bare binary; do NOT combine them into one line with `$(...)` command substitution — the auto-mode permission classifier (Claude Code ≥2.1.205) denies that compound form and background workers die on it:
-```bash
-git rev-parse --git-common-dir      # resolve <common-dir> first, standalone
+```sh
+git rev-parse --git-common-dir
 mkdir -p "<common-dir>/.review-gate"
 git rev-parse "refs/heads/<branch>" > "<common-dir>/.review-gate/<branch with / replaced by __>"
 ```
-A PreToolUse hook blocks `gh pr create` unless the marker exists AND matches the head branch's current tip — so a commit after review forces a re-review. Run from inside the repo/worktree (the common dir resolves to the shared `.git`, so worktrees and the main tree agree).
 
-**Always pass `--head <branch>` to `gh pr create`** — the hook keys the marker off `--head`, which keeps the gate correct even when the command runs from a different worktree/cwd.
+The marker must equal the branch tip. A later commit voids it and requires a
+new review. Always pass `--head <branch>` to `gh pr create` so the hook checks
+the right marker.
 
-Escape hatch (rare, deliberate): `REVIEW_GATE_SKIP=1 gh pr create …` for a genuine pure-docs/non-code exception. Default is: review → marker → PR.
-
-## After the PR is opened
-
-Artifact obligations (e.g. UI screenshots) are POST-PR per the repo's orchestration conventions (upload keys often need the PR number) — this gate doesn't block on them, the orchestrator's final check does.
+The marker is the only file that a reviewer may write. It must not change
+`HEAD`, the index, tracked files, or untracked files in the worker worktree.
