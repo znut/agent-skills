@@ -354,3 +354,53 @@ test("missing settings keep guards on", () => {
 	assert.equal(result.status, 2)
 	assert.match(result.stderr, /bot-identity guard/)
 })
+
+const readySnapshot = JSON.stringify({ number: 7, state: "OPEN", isDraft: false, branch: "feat/x" })
+const draftSnapshot = JSON.stringify({ number: 7, state: "OPEN", isDraft: true, branch: "feat/x" })
+const preUpgradeSnapshot = JSON.stringify({ number: 7, state: "OPEN", branch: "feat/x" })
+
+function runPushHook(snapshot, command, extra = {}) {
+	const statusRoot = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-status-"))
+	fs.mkdirSync(path.join(statusRoot, "status"), { recursive: true })
+	if (snapshot) fs.writeFileSync(path.join(statusRoot, "status", "pr-7.json"), snapshot)
+	try {
+		return runHook(
+			extra.files ?? {},
+			command,
+			extra.noConfig ? null : ["config", "agent.pr-status-dir", statusRoot],
+		)
+	} finally {
+		fs.rmSync(statusRoot, { force: true, recursive: true })
+	}
+}
+
+test("ready-push gate blocks a push to a ready PR's branch", () => {
+	for (const command of [
+		"git push origin feat/x",
+		"git push -u origin feat/x",
+		"git push origin HEAD:refs/heads/feat/x",
+		"git push origin HEAD:feat/x",
+	]) {
+		const result = runPushHook(readySnapshot, command)
+		assert.equal(result.status, 2, command)
+		assert.match(result.stderr, /ready-push gate/, command)
+	}
+})
+
+test("ready-push gate allows a draft PR, a missing config, and a pre-upgrade snapshot", () => {
+	assert.equal(runPushHook(draftSnapshot, "git push origin feat/x").status, 0)
+	assert.equal(runPushHook(readySnapshot, "git push origin feat/x", { noConfig: true }).status, 0)
+	assert.equal(runPushHook(preUpgradeSnapshot, "git push origin feat/x").status, 0)
+})
+
+test("ready-push gate allows other branches and honors the override", () => {
+	assert.equal(runPushHook(readySnapshot, "git push origin feat/other").status, 0)
+	assert.equal(runPushHook(readySnapshot, "READY_PUSH_OK=1 git push origin feat/x").status, 0)
+})
+
+test("ready-push gate honors the ready_push_gate: off setting", () => {
+	const result = runPushHook(readySnapshot, "git push origin feat/x", {
+		files: { ".agent/orchestrate.md": "## Hook settings\n\n- ready_push_gate: off\n" },
+	})
+	assert.equal(result.status, 0)
+})

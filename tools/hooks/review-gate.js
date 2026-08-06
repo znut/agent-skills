@@ -68,7 +68,7 @@ const cwd = (data && data.cwd) || process.cwd()
 let _policy
 function policy() {
 	if (_policy) return _policy
-	const on = { identity: true, review: true, verify: true, draft: false }
+	const on = { identity: true, review: true, verify: true, draft: false, readyPush: true }
 	try {
 		const top = execSync("git rev-parse --show-toplevel", {
 			cwd,
@@ -108,12 +108,96 @@ function policy() {
 				review: !isOff("review_marker"),
 				verify: !isOff("verify_marker"),
 				draft: isRequired("draft_first"),
+				readyPush: !isOff("ready_push_gate"),
 			})
 		}
 		return (_policy = on)
 	} catch {
 		return (_policy = on)
 	}
+}
+
+// ── ready-push gate ─────────────────────────────────────────────────────────
+// A push to a branch whose OPEN PR is READY (not draft) voids the manager's
+// ready vouch without anyone noticing — the user reads "ready" as merge-safe.
+// Rule: flip the PR to draft first (gh pr ready <N> --undo), push, re-check,
+// re-ready. The gate reads the LOCAL PR status snapshots (no network):
+//   git config agent.pr-status-dir   → the gh-status dir (status/pr-*.json)
+// Fail-open: no config, no dir, unreadable snapshot, or a snapshot without
+// isDraft (pre-upgrade poller). Deliberate override: READY_PUSH_OK=1 prefix.
+function pushTargetBranch(words) {
+	let index = 0
+	while (ASSIGNMENT.test(words[index] || "")) index += 1
+	if (words[index] !== "git") return null
+	index += 1
+	if (words[index] === "-C") index += 2
+	if (words[index] !== "push") return null
+	index += 1
+	const positional = []
+	while (index < words.length) {
+		const word = words[index]
+		if (word === "--") {
+			positional.push(...words.slice(index + 1))
+			break
+		}
+		if (word.startsWith("-")) {
+			index += 1
+			continue
+		}
+		positional.push(word)
+		index += 1
+	}
+	if (positional.length < 2) {
+		try {
+			return execSync("git rev-parse --abbrev-ref HEAD", {
+				cwd,
+				stdio: ["ignore", "pipe", "ignore"],
+			})
+				.toString()
+				.trim()
+		} catch {
+			return null
+		}
+	}
+	const refspec = positional[1]
+	const dst = refspec.includes(":") ? refspec.split(":").pop() : refspec
+	return dst.replace(/^refs\/heads\//, "").replace(/^\+/, "") || null
+}
+
+function readyPrForBranch(branch) {
+	let dir
+	try {
+		dir = execSync("git config agent.pr-status-dir", {
+			cwd,
+			stdio: ["ignore", "pipe", "ignore"],
+		})
+			.toString()
+			.trim()
+	} catch {
+		return null
+	}
+	if (!dir) return null
+	if (dir.startsWith("~")) dir = path.join(process.env.HOME || "", dir.slice(1))
+	let files
+	try {
+		files = fs.readdirSync(path.join(dir, "status"))
+	} catch {
+		return null
+	}
+	for (const file of files) {
+		if (!/^pr-\d+\.json$/.test(file)) continue
+		let snap
+		try {
+			snap = JSON.parse(fs.readFileSync(path.join(dir, "status", file), "utf8"))
+		} catch {
+			continue
+		}
+		if (snap.branch !== branch) continue
+		if (snap.state !== "OPEN") continue
+		if (snap.isDraft === false) return snap.number
+		return null // draft, or pre-upgrade snapshot without isDraft → allow
+	}
+	return null
 }
 
 // ── bare-gh contract ────────────────────────────────────────────────────────
@@ -516,6 +600,22 @@ function hasDraftFlag(args) {
 		if (PR_CREATE_VALUE_OPTIONS.has(arg)) index += 1
 	}
 	return draft
+}
+
+if (policy().readyPush && !/\bREADY_PUSH_OK=1\b/.test(cmd) && /\bgit\b[^;|&`\n]*\bpush\b/.test(cmd)) {
+	for (const words of shellCommands(cmd)) {
+		const branch = pushTargetBranch(words)
+		if (!branch) continue
+		const prNumber = readyPrForBranch(branch)
+		if (prNumber) {
+			process.stderr.write(
+				'⛔ ready-push gate: branch "' + branch + '" has OPEN PR #' + prNumber + ' marked READY - pushing now silently voids the ready vouch.\n' +
+					'Flip it first: gh pr ready ' + prNumber + ' --undo  (via the repo wrapper), then push, re-run the final check, and re-ready.\n' +
+					'Deliberate exception: prefix the push with READY_PUSH_OK=1.',
+			)
+			process.exit(2)
+		}
+	}
 }
 
 const identityOffenders = new Set()
