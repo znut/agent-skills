@@ -76,11 +76,11 @@ function policy() {
 		const sources = [
 			{
 				file: path.join(top, ".agent", "orchestrate.md"),
-				section: /^##\s+Hook settings[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+				section: /^##[ \t]+Hook settings[ \t]*\r?$\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
 			},
 			{
 				file: path.join(top, ".claude", "orchestrate.md"),
-				section: /^##\s+Enforcement policy[^\n]*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
+				section: /^##[ \t]+Enforcement policy[ \t]*\r?$\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m,
 			},
 		]
 		for (const { file, section } of sources) {
