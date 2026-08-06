@@ -7,10 +7,11 @@ const test = require("node:test")
 
 const hook = path.join(__dirname, "review-gate.js")
 
-function runHook(files, command = "gh issue create --title test") {
+function runHook(files, command = "gh issue create --title test", gitArgs = null) {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-test-"))
 	try {
 		execFileSync("git", ["init", "-q"], { cwd: repo })
+		if (gitArgs) execFileSync("git", gitArgs, { cwd: repo })
 		for (const [name, text] of Object.entries(files)) {
 			const file = path.join(repo, name)
 			fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -220,14 +221,70 @@ test("draft-first setting checks every PR creation", () => {
 	}
 })
 
-test("draft-first setting recognizes command and env wrappers", () => {
+test("bare-gh: wrapped invocations block with the unwrap message, not silence", () => {
 	for (const command of [
-		"command gh pr create --title test",
-		"env -i gh pr create --title test",
+		"command gh pr create --draft --title test",
+		"env -i gh pr create --draft --title test",
+		"env GH_TOKEN=real gh pr create --draft --title test",
+		"nohup gh pr create --draft --title test",
 	]) {
 		const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, command)
 		assert.equal(result.status, 2, command)
+		assert.match(result.stderr, /bare-gh/, command)
 	}
+})
+
+test("bare-gh: a quoted gh command passed as an argument blocks (env -S / sh -c shape)", () => {
+	for (const command of [
+		'env -S "gh pr create --draft --title test"',
+		'sh -c "gh pr comment 1 --body hi"',
+		'xargs -I{} "gh pr comment {} --body hi"',
+	]) {
+		const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+		assert.equal(result.status, 2, command)
+		assert.match(result.stderr, /bare-gh/, command)
+	}
+})
+
+test("bare-gh: env -C decoy token cannot satisfy the identity guard", () => {
+	const command = "env -C GH_TOKEN=decoy gh pr comment 1 --body hi"
+	const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+	assert.equal(result.status, 2)
+	assert.match(result.stderr, /bare-gh/)
+})
+
+test("bare-gh: quoted prose mentioning a gh mutation never trips", () => {
+	const command = 'GH_TOKEN=real gh pr comment 1 --body "then run gh pr create later"'
+	const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+	assert.equal(result.status, 0)
+})
+
+test("bare-gh: unquoted prose trips closed (documented false positive)", () => {
+	const command = "echo run gh pr create later"
+	const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+	assert.equal(result.status, 2)
+	assert.match(result.stderr, /bare-gh/)
+})
+
+test("bare-gh: hidden second mutation behind a wrapper trips despite a clean first one", () => {
+	const command = "GH_TOKEN=real gh pr comment 1 --body hi; nohup gh pr edit 2 --title x"
+	const result = runHook({ ".agent/orchestrate.md": identitySettings }, command)
+	assert.equal(result.status, 2)
+	assert.match(result.stderr, /bare-gh/)
+})
+
+test("gh-wrapper config: wrapper satisfies identity and still gets draft gating", () => {
+	const settings = { ".agent/orchestrate.md": draftFirstSettings.replace("- bot_identity: off\n", "") }
+	const blocked = runHook(settings, "bgh pr create --title test", ["config", "agent.gh-wrapper", "bgh"])
+	assert.equal(blocked.status, 2)
+	assert.match(blocked.stderr, /draft-first gate/)
+	const allowed = runHook(settings, "bgh pr create --draft --title test", ["config", "agent.gh-wrapper", "bgh"])
+	assert.equal(allowed.status, 0)
+})
+
+test("gh-wrapper config: unconfigured wrapper name is not recognized as gh", () => {
+	const result = runHook({ ".agent/orchestrate.md": draftFirstSettings }, "bgh pr create --title test")
+	assert.equal(result.status, 0)
 })
 
 test("draft-first ignores text and comments that only look like --draft", () => {
