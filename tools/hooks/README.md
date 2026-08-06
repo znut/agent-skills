@@ -14,8 +14,8 @@ The hook lets reads such as `gh pr view` run without a token prefix.
 
 ## Repo settings
 
-The hook keeps all guards on by default. A person may turn off a guard in the
-`## Hook settings` section of `.agent/orchestrate.md`:
+Identity, review, and verify are on by default. A person may turn off one in
+the `## Hook settings` section of `.agent/orchestrate.md`:
 
 ```markdown
 ## Hook settings
