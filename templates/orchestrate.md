@@ -60,7 +60,9 @@ Read only the files that exist and that the changed paths need.
 - Runtime: `<Codex | Claude Code | other>`.
 - Project agent files: `<paths>`.
 - Worker types in order: `<type 1>`, `<type 2>`, `<last type>`.
+- Model and effort for each worker type: `<provider values>`.
 - Reviewer type: `<type>`.
+- Reviewer model and effort: `<provider values>`.
 - Each worker type may receive `<number>` real `BLOCK` results.
 - At most `<number>` agents may run at once.
 
@@ -99,6 +101,9 @@ Commit before review. A fresh reviewer checks each commit. After each `BLOCK`
 below the allowed count, the same worker fixes every finding and a new reviewer
 checks the new commit. Open no PR until a fresh reviewer returns `PASS` with no
 open `BLOCK`. Make no source or doc change after that `PASS`.
+
+Give each reviewer a separate detached worktree at the commit under review. A
+reviewer must not use the author's worktree.
 
 ## PRs
 

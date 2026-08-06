@@ -18,8 +18,10 @@ PM or TL owns.
 
 Run `git fetch origin -q`. Read `.agent/orchestrate.md` from the remote default
 branch with `git show origin/<default>:.agent/orchestrate.md`. If that file does
-not exist, read `.claude/orchestrate.md` and follow any link to the main file.
-Read each file that the rules name from the same remote tip.
+not exist, read `.claude/orchestrate.md`. Follow its link when it points to the
+main file. A full legacy `.claude/orchestrate.md` may supply the rules for that
+run; ask the user whether to move it to `.agent/orchestrate.md`. If neither file
+supplies rules, run setup. Read each named file from the same remote tip.
 
 The repo rules must state:
 
@@ -48,7 +50,8 @@ tasks to workers, and checks each open PR. The manager does not edit a worker's
 change.
 
 One worker owns one task from its first edit through checks, review, push, and
-PR. A worker may start one fresh reviewer for each review. It may start no
+PR. A worker may start one fresh reviewer for each review. Give each reviewer
+its own detached worktree at the commit under review. The worker may start no
 other agent. A reviewer may start no agent.
 
 The same rules apply when the manager changes repo files. Start from the right
@@ -139,8 +142,11 @@ Every worker prompt must state all of the following.
   result before review.
 - Ask a fresh agent of the repo's reviewer type to review the exact committed
   diff and run the repo's review check.
-- Give the reviewer the worktree, branch, base SHA, task, acceptance rules,
-  checklist, and changed paths. Do not name the model that wrote the change.
+- Create a separate detached worktree at that commit for the reviewer. Give it
+  that worktree, the author worktree path only for an identity check, the
+  branch, base SHA, task, acceptance rules, checklist, and changed paths. No
+  reviewer may use the author's worktree. Do not name the model that wrote the
+  change.
 - A reviewer returns `PASS`, `BLOCK`, or `ERROR`. Each `BLOCK` must name a real
   flaw and give a file and line. A crash, timeout, or tool fault returns
   `ERROR` and does not use a review attempt.
@@ -148,8 +154,9 @@ Every worker prompt must state all of the following.
   every finding, reruns checks, and commits. A new reviewer then checks the new
   commit.
 - After the repo's allowed number of `BLOCK` results, rerun lint, commit all
-  work, push the branch, open no PR, and return every finding. The manager must
-  send the pushed branch to the next worker type at once.
+  remaining task changes, push the branch, open no PR, and return every
+  finding. The manager must send the pushed branch to the next worker type at
+  once.
 - On `PASS`, make no more code or doc changes. Push that reviewed commit and
   open the PR.
 
@@ -169,6 +176,8 @@ Every worker prompt must state all of the following.
   the worktree. Never use `--force` or a broad `git worktree prune`. A runtime
   lock means `worktree_cleanup: harness-locked`. A refusal due to changed or
   untracked files means work remains; report it.
+- Remove each reviewer worktree after its reviewer returns. Apply the same
+  plain-remove and no-force rules.
 - Wait for the user's review and clear approval. Never merge.
 
 ### Return form
@@ -236,6 +245,8 @@ user merges, fetch and start any task that depended on that merge.
 ## Worktree rules
 
 - Each worker gets a new worktree. No two agents share one.
+- Each reviewer gets a new detached worktree at the commit it reviews. It must
+  not use the author's worktree.
 - Keep all edits and git writes out of the main checkout. `git fetch origin`
   is the only allowed main-checkout git write.
 - A later worker may need a detached worktree because an old runtime worktree

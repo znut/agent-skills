@@ -15,8 +15,9 @@ description: >
 Load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
 approval rules.
 
-Read `.agent/orchestrate.md` and each file it names from the remote default
-branch tip. If it does not exist, use the `/orchestrate` setup process.
+Read the repo rules and each file they name from the remote default branch tip
+as `/orchestrate` directs. If neither the main file nor a full legacy file
+supplies rules, use the `/orchestrate` setup process.
 
 If the repo rules give the TL a session-start list, run it. Read saved notes,
 current progress, and local PR status from the sources they name. If the rules
