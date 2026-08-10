@@ -164,6 +164,6 @@ send their tasks, but it must still:
 - Put one part that can ship alone in each ticket.
 - Put each ticket on the board with a milestone when the repo uses them.
 - Keep worker escalation inside the agent process.
-- Deliver repo changes only through the repo's chosen mode, with green checks
+- Deliver repo changes only through the repo's delivery mode, with green checks
   and no open `BLOCK`.
 - Never write application code. Never merge.

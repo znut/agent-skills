@@ -3,7 +3,7 @@ name: orchestrate
 description: >
   Run repo work through subagents. Split work into small tasks, give each worker
   an isolated git worktree, check the result, and require the worker to commit,
-  pass review, and deliver through the repo's chosen mode. Read project rules
+  pass review, and deliver through the repo's delivery mode. Read project rules
   from the repo. Pair this skill with /tl for engineering work or /pm for
   product work. Trigger: "orchestrate", "fan out agents", "dispatch subagents",
   "parallel agents", "multi-agent", or "/orchestrate".
@@ -26,10 +26,11 @@ supplies rules, run setup. Read each named file from the same remote tip.
 The repo rules must state:
 
 - the remote and default branch;
+- the delivery mode: `pr` or `push-only`;
 - git and host identity;
 - doc read order;
 - check commands;
-- the review check and checklist;
+- the review command and checklist;
 - PR labels, state, body, and issue links;
 - artifact rules;
 - code rules for workers;
@@ -45,7 +46,7 @@ unclear, ask the user before you send work to an agent.
 ## Duties
 
 The manager talks with the user, settles open choices, splits the work, sends
-tasks to workers, and checks each open PR. The manager does not edit a worker's
+tasks to workers, and inspects each open PR. The manager does not edit a worker's
 change.
 
 The active worker owns the task from its first edit through checks, review,
@@ -56,9 +57,9 @@ start no other agent. A reviewer may start no agent.
 
 The same rules apply when the manager changes repo files. Start from the right
 default-branch tip, use a separate worktree, pass review with no open `BLOCK`,
-and deliver through the repo's chosen mode.
+and deliver through the repo's delivery mode.
 
-Unless the repo rules choose push-only delivery, only this result counts as
+Unless the delivery mode is `push-only`, only this result counts as
 done:
 
 - all checks pass;
@@ -150,7 +151,7 @@ Every worker prompt must state all of the following.
   Finish every fetch and ref update before the worker pauses; the reviewer must
   not fetch or write refs.
 - Ask a fresh agent of the repo's reviewer type to review the exact committed
-  diff and run the repo's review check.
+  diff and run the repo's review command.
 - Pause the worker. Give the reviewer the worker's worktree, reviewed SHA,
   branch, base SHA, frozen default-branch SHA, task, acceptance rules,
   checklist, and changed paths. The reviewer must confirm that `HEAD` equals
@@ -163,7 +164,7 @@ Every worker prompt must state all of the following.
 - On the first `BLOCK`, the same running worker fixes every finding, reruns
   checks, commits, confirms a clean worktree, and starts a new reviewer.
 - On the second `BLOCK`, the same worker gets one more fix. It repeats the
-  checks, commit, clean-worktree check, and fresh review.
+  checks, commit, clean-worktree confirmation, and fresh review.
 - On the third `BLOCK`, rerun the required checks, commit only remaining task
   changes, confirm a clean worktree, push the continuation branch, open no PR,
   and return every finding. The manager must send the pushed branch to the next
@@ -179,17 +180,17 @@ Every worker prompt must state all of the following.
 - Push with `git push -u origin <branch>`.
 - Confirm that `git ls-remote origin refs/heads/<branch>` equals the reviewed
   SHA. Do not open a PR when they differ.
-- If the repo rules choose push-only delivery, report the pushed branch and
+- If the delivery mode is `push-only`, report the pushed branch and
   skip the rest of the PR and artifact steps.
 - On `PASS`, open the PR with `gh pr create --base <default> --head <branch>`.
   When `draft_first: required` is set, pass `--draft`. Apply required labels
-  and follow any check that runs before PR creation.
+  and follow any pre-PR gate the repo runs.
 - Use `Resolves #N` for each ticket that should close on merge. A plain `#N`
   only links the ticket.
 - Add each required artifact. Open and inspect the first artifact made by a
   new tool or fixture.
-- Wait for required checks. With `draft_first: required`, report the draft to
-  the manager and do not mark it ready.
+- Wait for the PR's required CI checks. With `draft_first: required`, report
+  the draft to the manager and do not mark it ready.
 - After push and PR work, run plain `git worktree remove <path>` from outside
   the worktree. Never use `--force` or a broad `git worktree prune`. A runtime
   lock means `worktree_cleanup: harness-locked`. A refusal due to changed or
@@ -241,7 +242,7 @@ create a new type.
 
 ## Review after the PR opens
 
-The manager checks the PR but does not fix it.
+The manager inspects the PR but does not fix it.
 
 1. Confirm that the exact PR head and remote branch tip match the reviewed
    commit.
@@ -250,13 +251,14 @@ The manager checks the PR but does not fix it.
    exist and look right.
 4. Confirm that the final review came from a fresh reviewer, its marker names
    the PR tip when the repo uses markers, and no `BLOCK` remains.
-5. Check scope, decision records, secrets, `.env` files, and lockfile changes.
-6. With `draft_first: required`, check the PR head again, then mark that exact
-   PR ready.
+5. Inspect scope, decision records, secrets, `.env` files, and lockfile
+   changes.
+6. With `draft_first: required`, confirm the PR head again, then mark that
+   exact PR ready.
 
-If any check fails, send a fresh worker the exact findings and the pushed
-branch. Do not edit the PR yourself. If all checks pass, report the ready URL
-and wait for the user. The user does not review a draft PR.
+If any of these steps fails, send a fresh worker the exact findings and the
+pushed branch. Do not edit the PR yourself. If every step passes, report the
+ready URL and wait for the user. The user does not review a draft PR.
 
 If the repo provides a local PR status service, watch it after reporting the
 PR. A merge notice says what happened; it does not grant approval. After the
@@ -285,7 +287,7 @@ user merges, fetch and start any task that depended on that merge.
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | A check fails                                   | The running worker fixes it. If it cannot continue, send a fresh worker of the same type the exact output.        |
 | A worker stops or returns nothing               | Inspect its branch and worktree without changing them, then send a fresh worker of the same type the saved state. |
-| A worker waits on a command but does not return | Wait for the normal command time, inspect its saved state, then continue with a fresh worker if needed.           |
+| A worker waits on a command but does not return | Wait for the command's timeout, inspect its saved state, then continue with a fresh worker if needed.             |
 | A push conflicts                                | Update in the worktree, rerun checks and review, then push.                                                       |
 | Scope grows                                     | Split it into small tasks and separate PRs.                                                                       |
 | A product choice remains open                   | Ask the user. Do not guess.                                                                                       |
@@ -296,7 +298,7 @@ user merges, fetch and start any task that depended on that merge.
 - The worker owns the task through the reviewed pushed branch and, when the
   repo uses PRs, the open PR.
 - Only a green PR with a fresh `PASS` and no open `BLOCK` counts as delivery,
-  except when repo rules choose push-only delivery.
+  except when the delivery mode is `push-only`.
 - The manager never fixes a worker's change.
 - No agent edits the user's main checkout.
 - A worker starts only fresh reviewers. A reviewer starts no agent.

@@ -47,6 +47,8 @@ Read these files in order:
 2. `<product plan>`
 3. `<decision records>`
 4. `<task progress>`
+5. `<writing-rules overlay — required before any doc edit; see
+   templates/writing-rules.md in the skills repo>`
 
 Read only the files that exist and that the changed paths need.
 

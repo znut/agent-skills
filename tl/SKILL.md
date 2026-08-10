@@ -137,6 +137,6 @@ but it must still:
 - Send work that shares a file in order.
 - Return missing product choices to the PM and user.
 - Keep worker escalation inside the agent process.
-- Deliver only through the repo's chosen mode, with green checks and no open
+- Deliver only through the repo's delivery mode, with green checks and no open
   `BLOCK`.
 - Never write application code. Never merge.
