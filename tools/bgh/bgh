@@ -1,18 +1,40 @@
 #!/bin/sh
-# bgh — bot-identity gh wrapper. Resolves the current repo's bot token and
-# execs gh with it, so mutations post as the repo's bot instead of the human
-# keychain login.
+# bgh — per-clone-identity gh wrapper. Resolves the current repo's configured
+# identity and execs gh as it: a bot token when the clone declares one, or the
+# human's own gh login when the clone opts into personal identity. Repo
+# scripts call bgh unconditionally either way — identity is the CLONE's
+# choice, never the call site's.
 #
 # Per-repo config (machine-local .git/config — never committed, and shared by
-# every worktree of the repo):
-#   git config agent.bot-token-file '~/.config/<bot>.token'
+# every worktree of the repo). Exactly one of:
+#   git config agent.bot-token-file '~/.config/<bot>.token'   # bot identity
+#   git config agent.gh-identity personal                     # own gh login
 # One-call override: BGH_TOKEN_FILE=<path> bgh …
 set -eu
 
 tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
 if [ -z "$tf" ]; then
-	echo 'bgh: no bot token configured for this repo.' >&2
-	echo "  set one:  git config agent.bot-token-file '~/.config/<bot>.token'" >&2
+	ident=$(git config --get agent.gh-identity 2>/dev/null || true)
+	if [ "$ident" = "personal" ]; then
+		# Personal mode: plain gh with the user's own auth (gh auth login).
+		# Same self-log contract as the bot path, for watcher self-echo skip.
+		if [ -n "${BGH_SELF_LOG:-}" ]; then
+			rc=0
+			out=$(gh "$@") || rc=$?
+			[ -n "$out" ] && printf '%s\n' "$out"
+			{
+				printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
+				printf '%s\n' "$out" | grep -oE 'discussion_r[0-9]+' | grep -oE '[0-9]+'
+				printf '%s\n' "$out" | grep -oE '"id": ?[0-9]+' | head -1 | grep -oE '[0-9]+'
+				printf '%s\n' "$out" | grep -xE '[0-9]{6,}'
+			} 2>/dev/null | sort -u >> "$BGH_SELF_LOG" || true
+			exit $rc
+		fi
+		exec gh "$@"
+	fi
+	echo 'bgh: no identity configured for this repo.' >&2
+	echo "  bot:       git config agent.bot-token-file '~/.config/<bot>.token'" >&2
+	echo '  personal:  git config agent.gh-identity personal   (uses your own `gh auth login`)' >&2
 	exit 1
 fi
 case $tf in
