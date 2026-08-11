@@ -30,6 +30,9 @@ tools/
   on-merge/run.mjs            generic post-merge step runner
   bgh/                        bot-identity gh wrapper (per-repo token file)
   main-health/                post-merge full-suite runner on the main tip
+                              (env: MAIN_HEALTH_STEP_TIMEOUT per-step watchdog,
+                              MAIN_HEALTH_SKIP_PATTERN skip-eligible paths;
+                              runs at background QoS)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```

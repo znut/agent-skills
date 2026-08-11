@@ -17,6 +17,18 @@
 # when state.json already records the current origin/main sha; self-reruns
 # once when main moved while a run was in flight (a mid-run merge would
 # otherwise go unchecked until the next merge event).
+#
+# Load discipline: this runner is an alarm, so it must never starve real work
+# or wedge silently. Three guards, all tunable by env:
+#   MAIN_HEALTH_STEP_TIMEOUT  per-step watchdog seconds (default 1800): a step
+#                             exceeding it has its process tree killed and the
+#                             run goes red instead of hanging forever.
+#   MAIN_HEALTH_SKIP_PATTERN  extended-regex of "can't affect the suite" paths
+#                             (default '^docs/|\.md$'): when the previous run
+#                             was green and every changed path since it matches,
+#                             the run is skipped and stamped green.
+#   (QoS)                     every step runs at background priority —
+#                             `taskpolicy -b` on macOS, `nice -n 19` elsewhere.
 set -u
 
 CONFIG_NAME="${1:?usage: main-health.sh <configName> <repoPath> \"<apps>\"}"
@@ -38,11 +50,47 @@ trap 'rm -f "$LOCK"' EXIT
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$VAR/run.log"; }
 
+STEP_TIMEOUT="${MAIN_HEALTH_STEP_TIMEOUT:-1800}"
+SKIP_PATTERN="${MAIN_HEALTH_SKIP_PATTERN:-^docs/|\.md$}"
+# Background QoS — the alarm must lose CPU contests to real work.
+if command -v taskpolicy >/dev/null 2>&1; then QOS="taskpolicy -b"; else QOS="nice -n 19"; fi
+
+# Run "$@" with output to $1, killed after STEP_TIMEOUT. Kill covers the whole
+# tree: test-runner children carry the worktree path in argv, so a scoped
+# pkill -f "$WT" reaps what a parent-pid kill would orphan.
+run_bounded() {
+	local out="$1"; shift
+	(cd "$WT" && $QOS "$@") > "$out" 2>&1 &
+	local cmd=$!
+	(sleep "$STEP_TIMEOUT" && kill -9 "$cmd" 2>/dev/null && pkill -9 -f "$WT" 2>/dev/null) &
+	local wd=$!
+	wait "$cmd"
+	local rc=$?
+	kill "$wd" 2>/dev/null
+	wait "$wd" 2>/dev/null
+	[ "$rc" -ge 128 ] && log "step killed by watchdog after ${STEP_TIMEOUT}s (wedge)"
+	return "$rc"
+}
+
 run_pass() {
 	git -C "$REPO" fetch origin -q
 	SHA=$(git -C "$REPO" rev-parse origin/main)
 	if [ -f "$VAR/state.json" ] && grep -q "\"sha\": \"$SHA\"" "$VAR/state.json"; then
 		return 0
+	fi
+
+	# Every change since the last GREEN run matches the skip pattern → nothing
+	# the suite could newly prove; stamp green without running.
+	if [ -f "$VAR/state.json" ] && grep -q '"green": true' "$VAR/state.json"; then
+		PREV=$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$VAR/state.json" | head -1)
+		if [ -n "$PREV" ] && git -C "$REPO" rev-parse -q --verify "$PREV^{commit}" >/dev/null 2>&1; then
+			if ! git -C "$REPO" diff --name-only "$PREV..$SHA" | grep -qvE "$SKIP_PATTERN"; then
+				printf '{ "sha": "%s", "finishedAt": "%s", "green": true, "steps": { "skipped": "skip-pattern-only since %s", "_": "end" } }\n' \
+					"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PREV:0:8}" > "$VAR/state.json"
+				log "run skipped sha=$SHA (skip-pattern-only since ${PREV:0:8})"
+				return 0
+			fi
+		fi
 	fi
 	log "run start sha=$SHA"
 
@@ -58,14 +106,14 @@ run_pass() {
 	STEPS=""
 	step() {
 		local name="$1"; shift
-		if (cd "$WT" && "$@") > "$VAR/step-$name.log" 2>&1; then
+		if run_bounded "$VAR/step-$name.log" "$@"; then
 			STEPS="$STEPS\"$name\": \"ok\", "
 			log "$name: ok"
 		else
 			# retry once — concurrent worker suites contend for chromium/CPU and
 			# time out; a red alarm must survive an isolated second attempt
 			log "$name: fail — retrying once"
-			if (cd "$WT" && "$@") > "$VAR/step-$name.log" 2>&1; then
+			if run_bounded "$VAR/step-$name.log" "$@"; then
 				STEPS="$STEPS\"$name\": \"ok(retry)\", "
 				log "$name: ok on retry"
 			else
