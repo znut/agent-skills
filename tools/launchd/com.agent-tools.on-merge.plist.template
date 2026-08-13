@@ -19,6 +19,11 @@
 		<key>AGENT_TOOLS_HOME</key><string>__AGENT_TOOLS_HOME__</string>
 	</dict>
 	<key>WorkingDirectory</key><string>__TOOLS_DIR__/on-merge</string>
+	<!-- Post-merge steps (full test suites, screenshot runs) can hold the CPU
+	     for an hour on a busy merge day. Background process type keeps the
+	     whole child tree at utility QoS so it never competes with the user's
+	     interactive work; it still runs full-speed when the machine idles. -->
+	<key>ProcessType</key><string>Background</string>
 	<key>WatchPaths</key>
 	<array>
 		<string>__VAR_DIR__/__CONFIG_NAME__/gh-status/events</string>
