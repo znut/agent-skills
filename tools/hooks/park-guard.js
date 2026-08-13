@@ -143,7 +143,15 @@ for (const line of lines) {
 	if (line.includes("task-notification")) {
 		for (const m of line.matchAll(NOTIF)) ended.add(m[1])
 	}
-	if (!(line.includes("Bash") || line.includes("TaskStop") || line.includes("background"))) continue
+	if (
+		!(
+			line.includes("Bash") ||
+			line.includes("TaskStop") ||
+			line.includes("background") ||
+			line.includes("cannot stop it") // ownership rejections arrive in result-only lines
+		)
+	)
+		continue
 	let entry
 	try {
 		entry = JSON.parse(line)
@@ -162,6 +170,13 @@ for (const line of lines) {
 			if (tid) ended.add(String(tid))
 		} else if (item.type === "tool_result") {
 			const text = flattenContent(item.content)
+			// A TaskStop rejected for ownership proves the task is FOREIGN (another
+			// session's) — never count it outstanding. Session task traces can leak
+			// into a resumed subagent's transcript, and blocking on another
+			// session's state wedges finished workers (three workers, 2026-08-13).
+			for (const m of text.matchAll(/Task ([A-Za-z0-9_-]+) is owned by [^;]+; agent \S+ cannot stop it/g)) {
+				ended.add(m[1])
+			}
 			if (!text.includes("background")) continue
 			const outputMatch = OUTPUT_PATH.exec(text)
 			const output = outputMatch ? outputMatch[1] : "(output file not named)"
