@@ -40,8 +40,11 @@ GH_DIR="$(dirname "$GH_PATH")"
 # Both directories must land in the rendered plist PATH: launchd invokes
 # ProgramArguments[0] (bun) directly, and board-snapshot / on-merge command
 # steps shell out to `gh` — computed fresh here every run, never hardcoded to
-# one bun version or one package manager's install prefix.
-RENDERED_PATH="$BUN_DIR:$GH_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
+# one bun version or one package manager's install prefix. ~/.local/bin rides
+# along for the repo-level wrappers on-merge steps invoke (e.g. the bgh
+# identity wrapper) — without it, any step or test that shells out to one
+# fails only under launchd and never in an interactive checkout.
+RENDERED_PATH="$BUN_DIR:$GH_DIR:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$LAUNCH_AGENTS_DIR"
 
