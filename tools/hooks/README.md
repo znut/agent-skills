@@ -174,3 +174,32 @@ Mechanics and edges:
   allow. Repo opt-out: `- park_guard: off` under `## Hook settings`.
 - Wiring validation: `PARK_GUARD_DEBUG=1` in the harness environment
   appends each stop payload to `/tmp/park-guard-debug.jsonl`.
+
+## Session-role marker (UserPromptSubmit)
+
+`session-role-marker.sh` records which role skill a session runs (`/pm`,
+`/tl`, `/tl <lane>`) so a statusline can label parallel role sessions. It
+writes the role string (`pm`, `tl`, `tl-<lane>`) to
+`/tmp/cc-session-roles/<session_id>`; read it back in a statusline script.
+Silent and fail-open: no output, always exit 0.
+
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command",
+        "command": "bash <path-to>/tools/hooks/session-role-marker.sh",
+        "timeout": 5, "statusMessage": "role marker" } ] }
+    ]
+
+## Watch-guard (Stop)
+
+`watch-guard.sh` refuses to end a turn in a repo that ships
+`scripts/watch-lane.sh` while no watcher process is alive — a standing
+watcher must be re-armed after every fire, and this enforces the pairing
+mechanically. Self-scoping on that file's presence in the session's cwd;
+every other repo exits clean. Fail-open on missing cwd or unreadable input.
+Repo opt-out: `- watch_guard: off` under `## Hook settings`.
+
+    "Stop": [
+      { "hooks": [ { "type": "command",
+        "command": "bash <path-to>/tools/hooks/watch-guard.sh",
+        "timeout": 5, "statusMessage": "watch-guard" } ] }
+    ]
