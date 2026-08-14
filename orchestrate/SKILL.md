@@ -57,9 +57,10 @@ starts a fresh worker with the saved state only when the resume fails.
 
 The active worker owns the task from its first edit through checks, review,
 push, and, when the repo uses PRs, the open PR. After a third `BLOCK`, the next
-worker takes ownership. A worker may start one fresh reviewer for each review.
-The reviewer uses the worker's worktree while the worker pauses. The worker may
-start no other agent. A reviewer may start no agent.
+worker takes ownership. A worker may start the review's fresh reviewers — one,
+or the repo-defined panel derived from the diff — and no other agent. Each
+reviewer uses the worker's worktree while the worker pauses. A reviewer may
+start no agent.
 
 The same rules apply when the manager changes repo files. Start from the right
 default-branch tip, use a separate worktree, pass review with no open `BLOCK`,
@@ -134,8 +135,9 @@ Every worker prompt must state all of the following.
   or rule on its own.
 - Copy the repo's code rules into the prompt without changing their words.
 - Never edit the main checkout, another worktree, or user agent settings.
-- Start no agent except one fresh reviewer per review round. The reviewer must
-  start no agent.
+- Start no agent except the review round's fresh reviewer — or, when the repo
+  rules derive a reviewer panel from the diff, that panel's fresh reviewers,
+  started concurrently. No reviewer may start an agent.
 
 ### Branch and checks
 
@@ -173,7 +175,10 @@ Every worker prompt must state all of the following.
   Finish every fetch and ref update before the worker pauses; the reviewer must
   not fetch or write refs.
 - Ask a fresh agent of the repo's reviewer type to review the exact committed
-  diff and run the repo's review command.
+  diff and run the repo's review command. When the repo rules derive a reviewer
+  panel from the diff, start every panelist fresh and concurrently with its own
+  focus contract; the round passes only when every panelist returns `PASS`, and
+  one panelist writes any required marker.
 - Pause the worker. Give the reviewer the worker's worktree, reviewed SHA,
   branch, base SHA, frozen default-branch SHA, task, acceptance rules,
   checklist, and changed paths. The reviewer must confirm that `HEAD` equals
@@ -272,8 +277,9 @@ The manager inspects the PR but does not fix it.
 2. Open the PR diff and inspect at least one changed file.
 3. Confirm that CI passes, labels and text are right, and required artifacts
    exist and look right.
-4. Confirm that the final review came from a fresh reviewer, its marker names
-   the PR tip when the repo uses markers, and no `BLOCK` remains.
+4. Confirm that the final review came from fresh reviewers — the full derived
+   panel where the repo defines one — its marker names the PR tip when the repo
+   uses markers, and no `BLOCK` remains.
 5. Inspect scope, decision records, secrets, `.env` files, and lockfile
    changes.
 6. With `draft_first: required`, confirm the PR head again, then mark that
