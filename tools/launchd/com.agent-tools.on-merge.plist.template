@@ -19,11 +19,21 @@
 		<key>AGENT_TOOLS_HOME</key><string>__AGENT_TOOLS_HOME__</string>
 	</dict>
 	<key>WorkingDirectory</key><string>__TOOLS_DIR__/on-merge</string>
-	<!-- Post-merge steps (full test suites, screenshot runs) can hold the CPU
-	     for an hour on a busy merge day. Background process type keeps the
-	     whole child tree at utility QoS so it never competes with the user's
-	     interactive work; it still runs full-speed when the machine idles. -->
-	<key>ProcessType</key><string>Background</string>
+	<!-- Deliberately NO ProcessType=Background here (and the currently-
+	     installed plist on this machine never had it either — this comment
+	     just makes that permanent instead of accidental). ProcessType
+	     Background maps to Darwin's DARWIN_BG QoS class, a hard scheduler
+	     throttle rather than a proportional deprioritization: on a machine
+	     that's continuously near its core count in interactive load (many
+	     parallel worker sessions is the normal state here, not an edge case),
+	     DARWIN_BG starves the whole child tree to a near-zero CPU duty cycle
+	     indefinitely instead of merely yielding to real work — confirmed
+	     live via main-health.sh's own now-removed `taskpolicy -b` step QoS,
+	     which is the same mechanism (#2120). Per-step `nice -n 19` inside
+	     main-health.sh already provides the "lose CPU contests to real work"
+	     behavior without that catastrophic-starvation failure mode; this job
+	     itself (mostly idle, waiting on WatchPaths) doesn't need backgrounding
+	     at the plist level too. -->
 	<key>WatchPaths</key>
 	<array>
 		<string>__VAR_DIR__/__CONFIG_NAME__/gh-status/events</string>
