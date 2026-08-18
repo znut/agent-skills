@@ -37,14 +37,20 @@ fi
 
 BUN_DIR="$(dirname "$BUN_PATH")"
 GH_DIR="$(dirname "$GH_PATH")"
-# Both directories must land in the rendered plist PATH: launchd invokes
-# ProgramArguments[0] (bun) directly, and board-snapshot / on-merge command
-# steps shell out to `gh` — computed fresh here every run, never hardcoded to
-# one bun version or one package manager's install prefix. ~/.local/bin rides
-# along for the repo-level wrappers on-merge steps invoke (e.g. the bgh
-# identity wrapper) — without it, any step or test that shells out to one
-# fails only under launchd and never in an interactive checkout.
-RENDERED_PATH="$BUN_DIR:$GH_DIR:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# node is optional for the poller but load-bearing for on-merge test steps:
+# vitest's cloudflare pool spawns a real `node` for its runner; without node
+# on PATH it lands on bun's node shim and the runner start times out
+# (main-health wedge, ez-opd #2120). Resolve it the same way as bun/gh.
+NODE_PATH_BIN="$(command -v node || true)"
+NODE_DIR="${NODE_PATH_BIN:+$(dirname "$NODE_PATH_BIN")}"
+# All three directories must land in the rendered plist PATH: launchd invokes
+# ProgramArguments[0] (bun) directly, board-snapshot / on-merge command steps
+# shell out to `gh`, and on-merge test steps need `node` — computed fresh here
+# every run, never hardcoded to one version or one package manager's install
+# prefix. ~/.local/bin rides along for the repo-level wrappers on-merge steps
+# invoke (e.g. the bgh identity wrapper) — without it, any step or test that
+# shells out to one fails only under launchd and never in an interactive checkout.
+RENDERED_PATH="$BUN_DIR:${NODE_DIR:+$NODE_DIR:}$GH_DIR:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$LAUNCH_AGENTS_DIR"
 
