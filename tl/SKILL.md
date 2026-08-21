@@ -12,6 +12,10 @@ description: >
 
 ## Start
 
+Run `tools/boot-report.sh tl-product` or `tools/boot-report.sh tl-platform`
+once, then apply judgment (acting on bus mail, advancing cursors, and
+dispatching work stays manual).
+
 Load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
 approval rules.
 

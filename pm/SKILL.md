@@ -12,6 +12,9 @@ description: >
 
 ## Start
 
+Run `tools/boot-report.sh pm` once, then apply judgment (acting on bus mail,
+advancing cursors, and dispatching work stays manual).
+
 Load `/orchestrate`. Follow its rules for each repo file change.
 
 Read the repo rules and each file they name from the remote default branch tip
