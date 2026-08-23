@@ -12,8 +12,11 @@ description: >
 
 ## Start
 
-Run `tools/boot-report.sh pm` once, then apply judgment (acting on bus mail,
-advancing cursors, and dispatching work stays manual).
+Run `boot-report pm` once (the `tools/boot-report.sh` collector from the
+agent-skills tools family, installed on PATH like `bgh`; fall back to
+`<agent-skills>/tools/boot-report.sh pm` if the name is missing), then apply
+judgment (acting on bus mail, advancing cursors, and dispatching work stays
+manual).
 
 Load `/orchestrate`. Follow its rules for each repo file change.
 

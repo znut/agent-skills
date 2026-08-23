@@ -12,9 +12,12 @@ description: >
 
 ## Start
 
-Run `tools/boot-report.sh tl-product` or `tools/boot-report.sh tl-platform`
-once, then apply judgment (acting on bus mail, advancing cursors, and
-dispatching work stays manual).
+Run `boot-report tl-product` or `boot-report tl-platform` once (the
+`tools/boot-report.sh` collector from the agent-skills tools family, installed
+on PATH like `bgh`; fall back to `<agent-skills>/tools/boot-report.sh <role>`
+if the name is missing). Set `BOOT_BOARD_FILTER=<ERE>` to restrict the board
+rows to the chosen area. Then apply judgment (acting on bus mail, advancing
+cursors, and dispatching work stays manual).
 
 Load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
 approval rules.

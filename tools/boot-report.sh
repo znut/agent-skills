@@ -140,8 +140,16 @@ else
 	fi
 fi
 
+bot="$identity"
+[ -n "$bot" ] || bot=$(resolve_bot_login)
+
 # 2. Base ancestry
 section "Base ancestry"
+if git fetch origin -q 2>/dev/null; then
+	printf 'fetch:   ok\n'
+else
+	printf 'fetch:   FAILED (origin refs may be stale)\n'
+fi
 default_branch=$(git rev-parse --abbrev-ref --verify origin/HEAD 2>/dev/null || true)
 default_branch=${default_branch#origin/}
 if [ -z "$default_branch" ]; then
@@ -220,7 +228,7 @@ else
 		# Role lane PRs are not determinable from state.json alone; show recent events.
 		events_dir="$gh_status_dir/events"
 		if [ -d "$events_dir" ]; then
-			printf 'recent events (role lane filter not determinable from state.json):\n'
+			printf 'recent events (last 3 per log; body shown only for non-bot comments):\n'
 			event_tmp="$tmpdir/events"
 			# GNU find -printf path
 			find "$events_dir" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- > "$event_tmp" || true
@@ -233,7 +241,11 @@ else
 				[ -f "$log" ] || continue
 				log_mtime=$(file_mtime "$log")
 				printf '  %s (last %s): ' "${log##*/}" "$(human_age $((now - log_mtime)) )"
-				tail -3 "$log" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-300 || true
+				tail -3 "$log" 2>/dev/null | jq -r --arg bot "$bot" '
+					"\(.type)@\(.at[0:16]) \(.actor // "-")"
+					+ (if .type == "commented" and (.actor // "") != $bot
+					   then " — " + ((.body // "") | gsub("\n"; " ") | .[0:120])
+					   else "" end)' 2>/dev/null | paste -sd ';' - | cut -c1-400 | tr -d '\n' || true
 				printf '\n'
 			done < "$event_tmp"
 		else
@@ -244,8 +256,10 @@ fi
 
 # 5. Open PRs
 section "Open PRs"
-prs_json=$(gh pr list --state open --json number,title,labels,headRefName,isDraft,updatedAt 2>/dev/null || true)
-if [ -z "$prs_json" ] || [ "$prs_json" = "[]" ]; then
+if ! prs_json=$("$ghw" pr list --state open --json number,title,labels,headRefName,isDraft,updatedAt 2>/dev/null); then
+	printf 'unavailable (%s pr list failed — not "none"; check auth/wrapper)\n' "$ghw"
+	prs_json=''
+elif [ -z "$prs_json" ] || [ "$prs_json" = "[]" ]; then
 	printf 'none\n'
 else
 	printf '%s' "$prs_json" | jq -r '.[] | "#\(.number) \(.isDraft // false | if . then "[DRAFT] " else "" end)\(.title) [\(.headRefName)] (\(.updatedAt))"' 2>/dev/null | head -20
@@ -270,7 +284,6 @@ else
 		else
 			printf 'cursor:  %s (NOT advancing)\n' "$last_seen"
 			last_epoch=$(isodate_to_epoch "$last_seen")
-			bot=$(resolve_bot_login)
 			deltas=0
 			while IFS= read -r line; do
 				[ -n "$line" ] || continue
@@ -314,13 +327,18 @@ else
 	fi
 	# Role-specific lane filtering is not determinable from a generic snapshot;
 	# show all rows whose Status column is Ready.
-	ready_rows=$(grep '| Ready |' "$board_snapshot_file" 2>/dev/null | head -20)
+	board_filter="${BOOT_BOARD_FILTER:-.}"
+	ready_rows=$(grep '| Ready |' "$board_snapshot_file" 2>/dev/null | grep -E -- "$board_filter" | head -20)
 	if [ -z "$ready_rows" ]; then
 		printf 'no Ready rows\n'
 	else
-		printf '(role lane filter not determinable from snapshot; showing all Ready rows)\n'
+		if [ -n "${BOOT_BOARD_FILTER:-}" ]; then
+			printf '(filter: BOOT_BOARD_FILTER=%s)\n' "$BOOT_BOARD_FILTER"
+		else
+			printf '(no lane filter — set BOOT_BOARD_FILTER to an ERE, e.g. "Control Plane|Platform|Shared")\n'
+		fi
 		printf '%s\n' "$ready_rows"
-		total=$(grep '| Ready |' "$board_snapshot_file" 2>/dev/null | wc -l | tr -d ' ')
+		total=$(grep '| Ready |' "$board_snapshot_file" 2>/dev/null | grep -E -- "$board_filter" | wc -l | tr -d ' ')
 		[ "$total" -gt 20 ] && printf '(showing 20 of %s)\n' "$total" || true
 	fi
 fi
@@ -349,6 +367,9 @@ while IFS= read -r line; do
 		locked*)
 			locked_reason=${line#locked}
 			locked_reason=${locked_reason# }
+			;;
+		prunable*)
+			printf 'prunable: %s (%s)\n' "$current_wt" "${line#prunable }"
 			;;
 	esac
 done < "$wt_tmp"

@@ -29,6 +29,9 @@ tools/
   on-merge/run.mjs            generic post-merge step runner
   bgh/                        bot-identity gh wrapper (per-repo token file)
   boot-report.sh              read-only session-boot state collector for TL/PM roles
+                              (install on PATH like bgh:
+                              ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
+                              skills call `boot-report <role>`)
   main-health/                post-merge full-suite runner on the main tip
                               (env: MAIN_HEALTH_STEP_TIMEOUT per-step watchdog,
                               MAIN_HEALTH_SKIP_PATTERN skip-eligible paths;
