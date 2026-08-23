@@ -79,8 +79,14 @@ const NAMED_ENTITIES: Record<string, string> = {
 
 function decodeEntities(text: string): string {
 	return text
-		.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-		.replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+		.replace(/&#x([0-9a-fA-F]+);/g, (m, hex) => {
+			const cp = parseInt(hex, 16);
+			return Number.isNaN(cp) || cp > 0x10ffff ? m : String.fromCodePoint(cp);
+		})
+		.replace(/&#(\d+);/g, (m, dec) => {
+			const cp = Number(dec);
+			return Number.isNaN(cp) || cp > 0x10ffff ? m : String.fromCodePoint(cp);
+		})
 		.replace(/&([a-zA-Z]+);/g, (m, name) => NAMED_ENTITIES[name] ?? m);
 }
 
