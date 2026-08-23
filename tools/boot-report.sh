@@ -7,7 +7,7 @@
 # No cursors are advanced, no archives touched, no state written.
 #
 # Path resolution follows the repo's existing convention: parse
-# .pi/orchestrate.local.md OR .claude/orchestrate.local.md (prefer the one
+# .agent/orchestrate.local.md, else .pi/ or .claude/orchestrate.local.md (prefer the one
 # matching the current harness env vars, else .pi), reading the second backtick
 # field of lines shaped `- `key`: `value``.
 set -euo pipefail
@@ -41,9 +41,14 @@ path_of() { # <key> <local_md>
 }
 
 find_local_md() {
+	# .agent/orchestrate.local.md is the harness-neutral location (ez-opd #2444);
+	# the per-harness files are the legacy fallback for un-migrated machines.
+	local agent_md="$repo_root/.agent/orchestrate.local.md"
 	local pi_md="$repo_root/.pi/orchestrate.local.md"
 	local claude_md="$repo_root/.claude/orchestrate.local.md"
-	if [ -f "$pi_md" ] && [ -f "$claude_md" ]; then
+	if [ -f "$agent_md" ]; then
+		printf '%s' "$agent_md"
+	elif [ -f "$pi_md" ] && [ -f "$claude_md" ]; then
 		if [ -n "${PI_CODING_AGENT:-}" ]; then
 			printf '%s' "$pi_md"
 		elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
