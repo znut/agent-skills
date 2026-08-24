@@ -182,6 +182,70 @@ else
 	printf 'warn: local and origin/%s diverged\n' "$default_branch"
 fi
 
+# 2b. Rules freshness — skip the full rules read when nothing under .agent/ moved.
+# Stamp is written by the AGENT after it reads (this script stays read-only);
+# the exact command is printed so the stamp is one paste away.
+section "Rules freshness"
+var_dir=''
+if [ -n "$session_bus_dir" ]; then var_dir=$(dirname "$session_bus_dir"); fi
+if [ -z "$var_dir" ]; then var_dir="$HOME/.config/agent-tools/var/$(basename "$repo_root")"; fi
+rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/null || true)
+rules_stamp="$var_dir/rules-read/${role}.stamp"
+if [ -z "$rules_tree" ]; then
+	printf 'rules:   no .agent/ tree on origin/%s (legacy .claude/orchestrate.md — read it)\n' "$default_branch"
+else
+	rules_short=$(printf '%s' "$rules_tree" | cut -c1-8)
+	if [ -f "$rules_stamp" ]; then
+		read -r stamp_tree stamp_date < "$rules_stamp" || true
+		if [ "$stamp_tree" = "$rules_tree" ]; then
+			printf 'rules:   .agent/@%s UNCHANGED since %s → skip the rules read; grep one section only when a rule is in doubt\n' "$rules_short" "${stamp_date:-?}"
+		else
+			printf 'rules:   .agent/@%s CHANGED since %s (was %s) → read the changed files only:\n' "$rules_short" "${stamp_date:-?}" "$(printf '%s' "$stamp_tree" | cut -c1-8)"
+			git diff-tree --name-only -r "$stamp_tree" "$rules_tree" 2>/dev/null | sed 's/^/  .agent\//' || true
+			printf 'stamp:   mkdir -p %s && echo "%s %s" > %s\n' "$(dirname "$rules_stamp")" "$rules_tree" "$(date +%F)" "$rules_stamp"
+		fi
+	else
+		printf 'rules:   .agent/@%s never read by role %s → read .agent/orchestrate.md + the files it names, then stamp:\n' "$rules_short" "$role"
+		printf 'stamp:   mkdir -p %s && echo "%s %s" > %s\n' "$(dirname "$rules_stamp")" "$rules_tree" "$(date +%F)" "$rules_stamp"
+	fi
+fi
+
+# 2c. Handoff note — the previous same-role session's note (harness-neutral,
+# ez-opd #2445 shape). Printed bounded; the agent folds it into the ready report.
+section "Handoff note"
+handoff="$var_dir/notes/${role}.md"
+if [ -f "$handoff" ]; then
+	printf 'file:    %s (modified %s)\n' "$handoff" "$(date -r "$handoff" '+%Y-%m-%d %H:%M' 2>/dev/null || stat -c %y "$handoff" 2>/dev/null | cut -c1-16)"
+	head -80 "$handoff"
+	if [ "$(wc -l < "$handoff")" -gt 80 ]; then printf '… (truncated at 80 lines; note should stay shorter)\n'; fi
+else
+	printf '(none at %s)\n' "$handoff"
+fi
+
+# 2d. Memory index — Claude Code auto-memory index for this checkout, if any.
+# It is loaded into EVERY session's context, so size is a standing cost;
+# flag a prune when it grows past ~100 lines or the last prune is > 7 days old.
+section "Memory index"
+mem_slug=$(printf '%s' "$repo_root" | sed 's|/|-|g')
+mem_index="$HOME/.claude/projects/${mem_slug}/memory/MEMORY.md"
+if [ -f "$mem_index" ]; then
+	mem_lines=$(wc -l < "$mem_index" | tr -d ' ')
+	mem_bytes=$(wc -c < "$mem_index" | tr -d ' ')
+	mem_stamp="$(dirname "$mem_index")/.prune-stamp"
+	stale=0
+	if [ -f "$mem_stamp" ]; then
+		if [ -n "$(find "$mem_stamp" -mtime +7 2>/dev/null)" ]; then stale=1; fi
+		last_prune=$(date -r "$mem_stamp" +%F 2>/dev/null || echo '?')
+	else
+		stale=1; last_prune='never'
+	fi
+	verdict='ok'
+	if [ "$mem_lines" -gt 100 ] || [ "$stale" -eq 1 ]; then verdict='PRUNE DUE — one line per memory, hooks ≤ ~80 chars, delete consumed handoffs, then: touch '"$mem_stamp"; fi
+	printf 'index:   %s lines · %s bytes · last prune %s · %s\n' "$mem_lines" "$mem_bytes" "$last_prune" "$verdict"
+else
+	printf '(no Claude memory index for this checkout)\n'
+fi
+
 # 3. Bus inbox
 section "Bus inbox"
 if [ -z "$session_bus_dir" ]; then

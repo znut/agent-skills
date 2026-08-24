@@ -19,6 +19,11 @@ if the name is missing). Set `BOOT_BOARD_FILTER=<ERE>` to restrict the board
 rows to the chosen area. Then apply judgment (acting on bus mail, advancing
 cursors, and dispatching work stays manual).
 
+Act on the report's boot sections before anything else: `Rules freshness`
+UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
+`Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
+about 80 characters, consumed handoffs deleted) and touch its stamp.
+
 Load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
 approval rules.
 
