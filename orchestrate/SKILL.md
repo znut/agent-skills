@@ -16,8 +16,13 @@ PM or TL owns.
 
 ## Read the repo rules
 
-Run `git fetch origin -q`. Read `.agent/orchestrate.md` from the remote default
-branch with `git show origin/<default>:.agent/orchestrate.md`. If that file does
+Run `git fetch origin -q`. If the role's boot collector reports the rules tree
+(`.agent/`) UNCHANGED since this role's last read, skip the rules read: the rules
+are already in the role's memory and handoff state, and a single section may be
+grepped from the remote tip when one rule is in doubt. Otherwise read
+`.agent/orchestrate.md` from the remote default branch with
+`git show origin/<default>:.agent/orchestrate.md` (on CHANGED, only the files
+the collector lists), then write the stamp the collector prints. If that file does
 not exist, read `.claude/orchestrate.md`. Follow its link when it points to the
 main file. A full legacy `.claude/orchestrate.md` may supply the rules for that
 run; ask the user whether to move it to `.agent/orchestrate.md`. If neither file

@@ -18,6 +18,11 @@ agent-skills tools family, installed on PATH like `bgh`; fall back to
 judgment (acting on bus mail, advancing cursors, and dispatching work stays
 manual).
 
+Act on the report's boot sections before anything else: `Rules freshness`
+UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
+`Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
+about 80 characters, consumed handoffs deleted) and touch its stamp.
+
 Load `/orchestrate`. Follow its rules for each repo file change.
 
 Read the repo rules and each file they name from the remote default branch tip
@@ -33,6 +38,9 @@ the session bus or comment cursor, read the matching files in the
 design choices, dates that matter, and your suggested first task.
 
 A bare `/pm` means: run the session-start work, report, and wait.
+
+Write session memory and the handoff note once, at a natural pause or at the
+end of the session — not after each step.
 
 ## Duties
 
@@ -72,6 +80,14 @@ updates remain separate records; doc changes use separate worktrees.
 
 A repo may define a separate PM skill for a customer group or contact channel.
 Use that skill only when the user asks for it.
+
+## Code facts
+
+A code fact — where a string lives, what a component renders, which files a PR
+touched — goes to the runtime's read-only search agent when the runtime has
+one; the answer comes back, the file contents do not. The PM reads at most one
+known line range itself and never a whole source file. A mock still gets the
+full view: accuracy on a design round outranks the tokens.
 
 ## UI direction
 
