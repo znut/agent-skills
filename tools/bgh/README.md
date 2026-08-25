@@ -31,3 +31,24 @@ One-call override: `BGH_TOKEN_FILE=<path> bgh …`.
 The review-gate hook's bot-identity guard anchors on literal `gh` at command
 position, so `bgh` invocations pass untouched and bare mutating `gh` still
 blocks. The guard's error message names `bgh` as the preferred fix.
+
+## Self-event log
+
+`bgh` can automatically log the ids of comments and reviews it creates so the
+session's watcher can skip its own echoes. Set `BGH_SELF_LOG=<file>` explicitly,
+or let `bgh` derive it from the session harness and role marker:
+
+- **Claude Code**: when `BGH_SELF_LOG` is unset and `CLAUDE_CODE_SESSION_ID` is
+  set, `bgh` reads the role from `/tmp/cc-session-roles/$CLAUDE_CODE_SESSION_ID`
+  and writes to `<agent.self-events-dir>/<role>.ids` for posting-shaped calls.
+- **pi**: when `BGH_SELF_LOG` is unset, `CLAUDE_CODE_SESSION_ID` is empty, and
+  `PI_SESSION_ID` is set, `bgh` reads the role from
+  `/tmp/pi-session-roles/$PI_SESSION_ID` and writes to the same path.
+
+Posting-shaped calls are `pr comment`, `issue comment`, `pr review`, and `api`
+calls to comments/reviews endpoints using `POST` or `PATCH`. Path-unsafe
+session ids (`/`, `..`) are skipped. Explicit `BGH_SELF_LOG` always wins;
+absent config or marker falls back to plain `gh`.
+
+`tools/boot-report.sh <role>` writes the pi role marker when `PI_SESSION_ID` is
+present.

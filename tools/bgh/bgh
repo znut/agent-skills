@@ -57,7 +57,7 @@ fi
 # session id, so a worker's posts log to its orchestrator's role file — the
 # session's own watcher correctly skips them. Fast path when neither explicit
 # nor derivable: plain exec, zero overhead.
-if [ -z "${BGH_SELF_LOG:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+if [ -z "${BGH_SELF_LOG:-}" ]; then
 	posting=""
 	case " $* " in
 		*" pr comment "*|*" issue comment "*|*" pr review "*) posting=1 ;;
@@ -68,16 +68,27 @@ if [ -z "${BGH_SELF_LOG:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
 			esac ;;
 	esac
 	if [ -n "$posting" ]; then
-		case ${CLAUDE_CODE_SESSION_ID} in
-			*/*|*..*) ;; # path-unsafe session id: skip derivation
-			*)
-				sev_dir=$(git config --get agent.self-events-dir 2>/dev/null || true)
-				role=$(cat "/tmp/cc-session-roles/${CLAUDE_CODE_SESSION_ID}" 2>/dev/null || true)
-				if [ -n "$sev_dir" ] && [ -n "$role" ]; then
-					case $sev_dir in "~/"*) sev_dir=$HOME/${sev_dir#"~/"} ;; esac
-					mkdir -p "$sev_dir" 2>/dev/null && BGH_SELF_LOG="$sev_dir/$role.ids"
-				fi ;;
-		esac
+		derive_session_id=""
+		role_marker_dir=""
+		if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+			derive_session_id=${CLAUDE_CODE_SESSION_ID}
+			role_marker_dir="/tmp/cc-session-roles"
+		elif [ -n "${PI_SESSION_ID:-}" ]; then
+			derive_session_id=${PI_SESSION_ID}
+			role_marker_dir="/tmp/pi-session-roles"
+		fi
+		if [ -n "$derive_session_id" ]; then
+			case $derive_session_id in
+				*/*|*..*) ;; # path-unsafe session id: skip derivation
+				*)
+					sev_dir=$(git config --get agent.self-events-dir 2>/dev/null || true)
+					role=$(cat "${role_marker_dir}/${derive_session_id}" 2>/dev/null || true)
+					if [ -n "$sev_dir" ] && [ -n "$role" ]; then
+						case $sev_dir in "~/"*) sev_dir=$HOME/${sev_dir#"~/"} ;; esac
+						mkdir -p "$sev_dir" 2>/dev/null && BGH_SELF_LOG="$sev_dir/$role.ids"
+					fi ;;
+			esac
+		fi
 	fi
 fi
 if [ -n "${BGH_SELF_LOG:-}" ]; then

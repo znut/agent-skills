@@ -23,6 +23,16 @@ case "$role" in
 		;;
 esac
 
+# Write pi session role marker for bgh self-log auto-derivation.
+if [ -n "${PI_SESSION_ID:-}" ]; then
+	case ${PI_SESSION_ID} in
+		*/*|*..*) : ;; # path-unsafe session id: skip
+		*)
+			mkdir -p /tmp/pi-session-roles 2>/dev/null &&
+				printf '%s\n' "$role" > "/tmp/pi-session-roles/${PI_SESSION_ID}" 2>/dev/null || true ;;
+	esac
+fi
+
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
