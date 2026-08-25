@@ -68,6 +68,8 @@ interface AgentState {
 	process: ChildProcess;
 	collected: boolean;
 	lastStatus?: string;
+	/** True once a terminal status (done/needs_help/error) was already reported via agent_ping. */
+	terminalNotified?: boolean;
 	watcher?: fs.FSWatcher;
 	role: string;
 	model?: string;
@@ -95,7 +97,12 @@ interface LiveFile {
 const agents = new Map<string, AgentState>();
 
 /** Armed lane watchers, keyed by role. */
-const laneWatchers = new Map<string, ChildProcess>();
+interface LaneWatcher {
+	proc: ChildProcess;
+	/** Set when we deliberately kill the process on re-arm or shutdown. */
+	killed?: boolean;
+}
+const laneWatchers = new Map<string, LaneWatcher>();
 
 /**
  * Normalise any path inside a clone (primary checkout or linked worktree) to
@@ -350,9 +357,13 @@ function sendNotification(
 
 function watchStatus(pi: ExtensionAPI, agentId: string, state: AgentState): void {
 	const statusPath = path.join(state.dir, "status.json");
+	const terminalStatuses = new Set(["done", "needs_help", "error"]);
 	if (fs.existsSync(statusPath)) {
 		const status = readStatus(state.dir);
-		if (status) sendNotification(pi, state, agentId, status);
+		if (status) {
+			if (terminalStatuses.has(status.status)) state.terminalNotified = true;
+			sendNotification(pi, state, agentId, status);
+		}
 		return;
 	}
 	state.watcher = fs.watch(state.dir, (eventType, filename) => {
@@ -361,6 +372,7 @@ function watchStatus(pi: ExtensionAPI, agentId: string, state: AgentState): void
 		if (!status) return;
 		if (status.status === state.lastStatus) return;
 		state.lastStatus = status.status;
+		if (terminalStatuses.has(status.status)) state.terminalNotified = true;
 		sendNotification(pi, state, agentId, status);
 	});
 }
@@ -386,7 +398,8 @@ interface AgentResult {
 }
 
 async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentState, result: AgentResult): Promise<void> {
-	const status = result.exitCode === 0 && !result.errorMessage ? "done" : "error";
+	const emptyReturn = result.exitCode === 0 && (!result.output || result.output.trim().length === 0);
+	const status = emptyReturn ? "error" : result.exitCode === 0 && !result.errorMessage ? "done" : "error";
 	state.finishedAt = Date.now();
 	// Stamp model identity + timings so result.json is a complete per-task cost
 	// record (modelName = catalog-resolved version, model = the stable alias).
@@ -398,15 +411,21 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 		startedAt: state.startedAt,
 		finishedAt: state.finishedAt,
 	});
-	if (!readStatus(state.dir)) {
-		writeStatus(state.dir, {
-			status,
-			message: result.errorMessage || result.stderr?.slice(0, 500) || undefined,
-		});
+
+	const existingStatus = readStatus(state.dir);
+	const message = emptyReturn
+		? "empty return (protocol violation: no return block)"
+		: result.errorMessage || result.stderr?.slice(0, 500) || undefined;
+	if (!existingStatus || emptyReturn) {
+		writeStatus(state.dir, { status, message });
 	}
 	const reported = readStatus(state.dir);
 	writeLive(agentId, state, reported?.status ?? status);
-	sendNotification(pi, state, agentId, reported!);
+	// The subagent already reported its final status via agent_ping; don't
+	// notify again when the process later exits.
+	if (!state.terminalNotified) {
+		sendNotification(pi, state, agentId, reported!);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +435,8 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): string {
 	const existing = laneWatchers.get(role);
 	if (existing) {
-		existing.kill("SIGTERM");
+		existing.killed = true;
+		existing.proc.kill("SIGTERM");
 		laneWatchers.delete(role);
 	}
 	const script = path.join(ctx.cwd, "scripts", "watch-lane.sh");
@@ -432,7 +452,9 @@ function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): 
 	proc.stdout.on("data", (d: Buffer) => (out += d.toString("utf-8")));
 	proc.stderr.on("data", (d: Buffer) => (err += d.toString("utf-8")));
 	proc.on("close", (code) => {
+		const watcher = laneWatchers.get(role);
 		laneWatchers.delete(role);
+		if (watcher?.killed) return;
 		const stdout = out.trim();
 		const stderr = err.trim();
 		let text: string;
@@ -449,7 +471,7 @@ function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): 
 			/* session gone */
 		}
 	});
-	laneWatchers.set(role, proc);
+	laneWatchers.set(role, { proc, killed: false });
 	return `lane watcher armed for ${role}${prs.length ? ` (PRs: ${prs.join(", ")})` : ""} — runs detached; the fire arrives as a follow-up message`;
 }
 
@@ -524,6 +546,8 @@ function collectRows(cwd: string): WidgetRow[] {
 	// In-memory state wins (fresher than the last live.json flush).
 	for (const [id, state] of agents) {
 		if (projectRoot(state.dir) !== root && path.dirname(state.dir) !== root) continue;
+		// Skip finished agents that already aged out of the widget.
+		if (state.finishedAt && now - state.finishedAt > FINISHED_VISIBLE_MS) continue;
 		rows.set(id, {
 			id,
 			status: state.finishedAt ? (readStatus(state.dir)?.status ?? "done") : "running",
@@ -1064,9 +1088,10 @@ export default function (pi: ExtensionAPI) {
 			clearInterval(widgetTimer);
 			widgetTimer = null;
 		}
-		for (const proc of laneWatchers.values()) {
+		for (const watcher of laneWatchers.values()) {
+			watcher.killed = true;
 			try {
-				proc.kill("SIGTERM");
+				watcher.proc.kill("SIGTERM");
 			} catch {
 				/* ignore */
 			}
