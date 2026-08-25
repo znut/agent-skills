@@ -412,6 +412,12 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 		finishedAt: state.finishedAt,
 	});
 
+	// Stop the status watcher before we write status.json ourselves; otherwise
+	// a genuine crash-without-ping would be notified both by this watcher and
+	// by the finalizeAgent notification below.
+	state.watcher?.close();
+	state.watcher = undefined;
+
 	const existingStatus = readStatus(state.dir);
 	const message = emptyReturn
 		? "empty return (protocol violation: no return block)"
@@ -422,8 +428,10 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 	const reported = readStatus(state.dir);
 	writeLive(agentId, state, reported?.status ?? status);
 	// The subagent already reported its final status via agent_ping; don't
-	// notify again when the process later exits.
-	if (!state.terminalNotified) {
+	// notify again when the process later exits. If empty output reclassifies a
+	// prior terminal ping (e.g. done -> error), still notify the new status.
+	const overriddenTerminal = emptyReturn && state.terminalNotified;
+	if (!state.terminalNotified || overriddenTerminal) {
 		sendNotification(pi, state, agentId, reported!);
 	}
 }
@@ -447,14 +455,16 @@ function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): 
 		cwd: ctx.cwd,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
+	const watcher: LaneWatcher = { proc, killed: false };
 	let out = "";
 	let err = "";
 	proc.stdout.on("data", (d: Buffer) => (out += d.toString("utf-8")));
 	proc.stderr.on("data", (d: Buffer) => (err += d.toString("utf-8")));
 	proc.on("close", (code) => {
-		const watcher = laneWatchers.get(role);
-		laneWatchers.delete(role);
-		if (watcher?.killed) return;
+		// Only remove the record if it is still our own watcher; a re-arm may
+		// have replaced it with a new process by the time this fires.
+		if (laneWatchers.get(role) === watcher) laneWatchers.delete(role);
+		if (watcher.killed) return;
 		const stdout = out.trim();
 		const stderr = err.trim();
 		let text: string;
@@ -471,7 +481,7 @@ function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): 
 			/* session gone */
 		}
 	});
-	laneWatchers.set(role, { proc, killed: false });
+	laneWatchers.set(role, watcher);
 	return `lane watcher armed for ${role}${prs.length ? ` (PRs: ${prs.join(", ")})` : ""} — runs detached; the fire arrives as a follow-up message`;
 }
 
