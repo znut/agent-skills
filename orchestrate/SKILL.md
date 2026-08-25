@@ -45,7 +45,9 @@ If the repo has no rules, read [bootstrap.md](bootstrap.md), ask the user for
 the missing facts, and add the files through this process. Do this once. Later
 runs read the files and do not read `bootstrap.md`.
 
-Load `/tl` for engineering work or `/pm` for product work. If the role remains
+Load `/comm`. Every worker prompt tells the worker to load `/comm` at the PR
+step, immediately before it writes the PR body, PR comments, or ticket text;
+code comments follow the pasted code rules while it codes. Load `/tl` for engineering work or `/pm` for product work. If the role remains
 unclear, ask the user before you send work to an agent.
 
 ## Duties

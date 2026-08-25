@@ -24,7 +24,8 @@ UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
 `Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
 about 80 characters, consumed handoffs deleted) and touch its stamp.
 
-Load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
+Load `/comm` first: every reply, PR body, ticket, and comment you write follows
+its register table. Then load `/orchestrate`. Follow its base, worktree, worker, review, push, PR, and
 approval rules.
 
 Read the repo rules and each file they name from the remote default branch tip
