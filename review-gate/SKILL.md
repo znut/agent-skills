@@ -28,6 +28,9 @@ does not match or the worktree is not clean. Do not edit source or doc files.
 
 ## 2. Read current rules
 
+Load `/comm`: its register table and rules are the bar for every added comment
+and for the PR body when the panel's `+writing` focus is yours.
+
 Use the frozen default-branch SHA supplied by the worker. Do not fetch, update a
 ref, or run any other Git write. Read `.agent/orchestrate.md` with
 `git show <frozen-default-sha>:.agent/orchestrate.md`. Read the review checklist
