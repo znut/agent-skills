@@ -6,6 +6,11 @@
 # Read-only. Prints bounded, labeled sections from the current project checkout.
 # No cursors are advanced, no archives touched, no state written.
 #
+# Role scoping: the pm role reads only its own lane — gh-status and the
+# comment-cursor delta cover issue logs + PRs labeled `pm` (bot-only logs
+# dropped), Open PRs lists pm-labeled PRs plus a count of the rest, Worktree
+# hygiene is a one-line count. TL roles get every section in full.
+#
 # Path resolution follows the repo's existing convention: parse
 # .agent/orchestrate.local.md, else .pi/ or .claude/orchestrate.local.md (prefer the one
 # matching the current harness env vars, else .pi), reading the second backtick
@@ -285,6 +290,35 @@ else
 	fi
 fi
 
+# Open PRs are fetched once here: the pm role scopes gh-status, the
+# comment-cursor delta, and the Open PRs list to its own lane (label `pm`)
+# plus issue logs — TL-lane PR churn is the TL sessions' state, not the PM's.
+prs_json=''
+prs_failed=0
+if ! prs_json=$("$ghw" pr list --state open --json number,title,labels,headRefName,isDraft,updatedAt 2>/dev/null); then
+	prs_failed=1
+	prs_json=''
+fi
+lane_logs_tmp="$tmpdir/lane-logs"
+touch "$lane_logs_tmp"
+lane_scoped=0
+if [ "$role" = "pm" ]; then
+	lane_scoped=1
+	lane_pr_numbers=$(printf '%s' "$prs_json" | jq -r '.[] | select(.labels | map(.name) | index("pm")) | .number' 2>/dev/null || true)
+fi
+# lane_log_ok <path>: 0 when the role reads this event log at boot.
+lane_log_ok() {
+	[ "$lane_scoped" -eq 1 ] || return 0
+	case "${1##*/}" in
+		issue-*.log) return 0 ;;
+		pr-*.log)
+			n=${1##*/pr-}; n=${n%.log}
+			printf '%s\n' "$lane_pr_numbers" | grep -qx "$n"
+			;;
+		*) return 1 ;;
+	esac
+}
+
 # 4. gh-status
 section "gh-status"
 if [ -z "$gh_status_dir" ]; then
@@ -310,10 +344,31 @@ else
 			printf 'recent events (last 3 per log; body shown only for non-bot comments):\n'
 			event_tmp="$tmpdir/events"
 			# GNU find -printf path
-			find "$events_dir" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- > "$event_tmp" || true
-			if [ ! -s "$event_tmp" ]; then
+			event_all_tmp="$tmpdir/events-all"
+			find "$events_dir" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2- > "$event_all_tmp" || true
+			if [ ! -s "$event_all_tmp" ]; then
 				# BSD fallback: sort by mtime via stat.
-				find "$events_dir" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- > "$event_tmp" || true
+				find "$events_dir" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2- > "$event_all_tmp" || true
+			fi
+			omitted=0
+			bot_only=0
+			while IFS= read -r log; do
+				[ -n "$log" ] || continue
+				if ! lane_log_ok "$log"; then
+					omitted=$((omitted + 1))
+					continue
+				fi
+				# pm lane: a log whose last 3 events are all bot-authored is the
+				# bot's own ticket churn — nothing for the PM to act on.
+				if [ "$lane_scoped" -eq 1 ] && ! tail -3 "$log" 2>/dev/null | grep '"actor":"' | grep -qv "\"actor\":\"$bot\""; then
+					bot_only=$((bot_only + 1))
+					continue
+				fi
+				printf '%s\n' "$log" >> "$event_tmp"
+			done < "$event_all_tmp"
+			head -20 "$event_tmp" > "$event_tmp.top" && mv "$event_tmp.top" "$event_tmp"
+			if [ "$lane_scoped" -eq 1 ]; then
+				printf '  (pm lane: issue logs + PRs labeled pm; %s TL-lane PR logs + %s bot-only lane logs omitted)\n' "$omitted" "$bot_only"
 			fi
 			while IFS= read -r log; do
 				[ -n "$log" ] || continue
@@ -335,11 +390,20 @@ fi
 
 # 5. Open PRs
 section "Open PRs"
-if ! prs_json=$("$ghw" pr list --state open --json number,title,labels,headRefName,isDraft,updatedAt 2>/dev/null); then
+if [ "$prs_failed" -eq 1 ]; then
 	printf 'unavailable (%s pr list failed — not "none"; check auth/wrapper)\n' "$ghw"
-	prs_json=''
 elif [ -z "$prs_json" ] || [ "$prs_json" = "[]" ]; then
 	printf 'none\n'
+elif [ "$lane_scoped" -eq 1 ]; then
+	lane_json=$(printf '%s' "$prs_json" | jq '[.[] | select(.labels | map(.name) | index("pm"))]' 2>/dev/null || printf '[]')
+	lane_count=$(printf '%s' "$lane_json" | jq 'length' 2>/dev/null || printf '0')
+	count=$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null || printf '0')
+	if [ "$lane_count" -eq 0 ]; then
+		printf 'none in the pm lane (label pm)\n'
+	else
+		printf '%s' "$lane_json" | jq -r '.[] | "#\(.number) \(.isDraft // false | if . then "[DRAFT] " else "" end)\(.title) [\(.headRefName)] (\(.updatedAt))"' 2>/dev/null | head -20
+	fi
+	printf 'other open PRs: %s (TL lanes, omitted)\n' "$((count - lane_count))"
 else
 	printf '%s' "$prs_json" | jq -r '.[] | "#\(.number) \(.isDraft // false | if . then "[DRAFT] " else "" end)\(.title) [\(.headRefName)] (\(.updatedAt))"' 2>/dev/null | head -20
 	count=$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null || printf '0')
@@ -383,8 +447,14 @@ else
 				body=$(printf '%s' "$line" | jq -r '.body // empty' 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-120)
 				printf '  %s | %s | %s\n' "$created" "$actor" "$body"
 				deltas=$((deltas + 1))
-			done < <(find "$gh_status_dir/events" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) -exec cat {} + 2>/dev/null | sort -u)
-			[ "$deltas" -eq 0 ] && printf 'no new stakeholder comments\n' || true
+			done < <(find "$gh_status_dir/events" -maxdepth 1 -type f \( -name 'pr-*.log' -o -name 'issue-*.log' \) 2>/dev/null | while IFS= read -r log; do lane_log_ok "$log" && cat "$log"; done | sort -u)
+			if [ "$deltas" -eq 0 ]; then
+				if [ "$lane_scoped" -eq 1 ]; then
+					printf 'no new stakeholder comments in the pm lane (issue logs + PRs labeled pm)\n'
+				else
+					printf 'no new stakeholder comments\n'
+				fi
+			fi
 		fi
 	fi
 fi
@@ -422,8 +492,12 @@ else
 	fi
 fi
 
-# 8. Worktree hygiene
+# 8. Worktree hygiene — the pm role gets counts only: the trees belong to the
+# TL lanes' workers, and the pm's own docs worktrees are short-lived.
 section "Worktree hygiene"
+wt_out="$tmpdir/worktree-out"
+touch "$wt_out"
+wt_emit() { if [ "$lane_scoped" -eq 1 ]; then printf '%s\n' "$*" >> "$wt_out"; else printf '%s\n' "$*"; fi; }
 wt_tmp="$tmpdir/worktree"
 wt_reason_tmp="$tmpdir/worktree-locked"
 touch "$wt_tmp" "$wt_reason_tmp"
@@ -448,7 +522,7 @@ while IFS= read -r line; do
 			locked_reason=${locked_reason# }
 			;;
 		prunable*)
-			printf 'prunable: %s (%s)\n' "$current_wt" "${line#prunable }"
+			wt_emit "prunable: $current_wt (${line#prunable })"
 			;;
 	esac
 done < "$wt_tmp"
@@ -460,9 +534,9 @@ while IFS=$'\t' read -r wt reason; do
 	[ -n "$wt" ] || continue
 	pid=$(printf '%s' "$reason" | grep -oE 'pid:[0-9]+' | head -1 | cut -d: -f2 || true)
 	if [ -z "$pid" ]; then
-		printf 'locked (no pid): %s\n' "$wt"
+		wt_emit "locked (no pid): $wt"
 	elif ! kill -0 "$pid" 2>/dev/null; then
-		printf 'locked with DEAD pid %s: %s\n' "$pid" "$wt"
+		wt_emit "locked with DEAD pid $pid: $wt"
 	fi
 done < "$wt_reason_tmp"
 
@@ -470,6 +544,13 @@ done < "$wt_reason_tmp"
 while IFS= read -r branch; do
 	[ -n "$branch" ] || continue
 	if ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
-		printf 'no remote counterpart: %s\n' "$branch"
+		wt_emit "no remote counterpart: $branch"
 	fi
 done < <(git for-each-ref refs/heads --format='%(refname:short)')
+if [ "$lane_scoped" -eq 1 ]; then
+	printf 'prunable: %s · dead-pid locked: %s · locked (no pid): %s · no remote counterpart: %s — TL-lane trees; run boot-report tl-product for the list\n' \
+		"$(grep -c '^prunable:' "$wt_out" || true)" \
+		"$(grep -c '^locked with DEAD pid' "$wt_out" || true)" \
+		"$(grep -c '^locked (no pid)' "$wt_out" || true)" \
+		"$(grep -c '^no remote counterpart:' "$wt_out" || true)"
+fi
