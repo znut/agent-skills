@@ -48,7 +48,41 @@ try {
 	allow()
 }
 
-const cmd = (data && data.tool_input && data.tool_input.command) || ""
+const rawCmd = (data && data.tool_input && data.tool_input.command) || ""
+
+// Heredoc bodies are data, not commands: a note or ticket body that quotes a
+// mutating gh line on its own line must not read as an invocation. The body
+// is kept (still guarded) when the heredoc feeds an interpreter — `bash <<EOF`
+// runs its lines, `cat > f <<EOF` does not.
+const HEREDOC_INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "eval", "source", ".", "node", "python", "python3", "bun", "deno", "ruby", "perl"])
+function stripHeredocBodies(input) {
+	const lines = input.split("\n")
+	const out = []
+	let index = 0
+	while (index < lines.length) {
+		const line = lines[index]
+		const m = /<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line)
+		out.push(line)
+		index += 1
+		if (!m) continue
+		const firstWord = (line.trim().match(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(\S+)/) || [])[1] || ""
+		const keep = HEREDOC_INTERPRETERS.has(firstWord)
+		const terminator = m[3]
+		const stripTabs = m[1] === "-"
+		while (index < lines.length) {
+			const body = lines[index]
+			const probe = stripTabs ? body.replace(/^\t+/, "") : body
+			index += 1
+			if (probe === terminator) {
+				out.push(body)
+				break
+			}
+			out.push(keep ? body : "")
+		}
+	}
+	return out.join("\n")
+}
+const cmd = stripHeredocBodies(rawCmd)
 const cwd = (data && data.cwd) || process.cwd()
 
 // ── per-repo settings ──────────────────────────────────────────────────────
@@ -256,7 +290,11 @@ function ghWordRe() {
 const ENV_VAL = `(?:"[^"]*"|'[^']*'|\\$\\((?:[^()]|\\$\\([^)]*\\))*\\)|[^\\s;&|\`()])*`
 // Bare-gh: no `(?:env\s+)?` here — `env VAR=x gh …` is not a recognized shape;
 // the tripwire blocks it with a rewrite-as-plain-prefix message.
-const CMD_POS = `(?:^|[;&|\`\\n]|\\$\\()\\s*`
+// Shell keywords and group openers also start a command: `do <wrapper> …`,
+// `then <wrapper> …`, `{ <wrapper> …`. Without them a loop over bare wrapper
+// calls parses as zero structural invocations and the tripwire blocks it as a
+// hidden one.
+const CMD_POS = `(?:^|[;&|\`\\n]|\\$\\(|[{(]|\\b(?:do|then|else|elif|if|while|until)\\s)\\s*`
 const ENV_PREFIX = `((?:[A-Za-z_][A-Za-z0-9_]*=${ENV_VAL}\\s+)*)`
 // Global flags between `gh` and the subcommand (e.g. `-R owner/repo`). Token
 // filler cannot cross a statement separator or a paren, so one invocation

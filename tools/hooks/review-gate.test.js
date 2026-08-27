@@ -404,3 +404,34 @@ test("ready-push gate honors the ready_push_gate: off setting", () => {
 	})
 	assert.equal(result.status, 0)
 })
+
+test("heredoc body quoting a mutating gh line is data, not an invocation", () => {
+	const command = "cat > note.md <<'EOF'\nedit via gh api -X PATCH repos/o/r/issues/comments/1 -f body=x\nEOF"
+	assert.equal(runHook({}, command).status, 0)
+})
+
+test("heredoc fed to an interpreter is still guarded", () => {
+	const command = "bash <<'EOF'\ngh pr comment 1 --body x\nEOF"
+	const result = runHook({}, command)
+	assert.equal(result.status, 2)
+	assert.match(result.stderr, /bot-identity guard/)
+})
+
+test("a mutating gh after a stripped heredoc is still guarded", () => {
+	const command = "cat <<'EOF' > f\ngh pr comment 1 --body x\nEOF\ngh pr comment 2 --body y"
+	assert.equal(runHook({}, command).status, 2)
+})
+
+test("shell keywords count as command position for bare wrapper calls", () => {
+	const wrapper = ["config", "agent.gh-wrapper", "bgh"]
+	for (const command of [
+		"for n in 1 2; do bgh issue comment $n --body-file f; done",
+		"if true; then bgh pr comment 1 --body x; fi",
+		"bgh pr ready 1 && bgh issue comment 1 --body x",
+	]) {
+		assert.equal(runHook({}, command, wrapper).status, 0, command)
+	}
+	const blocked = runHook({}, "for n in 1 2; do gh issue comment $n --body-file f; done", wrapper)
+	assert.equal(blocked.status, 2)
+	assert.match(blocked.stderr, /bot-identity guard/)
+})
