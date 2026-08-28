@@ -40,6 +40,23 @@ design choices, dates that matter, and your suggested first task.
 
 A bare `/pm` means: run the session-start work, report, and wait.
 
+If the repo rules name partner or stakeholder chat channels, sweep each one
+from its saved cursor to now at every boot. The repo marks each channel
+`filtered` or `direct`:
+
+- `filtered` (mixed chatter): start a read-only search agent in the
+  background with the inbox path, the cursor, the sender map, and the Ready
+  ticket titles as the relevance lens. It keeps partner answers to banked
+  asks, new asks or requirements, bug reports, images or sheets, and business
+  context that changes priority; it drops greetings, meeting logistics,
+  thanks, and tool chatter; a thread counts as one item. It returns at most
+  fifteen lines of `time · sender · gist · ticket or new · has-image`. Read
+  the full text only of the items you act on. Never read the raw feed.
+- `direct` (the PO posts only action items): read the new messages yourself.
+
+Advance every cursor to the newest message either way. The handoff note
+stores the cursors and the sender map.
+
 Write session memory and the handoff note once, at a natural pause or at the
 end of the session — not after each step.
 
