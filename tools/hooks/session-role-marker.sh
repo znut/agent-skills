@@ -15,7 +15,7 @@ role=""
 case "$prompt" in
 	/pm|/pm\ *) role="pm" ;;
 	/tl|/tl\ *)
-		lane=$(printf '%s' "$prompt" | awk '{print $2}' | tr -cd 'a-z0-9-')
+		lane=$(printf '%s' "$prompt" | awk 'NR==1{print $2}' | tr -cd 'a-z0-9-')
 		role="tl${lane:+-$lane}"
 		;;
 esac
