@@ -1,17 +1,18 @@
-# kimi-quota
+# plan quota
 
-Footer status segment showing the Kimi Code coding-plan quota, polled from
-`GET https://api.kimi.com/coding/v1/usages` (the endpoint the kimi.com/code
-console uses; readable with the plain `kimi-coding` API key — no OAuth dance,
-no browser scraping).
+Footer status showing Kimi Code and OpenAI Codex plan quotas:
 
 ```
-5h:54%(10:03am) wk:41%(sat 9:03pm)
+kimi 5h:54%(10:03am) wk:41%(sat 9:03pm) | oai 5h:78%(1:32am) wk:19%(tue 12:04am)
 ```
 
-`%` = used, reset times in local timezone. Turns warning-colored when the
-shortest window has ≤15% remaining. A trailing `?` marks a stale value (last
-fetch failed, showing the previous snapshot).
+Kimi is polled from `GET https://api.kimi.com/coding/v1/usages`. OpenAI is
+initialized from `GET https://chatgpt.com/backend-api/wham/usage`, then updated
+from the `x-codex-*-used-percent`, window, and reset headers on normal model
+responses; after the first header update, the extension stops polling OpenAI.
+
+`%` = used, reset times in local timezone. A provider turns warning-colored
+when any window has ≤15% remaining. A trailing `?` marks stale data.
 
 ## Install
 
@@ -26,9 +27,11 @@ Then `/reload` (or restart pi). The segment appears after the first fetch.
 
 ## Configuration
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `KIMI_QUOTA_POLL_SECONDS` | `60` | Poll interval; `0` disables polling (refreshes still happen after agent turns, throttled to 20s) |
+| Variable                  | Default | Meaning                                                                                          |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `QUOTA_POLL_SECONDS`      | `60`    | Poll interval; `0` disables polling (refreshes still happen after agent turns, throttled to 20s) |
+| `KIMI_QUOTA_POLL_SECONDS` | —       | Backward-compatible fallback when `QUOTA_POLL_SECONDS` is unset                                  |
 
-Credential source: `~/.pi/agent/auth.json` → `kimi-coding` (`key`, or OAuth
-`access`). No credential → segment stays dim (`quota:…`).
+Credential source: `~/.pi/agent/auth.json` → `kimi-coding` (`key` or `access`)
+and `openai-codex` (`access` and `accountId`). A missing credential leaves that
+provider dimmed.

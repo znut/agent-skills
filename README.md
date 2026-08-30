@@ -17,6 +17,7 @@ uses its own agent file format.
 | `pm`          | Settles product choices, updates product docs, creates tickets, and gives ready work to the TL.     |
 | `tl`          | Checks ready tickets, sends engineering tasks, checks PRs, and owns engineering decision records.   |
 | `review-gate` | Scans the diff and runs a fresh review before PR creation. It can write a SHA-bound PASS marker.    |
+| `tech-debt`   | Weekly debt revisit: gathers the week's friction signals, scans for deepening and deletion candidates, settles each with the user, and cuts sized tickets and decision-record amendments. Never refactors directly. |
 
 ## Install
 
@@ -26,7 +27,7 @@ you use:
 - Claude Code: `~/.claude/skills/`
 - Codex: `~/.codex/skills/`
 
-Link `orchestrate`, `pm`, `tl`, and `review-gate`. A link lets a pull in this
+Link `orchestrate`, `pm`, `tl`, `review-gate`, and `tech-debt`. A link lets a pull in this
 repo update the installed skill at once.
 
 ## Set up a repo
