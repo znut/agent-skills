@@ -28,11 +28,12 @@ the subagent needs a different model from the session default.
 
 ## Multiple subagents
 
-There is no global singleton. Each `spawn_agent` call creates an isolated
-process with its own state directory keyed by a fresh UUID. A worker can spawn
-reviewers, those reviewers can spawn their own helpers, and so on. The parent
-keeps a map of only the agents it created; tools that resolve an agent by id
-fall back to the on-disk state directory so cross-process references work.
+Each `spawn_agent` call creates an isolated process with its own state directory
+keyed by a fresh UUID. Every agent also records the root parent session that
+spawned its tree. The widget and agent-management tools show only that session's
+tree, so simultaneous Pi sessions in the same checkout do not see or control
+one another's agents. Nested reviewers inherit the root owner and remain visible
+to the session that spawned their worker.
 
 ## Tools
 
@@ -108,7 +109,9 @@ Subagent state is stored under the pi machine state directory, outside any repo:
 ```
 
 This keeps spawned processes and their artifacts out of project working trees
-and avoids conflicts between concurrent checkouts.
+and avoids conflicts between concurrent checkouts. State created before session
+ownership was added is intentionally not shown, because it cannot be attributed
+safely to a current Pi session.
 
 ## Limitations
 

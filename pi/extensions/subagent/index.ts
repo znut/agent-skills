@@ -75,6 +75,8 @@ interface AgentState {
 	model?: string;
 	modelName?: string;
 	parentId?: string;
+	/** Root parent session that owns this complete subagent tree. */
+	ownerId: string;
 	startedAt: number;
 	activity: string;
 	usage: AgentUsage;
@@ -87,6 +89,8 @@ interface LiveFile {
 	model?: string;
 	modelName?: string;
 	parentId?: string;
+	/** Root parent session that owns this complete subagent tree. */
+	ownerId: string;
 	startedAt: number;
 	finishedAt?: number;
 	activity: string;
@@ -134,6 +138,22 @@ function agentDir(cwd: string, agentId: string): string {
 	return path.join(projectRoot(cwd), agentId);
 }
 
+/**
+ * The root interactive Pi session owns every agent in its tree. Nested agents
+ * inherit this id instead of claiming their own ephemeral JSON-mode session.
+ */
+function ownerId(ctx: any): string {
+	return process.env.PI_EXT_SUBAGENT_OWNER_ID || ctx.sessionManager.getSessionId();
+}
+
+/** Return an on-disk agent directory only when it belongs to this Pi session. */
+function ownedAgentDir(ctx: any, agentId: string): string | null {
+	const state = agents.get(agentId);
+	if (state) return state.ownerId === ownerId(ctx) ? state.dir : null;
+	const dir = agentDir(ctx.cwd, agentId);
+	return readLive(dir)?.ownerId === ownerId(ctx) ? dir : null;
+}
+
 function ensureAgentDir(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true });
 }
@@ -169,6 +189,7 @@ function writeLive(agentId: string, state: AgentState, status: string): void {
 		model: state.model,
 		modelName: state.modelName,
 		parentId: state.parentId,
+		ownerId: state.ownerId,
 		startedAt: state.startedAt,
 		finishedAt: state.finishedAt,
 		activity: state.activity,
@@ -502,7 +523,7 @@ interface WidgetRow {
 	finishedAt?: number;
 }
 
-function collectRows(cwd: string): WidgetRow[] {
+function collectRows(cwd: string, currentOwnerId: string): WidgetRow[] {
 	const now = Date.now();
 	const rows = new Map<string, WidgetRow>();
 	const root = projectRoot(cwd);
@@ -515,47 +536,27 @@ function collectRows(cwd: string): WidgetRow[] {
 				continue;
 			}
 			const live = readLive(dir);
-			if (live) {
-				const done = live.status !== "running";
-				if (done && live.finishedAt && now - live.finishedAt > FINISHED_VISIBLE_MS) continue;
-				rows.set(entry, {
-					id: entry,
-					status: live.status,
-					role: live.role,
-					model: live.model,
-					modelName: live.modelName,
-					parentId: live.parentId,
-					activity: live.activity,
-					elapsedMs: (live.finishedAt ?? now) - live.startedAt,
-					usage: live.usage,
-					finishedAt: live.finishedAt,
-				});
-				continue;
-			}
-			// No live.json (pre-widget agents): fall back to status.json.
-			const status = readStatus(dir);
-			if (!status) continue;
-			let mtime = 0;
-			try {
-				mtime = fs.statSync(path.join(dir, "status.json")).mtimeMs;
-			} catch {
-				/* ignore */
-			}
-			if (now - mtime > FINISHED_VISIBLE_MS) continue;
+			// Older state files lack an owner and cannot be safely attributed.
+			if (!live || live.ownerId !== currentOwnerId) continue;
+			const done = live.status !== "running";
+			if (done && live.finishedAt && now - live.finishedAt > FINISHED_VISIBLE_MS) continue;
 			rows.set(entry, {
 				id: entry,
-				status: status.status,
-				role: "agent",
-				activity: status.message ?? "",
-				elapsedMs: 0,
-				usage: emptyUsage(),
-				finishedAt: mtime,
+				status: live.status,
+				role: live.role,
+				model: live.model,
+				modelName: live.modelName,
+				parentId: live.parentId,
+				activity: live.activity,
+				elapsedMs: (live.finishedAt ?? now) - live.startedAt,
+				usage: live.usage,
+				finishedAt: live.finishedAt,
 			});
 		}
 	}
 	// In-memory state wins (fresher than the last live.json flush).
 	for (const [id, state] of agents) {
-		if (projectRoot(state.dir) !== root && path.dirname(state.dir) !== root) continue;
+		if (path.dirname(state.dir) !== root || state.ownerId !== currentOwnerId) continue;
 		// Skip finished agents that already aged out of the widget.
 		if (state.finishedAt && now - state.finishedAt > FINISHED_VISIBLE_MS) continue;
 		rows.set(id, {
@@ -596,7 +597,7 @@ function shortModelName(name?: string): string {
 
 function updateWidget(pi: ExtensionAPI, ctx: any): void {
 	if (ctx.mode !== "tui") return;
-	const rows = collectRows(ctx.cwd);
+	const rows = collectRows(ctx.cwd, ownerId(ctx));
 	const watchRoles = [...laneWatchers.keys()];
 	if (rows.length === 0 && watchRoles.length === 0) {
 		ctx.ui.setWidget("subagents", undefined);
@@ -728,6 +729,7 @@ export default function (pi: ExtensionAPI) {
 				modelName,
 				// Set when the spawning process is itself a subagent (worker → reviewer).
 				parentId: process.env.PI_EXT_SUBAGENT_ID,
+				ownerId: ownerId(ctx),
 				startedAt: Date.now(),
 				activity: "starting",
 				usage: emptyUsage(),
@@ -749,6 +751,7 @@ export default function (pi: ExtensionAPI) {
 					...process.env,
 					PI_EXT_SUBAGENT_ID: agentId,
 					PI_EXT_SUBAGENT_DIR: dir,
+					PI_EXT_SUBAGENT_OWNER_ID: state.ownerId,
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -892,7 +895,8 @@ export default function (pi: ExtensionAPI) {
 		parameters: AwaitParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const state = agents.get(params.agent_id);
-			const dir = state?.dir || agentDir(ctx.cwd, params.agent_id);
+			const dir = ownedAgentDir(ctx, params.agent_id);
+			if (!dir) throw new Error(`No subagent ${params.agent_id} belongs to this Pi session`);
 			const timeoutMs = params.timeout_ms ?? DEFAULT_AWAIT_TIMEOUT_MS;
 
 			const status = await new Promise<{ status: string; message?: string }>((resolve, reject) => {
@@ -964,9 +968,8 @@ export default function (pi: ExtensionAPI) {
 			"Send a one-way message to a running subagent. The subagent's own extension instance injects the message as a user message, so it cannot be ignored. Typical types: steer (change direction), stop (abort and exit), context (add missing context).",
 		parameters: SendMessageParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const cwd = ctx.cwd;
-			const dir = agentDir(cwd, params.agent_id);
-			ensureAgentDir(dir);
+			const dir = ownedAgentDir(ctx, params.agent_id);
+			if (!dir) throw new Error(`No subagent ${params.agent_id} belongs to this Pi session`);
 			writeMessage(dir, { type: params.type, content: params.content });
 			return {
 				content: [{ type: "text", text: `Sent ${params.type} message to ${params.agent_id}` }],
@@ -982,7 +985,14 @@ export default function (pi: ExtensionAPI) {
 		parameters: AgentIdParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const state = agents.get(params.agent_id);
-			const dir = state?.dir || agentDir(ctx.cwd, params.agent_id);
+			const dir = ownedAgentDir(ctx, params.agent_id);
+			if (!dir) {
+				return {
+					content: [{ type: "text", text: `No subagent ${params.agent_id} belongs to this Pi session` }],
+					details: { agent_id: params.agent_id },
+					isError: true,
+				};
+			}
 			const status = readStatus(dir);
 			const result = readResult(dir);
 			const live = readLive(dir);
@@ -1004,7 +1014,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "list_agents",
 		label: "List agents",
-		description: "List active and recently finished subagents in this project.",
+		description: "List active and recently finished subagents owned by this Pi session.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const root = projectRoot(ctx.cwd);
@@ -1017,6 +1027,7 @@ export default function (pi: ExtensionAPI) {
 					const state = agents.get(entry);
 					const status = readStatus(dir);
 					const live = readLive(dir);
+					if (live?.ownerId !== ownerId(ctx)) continue;
 					ids.push({
 						agent_id: entry,
 						status: status?.status ?? (live?.status || undefined),
@@ -1044,9 +1055,9 @@ export default function (pi: ExtensionAPI) {
 		label: "Stop agent",
 		description: "Send SIGTERM to a running subagent and mark it stopped.",
 		parameters: AgentIdParams,
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const state = agents.get(params.agent_id);
-			if (state) {
+			if (state && state.ownerId === ownerId(ctx)) {
 				killAgent(state);
 				writeStatus(state.dir, { status: "stopped", message: "Stopped by parent" });
 				cleanup(params.agent_id);
