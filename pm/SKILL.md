@@ -113,6 +113,15 @@ The PM owns layout, wording, and user-flow choices. Read any design rules before
 you draft or judge a screen. Put those rules in each design task and test each
 draft against them. Do not show the user a draft that breaks them.
 
+Before the first line of a mock, read the repo's design source of truth — the
+shared theme and density token files and the design rules the repo names — and
+copy the token names into the mock's header. Every size, colour, and spacing in
+a mock's deltas or a ticket is a token name only (a size variant, a CSS custom
+property), never a pixel value: the rule doc and the code can lag each other,
+and a number sends the worker the wrong way. A value with no token is a defect,
+not a design choice. Never copy a size from an earlier mock: mocks drift, the
+source of truth does not.
+
 If repeated changes show that the repo lacks written design rules, ask the user
 whether to add them.
 
