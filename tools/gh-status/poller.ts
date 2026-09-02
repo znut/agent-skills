@@ -558,7 +558,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		// it. Distinct from .merged/.closed (monotonic once-only facts) —
 		// this is a "current head" pointer, so the old sha's marker is
 		// removed on each move. No timeline log line: a push must not wake
-		// lane watchers, only the on-merge gate-loop consumer (see
+		// lane watchers, only an onMerge command step (see
 		// tools/README.md).
 		if (pr.state === "OPEN") {
 			if (sha && (!prev || prev.headOid !== sha)) {
