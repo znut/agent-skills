@@ -89,6 +89,12 @@ block the rest.
   `.checks-info.json` / `.approved` / `.changes-requested`
 - `events/pr-<n>.commented` (mtime-bump, consume-then-rewatch) +
   `events/pr-<n>.comments.json`
+- `events/pr-<n>.head-<sha8>` — touched whenever an OPEN PR's head moves
+  (older head-* markers for that PR are removed the same poll, all of them
+  once the PR leaves OPEN). No `.log` line — a push must not wake lane
+  watchers. Its consumer is the on-merge launchd `WatchPaths` on `events/`,
+  which fires `run.mjs`; the ez-opd config's `onMerge` step runs
+  `scripts/gate-loop.sh`, so a push (not just a merge) triggers a gate run.
 
 The one notable design choice: `comments.json` is written **before** the
 `.commented` marker bumps, so a watcher woken by the marker's mtime can never
