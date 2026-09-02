@@ -232,7 +232,7 @@ handoff="$var_dir/notes/${role}.md"
 if [ -f "$handoff" ]; then
 	printf 'file:    %s (modified %s)\n' "$handoff" "$(date -r "$handoff" '+%Y-%m-%d %H:%M' 2>/dev/null || stat -c %y "$handoff" 2>/dev/null | cut -c1-16)"
 	head -40 "$handoff"
-	if [ "$(wc -l < "$handoff")" -gt 40 ]; then printf '… (truncated at 40 lines; REWRITE DUE — state table only, see the /orchestrate skill'"'"'s handoff-note.md)\n'; fi
+	if [ "$(wc -l < "$handoff")" -gt 40 ]; then printf '… (truncated at 40 lines; REWRITE DUE at wrap — state only, at most 40 lines, see the /tl skill)\n'; fi
 else
 	printf '(none at %s)\n' "$handoff"
 fi
