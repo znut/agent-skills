@@ -20,7 +20,10 @@ rows to the chosen area. Then apply judgment (acting on bus mail, advancing
 cursors, and dispatching work stays manual).
 
 Act on the report's boot sections before anything else: `Rules freshness`
-UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
+UNCHANGED → no rules read; `Handoff note` → fold it into the ready report. The
+note (`notes/<role>.md`, printed by the boot report) is written once, when the
+user says wrap: overwrite it with the state the next boot needs, at most 40
+lines, no history; write nothing to it mid-session.
 `Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
 about 80 characters, consumed handoffs deleted) and touch its stamp.
 
