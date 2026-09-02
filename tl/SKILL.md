@@ -20,9 +20,9 @@ rows to the chosen area. Then apply judgment (acting on bus mail, advancing
 cursors, and dispatching work stays manual).
 
 Act on the report's boot sections before anything else: `Rules freshness`
-UNCHANGED → no rules read; `Handoff note` → fold it into the ready report; a note past the boot
-report's line cap is rewritten as the state table (the /orchestrate skill's
-`handoff-note.md`) before anything else;
+UNCHANGED → no rules read; `Handoff note` → fold it into the ready report,
+rewriting it first as the state table (the /orchestrate skill's
+`handoff-note.md`) if it sits past the boot report's line cap;
 `Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
 about 80 characters, consumed handoffs deleted) and touch its stamp.
 
