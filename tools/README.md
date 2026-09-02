@@ -89,6 +89,12 @@ block the rest.
   `.checks-info.json` / `.approved` / `.changes-requested`
 - `events/pr-<n>.commented` (mtime-bump, consume-then-rewatch) +
   `events/pr-<n>.comments.json`
+- `events/pr-<n>.head-<sha8>` — touched whenever an OPEN PR is first seen
+  or its head moves (older head-* markers for that PR are removed the same
+  poll, all of them once the PR leaves OPEN). No `.log` line — a push must
+  not wake lane watchers. The on-merge watcher's `WatchPaths` already
+  covers `events/`, so an `onMerge` command step that wants to react to a
+  push (not just a merge) can key off this marker.
 
 The one notable design choice: `comments.json` is written **before** the
 `.commented` marker bumps, so a watcher woken by the marker's mtime can never

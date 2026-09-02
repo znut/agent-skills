@@ -30,6 +30,15 @@
  *                             line?, body}). Overwritten each firing.
  *   events/pr-<n>.approved  — marker, touched when reviewDecision becomes APPROVED
  *   events/pr-<n>.changes-requested — marker, touched on CHANGES_REQUESTED
+ *   events/pr-<n>.head-<sha8> — marker, touched whenever an OPEN PR is first
+ *                             seen or its headOid moves; every other head-*
+ *                             marker for that PR is removed on the same
+ *                             poll, and all of them are removed once the PR
+ *                             leaves OPEN. No timeline log line (a push must
+ *                             not wake lane watchers). Meant for an onMerge
+ *                             command step (the on-merge watcher's
+ *                             WatchPaths already covers events/) that reacts
+ *                             to a push, not just a merge — see tools/README.md.
  *
  *   events/issue-<n>.log / .commented / .comments.json — ISSUE comments,
  *     same shapes as the pr-<n> comment events: one repo-wide
@@ -363,6 +372,21 @@ async function rm(path: string): Promise<void> {
 	} catch {}
 }
 
+/** Remove every events/pr-<n>.head-* marker except `keep` (its bare filename), if given. */
+async function clearHeadMarkers(eventsDir: string, prNumber: number, keep?: string): Promise<void> {
+	const { readdirSync } = await import("node:fs")
+	const prefix = `pr-${prNumber}.head-`
+	let entries: string[]
+	try {
+		entries = readdirSync(eventsDir)
+	} catch {
+		return
+	}
+	for (const f of entries) {
+		if (f.startsWith(prefix) && f !== keep) await rm(`${eventsDir}/${f}`)
+	}
+}
+
 async function readPrevState(stateFile: string): Promise<PollState | null> {
 	try {
 		return (await Bun.file(stateFile).json()) as PollState
@@ -529,6 +553,22 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			fetchedAt,
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
+
+		// Head-change marker: an OPEN PR is newly seen or a push landed on
+		// it. Distinct from .merged/.closed (monotonic once-only facts) —
+		// this is a "current head" pointer, so the old sha's marker is
+		// removed on each move. No timeline log line: a push must not wake
+		// lane watchers, only an onMerge command step (see
+		// tools/README.md).
+		if (pr.state === "OPEN") {
+			if (sha && (!prev || prev.headOid !== sha)) {
+				const marker = `pr-${pr.number}.head-${sha.slice(0, 8)}`
+				await touch(`${eventsDir}/${marker}`)
+				await clearHeadMarkers(eventsDir, pr.number, marker)
+			}
+		} else {
+			await clearHeadMarkers(eventsDir, pr.number)
+		}
 
 		// Ready-stale: a READY (non-draft, open) PR whose head moved while ready —
 		// someone pushed without flipping draft first. Alarm for the push gate's
