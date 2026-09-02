@@ -30,14 +30,15 @@
  *                             line?, body}). Overwritten each firing.
  *   events/pr-<n>.approved  — marker, touched when reviewDecision becomes APPROVED
  *   events/pr-<n>.changes-requested — marker, touched on CHANGES_REQUESTED
- *   events/pr-<n>.head-<sha8> — marker, touched whenever an OPEN PR's headOid
- *                             moves; every other head-* marker for that PR is
- *                             removed on the same poll, and all of them are
- *                             removed once the PR leaves OPEN. No timeline
- *                             log line (a push must not wake lane watchers).
- *                             Consumed by the on-merge launchd WatchPaths on
- *                             events/, whose ez-opd config step runs
- *                             scripts/gate-loop.sh — see tools/README.md.
+ *   events/pr-<n>.head-<sha8> — marker, touched whenever an OPEN PR is first
+ *                             seen or its headOid moves; every other head-*
+ *                             marker for that PR is removed on the same
+ *                             poll, and all of them are removed once the PR
+ *                             leaves OPEN. No timeline log line (a push must
+ *                             not wake lane watchers). Meant for an onMerge
+ *                             command step (the on-merge watcher's
+ *                             WatchPaths already covers events/) that reacts
+ *                             to a push, not just a merge — see tools/README.md.
  *
  *   events/issue-<n>.log / .commented / .comments.json — ISSUE comments,
  *     same shapes as the pr-<n> comment events: one repo-wide
@@ -553,11 +554,12 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
 
-		// Head-change marker: a push landed on an OPEN PR. Distinct from
-		// .merged/.closed (monotonic once-only facts) — this is a "current
-		// head" pointer, so the old sha's marker is removed on each move. No
-		// timeline log line: a push must not wake lane watchers, only the
-		// merge-triggered gate-loop consumer (see tools/README.md).
+		// Head-change marker: an OPEN PR is newly seen or a push landed on
+		// it. Distinct from .merged/.closed (monotonic once-only facts) —
+		// this is a "current head" pointer, so the old sha's marker is
+		// removed on each move. No timeline log line: a push must not wake
+		// lane watchers, only the on-merge gate-loop consumer (see
+		// tools/README.md).
 		if (pr.state === "OPEN") {
 			if (sha && (!prev || prev.headOid !== sha)) {
 				const marker = `pr-${pr.number}.head-${sha.slice(0, 8)}`
