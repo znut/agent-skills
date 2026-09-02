@@ -56,6 +56,9 @@ The manager talks with the user, settles open choices, splits the work, sends
 tasks to workers, and inspects each open PR. The manager does not edit a worker's
 change.
 
+The role's handoff note follows `handoff-note.md`: a state table rewritten at
+checkpoints, never a log.
+
 The manager owns every wait on an external system. When a worker returns
 `awaiting_external`, the manager watches the outcome with the runtime's watch
 mechanism, covering every terminal state, and resumes the same worker with the
