@@ -1,36 +1,40 @@
 # Writing rules overlay — <repo>
 
-Repo overlay for `writing/rules.md` in the skills repo. Fill every slot;
-delete none. Agents read this file before editing any doc in this repo.
+The `comm` skill owns every prose rule and register. This file owns what is
+repo-specific: canonical terms, glossary, repo-only registers, sweep lists.
 
 ## Canonical terms
 
-One row per concept. The banned column lists synonyms that must not appear
-in new text; sweep them when touching a file.
+Banned synonyms never appear in NEW text; sweep them convert-as-touched.
 
-| Concept | Canonical term | Banned synonyms |
-| ------- | -------------- | --------------- |
-| <the human principal> | <term> | <terms> |
-| <a dispatched agent> | <term> | <terms> |
-| <a unit of work> | <term> | <terms> |
+| Concept | Canonical | Banned synonyms |
+| --- | --- | --- |
+| The human principal | PO | the user, the human, stakeholder |
 
-## Glossary
+## Glossary — workflow terms
 
-One line per house term. A term used in any rule file must appear here.
+- **<term>** — <one line>.
 
-- **<term>** — <one-line definition>.
+## Repo-only registers
 
-## Registers
+| Surface | Register | Never |
+| --- | --- | --- |
 
-| Doc family | Register | Modality |
-| ---------- | -------- | -------- |
-| <agent rule files> | dense, imperative | severity tags / MUST-NEVER |
-| <decision records> | declarative present, numbered | none |
-| <product docs> | narrative | <soft vocabulary, defined here> |
+## Sweep lists
 
-## Enforcement
+<which check reads which list, on which paths>. One term per line, `#`
+comments allowed, `[section]` headers select the list; edit here, not scripts.
 
-- Vague-verb sweep (warn): `<grep list, e.g. handle|manage|support|robust>`
-- Hedge sweep (warn, agent-register paths only): `<grep list, e.g.
-  should|consider|prefer|might>`
-- <hook or check that runs the sweeps, or "manual at review">
+```text
+[hedge-vague]
+should
+consider
+
+[narration]
+review round
+round 1
+
+[attribution]
+ruled
+per PO
+```
