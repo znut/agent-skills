@@ -203,6 +203,9 @@ fi
 section "Rules freshness"
 var_dir=''
 if [ -n "$session_bus_dir" ]; then var_dir=$(dirname "$session_bus_dir"); fi
+# Fallback order when the repo declares no bus dir: a `state/` sibling of the
+# repo (durable state inside the declared working tree), else the legacy var dir.
+if [ -z "$var_dir" ] && [ -d "$(dirname "$repo_root")/state" ]; then var_dir="$(dirname "$repo_root")/state"; fi
 if [ -z "$var_dir" ]; then var_dir="$HOME/.config/agent-tools/var/$(basename "$repo_root")"; fi
 rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/null || true)
 rules_stamp="$var_dir/rules-read/${role}.stamp"

@@ -132,7 +132,7 @@ void the manager's ready vouch while the user still reads "ready" as
 merge-safe. Flip the PR to draft, push, re-check, re-ready. The gate reads
 the local PR status snapshots — declare once per clone:
 
-    git config agent.pr-status-dir <the repo's gh-status dir, e.g. ~/.config/agent-tools/var/<name>/gh-status>
+    git config agent.pr-status-dir <the repo's gh-status dir, e.g. ~/src/<workspace>/state/gh-status>
 
 Fail-open without the config or on pre-upgrade snapshots (no `isDraft`).
 Override for a deliberate case: `READY_PUSH_OK=1 git push …`. Repo opt-out:

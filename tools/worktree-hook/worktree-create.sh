@@ -25,7 +25,8 @@ if [ -n "$requested" ]; then
 	name=$(basename "$requested")
 else
 	name="agent-$(date +%s)-$$"
-	log_dir="$HOME/.config/agent-tools/var"
+	# Debug payload only — runtime, not durable state.
+	log_dir="${TMPDIR:-/tmp}/agent-tools"
 	mkdir -p "$log_dir"
 	printf '%s\n' "$input" > "$log_dir/worktree-create-last-input.json"
 	echo "worktree-create: no path/name field in hook input — using generated name $name (payload logged to $log_dir/worktree-create-last-input.json)" >&2
