@@ -1,79 +1,46 @@
 ---
 name: comm
 description: >
-  Rules for prose the PO reads: chat replies, PR bodies, PR and ticket
+  Rules for prose a person reads: chat replies, PR bodies, PR and ticket
   comments, ticket bodies, decision records, product docs, code comments,
-  cross-session pings, partner messages. Every role and every worker loads it
-  before writing. Trigger: "/comm", "writing convention", "communication
-  convention".
+  agent rules. Every role and every worker loads it before writing.
+  Trigger: "/comm", "writing convention", "communication convention".
 ---
 
 # Communication convention
 
 PO = the person who owns the product and reads what agents write. Load this
-skill before the first sentence the PO reads. The register table names the
-surface; the rules bind every surface in it.
-
-`writing/rules.md` (this repo) is the base for agent-facing docs. A repo
-overlay (`.agent/writing-rules.md`, from `templates/writing-rules.md`) owns the
-repo's glossary, its canonical-term table, and the machine-read sweep lists.
-The overlay links here; it restates no rule.
+skill before the first sentence the PO reads. The repo overlay
+(`.agent/writing-rules.md`, from `templates/writing-rules.md`) owns the
+canonical-term table, the glossary, any repo-only register, and the
+machine-read sweep lists; it restates no rule from here.
 
 ## Registers
 
 | Surface | Register | Never |
 | --- | --- | --- |
-| Chat reply to the PO | Result first, then what they must act on; 1–3 sentences unless asked for detail; tables only for real structure | Preamble, narration of steps, closing recap of the same message |
-| PR body | `Resolves #N` (closes) or bare `#N` (links) first · one self-contained sentence saying what the PR does · `## Screenshot` (UI only; the captures that show the change, one is the norm) · `---` · then only the non-empty sections: `## Decisions` (≤ 3 bullets, ≤ 2 lines each, each names the rejected alternative; a WHY that matters after merge also lives in a code comment or ADR) · `## Before merge` (only when the reader must act: migration order, console step, destructive script, env var) · `## Not verified` (untested limits only) · `## Open questions` (owner or `#N`) | `## Problem`/`## Summary`/`## Deltas`/`## Running it` headings, restating the ticket, code facts visible in the diff, commands the gate already runs, file lists, diff stats, checkmarks, review-round or contract history |
-| PR / ticket comment | One claim per paragraph; quote the line you mean; end with the disposition (fold, ticket #N, ruled) | "Flagging for awareness", open-ended questions with no owner |
-| Ticket body | Problem · Included · Excluded · Acceptance · Schema (`none` or column + why) | Implementation narrative, guessed business rules |
-| Code comment | One line of WHY, then the mechanism name (`see validateX`); ADR rationale = one clause + `(ADR-NNN)` | WHAT restatements, provenance (who/when/round), non-English words, > 5 lines |
-| Decision record (ADR) | Declarative present; numbered sections; trade-offs stated; amendment = dated section | Modality words, narrative of how the decision was reached |
-| Product doc (PRD) | Narrative the PO and partners read; hard/soft vocabulary as the repo defines it | Engineering mechanism, ticket numbers in prose |
-| Cross-session ping (bus) | Frontmatter `from/subject/refs`; numbered facts; one ask per number; "Archive after reading." | Chat filler, questions the reader cannot answer |
-| Partner channel (Lark etc.) | Partner language only; zero emoji; acknowledge, then one TLDR; the PO releases every message | English, emoji, unsolicited nudges |
+| Chat reply | Result first, then what the reader must act on; 1–3 sentences unless asked for detail; tables only for real structure | Preamble, step narration, closing recap |
+| PR body | The repo's body template owns the shape; one self-contained sentence, then only the non-empty sections | Restating the ticket, code facts visible in the diff, commands the gate runs, file lists, review history |
+| PR / ticket comment | One claim per paragraph; quote the line you mean; end with the disposition (fold, ticket #N, decided) | "Flagging for awareness", a question with no owner |
+| Ticket body | Problem · Included · Excluded · Acceptance · Schema | Implementation narrative, guessed business rules |
+| Code comment | The repo checklist's Code section owns it: one line of WHY, then the mechanism name; ADR rationale = one clause + `(ADR-NNN)` | WHAT restatements, who/when/round, `#N` |
+| Decision record (ADR) | Declarative present; numbered sections; trade-offs stated; an amendment is a dated section | Modality words, who decided, how the decision was reached |
+| Product doc (PRD) | Narrative the PO and partners read, in the repo's product vocabulary | Engineering mechanism, ticket numbers in prose |
+| Agent rules (`.agent/*.md`, skills, agent definitions) | Dense, imperative, rule + why inline, MUST/NEVER; a checklist is one-line bullets, each a BLOCK condition | should / consider / prefer / might; prose paragraphs in a checklist |
 
 ## Rules
 
-1. **Decisions are rules, not history.** Write the rule the code now follows
-   and the alternative rejected — never "a first review round found…", never
-   "per the dispatch contract". The reader sees the PR, not the round.
-2. **Rationale = one clause + pointer.** "X — Y breaks otherwise (#N)". A bare
-   `(#N)` is not a reason; a paragraph is not a clause.
-3. **No hedges, no vague verbs.** should / consider / prefer / might → bind it
-   or delete it. handle / manage / support / robust / covers → the specific
-   verb. Repo overlays list the exact sweep terms; `final-check` enforces them
-   on PR bodies.
-4. **Exact term, one meaning** (`writing/rules.md` 1–2): use the overlay's
-   canonical term; a synonym reads as a different concept.
-5. **Owner on every open item.** An open question names who rules it and by
-   when, or it becomes a ticket with a link — never "worth a follow-up".
-6. **Limits are limits.** `## Not verified` holds only what was not tested;
-   a known behaviour gap is a Delta or an Open question with an owner.
-7. **State once, link elsewhere** (`writing/rules.md` 7): a rule lives in one
-   file; every other surface links.
-8. **Numbers and identifiers survive every edit** (`writing/rules.md` 10):
-   a style pass keeps every SHA, path, flag, term, and `#N`.
-9. **Bare `#N` only.** Ticket and PR references are `#N` — no dates, no names,
-   no "PO ruled on…" — the ticket carries its own provenance.
-
-## Enforcement
-
-- `scripts/final-check.sh` (repo) fails a PR body on any overlay sweep-list
-  hit in Decisions / Deltas / Not verified / Open questions.
-- The review panel's `+writing` focus reads the PR body and every added
-  comment on every PR.
-- Chat and bus text: self-check against the register table before sending;
-  no tool enforces them.
+1. **Decisions are rules, not history.** Write the rule now in force and the alternative rejected, with a `#N` or `ADR-NNN` pointer — never who decided, when, or in which round. "Ruled", "ruling", "per <person>", "<person> said" are narration. Every ticket/PR reference is bare `#N` — no other format, no date, no name, in any register; the ticket carries its own provenance.
+2. **Rationale = one clause + pointer.** "X — Y breaks otherwise (#N)". A bare `(#N)` is not a reason; a paragraph is not a clause.
+3. **Bind it or delete it.** should / consider / prefer / might become a rule with a severity, or nothing. handle / manage / support / robust / covers become the specific verb. The overlay lists the sweep terms; the repo's checks enforce them.
+4. **One term, one meaning.** The overlay's canonical term, never a synonym — a synonym reads as a different concept. A new house term ships with its one-line glossary entry in the same change.
+5. **Owner on every open item.** An open question names who settles it and by when, or becomes a ticket with a link.
+6. **Limits are limits.** `## Not verified` holds only what was not tested; a known gap is a decision or an open question with an owner.
+7. **State once, link elsewhere.** A rule lives in one file; every other surface links to it by file and section — never "above", "below", "this file".
+8. **A style pass keeps every constraint.** Every SHA, path, flag, term and `#N` survives an edit. A doc read every session states only what IS: a dead fact goes, a tempting dead-end becomes a ban with its why.
 
 ## Loading
 
-- `/tl`, `/pm`, `/orchestrate`, `/review-gate`: load at session start — their
-  output is prose the PO reads all session.
-- Workers: load at the PR step, immediately before writing the PR body, a PR
-  comment, or ticket text — not at contract start; a rule read an hour before
-  the body is written decays. Code comments follow the code rules pasted into
-  the contract.
-- Reviewers: load when the panel's `+writing` focus is theirs.
-- A repo's worker conventions name it in the PR step: "load `/comm`, then
-  write the body to its PO-facing register".
+- `/tl`, `/pm`, `/orchestrate`, `/review-gate`: at session start — their output is prose the PO reads all session.
+- Workers: at the PR step, immediately before writing the PR body, a PR comment, or ticket text — a rule read an hour earlier decays. Code comments follow the code rules pasted into the contract.
+- Reviewers: when the writing focus is theirs.
