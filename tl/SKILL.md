@@ -42,7 +42,7 @@ blocked tasks, dates that matter, and your suggested first task.
 
 A bare `/tl` means: run the session-start work, report, and wait.
 
-## Choose an area
+## Choose a lane
 
 The lane limits eligible tickets, not the number of TL sessions. `/tl <lane>`
 sets it. With one configured lane, use that lane; otherwise ask the PO before
@@ -82,7 +82,7 @@ reviewed branch and stops.
 For each ready ticket, propose it and wait for PO confirmation before claim,
 recheck, or dispatch. Then follow the [claim and handoff procedure](../orchestrate/session-bus.md#claims-and-handoffs):
 
-1. Confirm that it belongs to the chosen area.
+1. Confirm that it belongs to the chosen lane.
 2. Search open PRs and remote branches for the ticket and feature. Stop if the
    work already exists.
 3. Confirm that all required PRs have merged.
@@ -144,7 +144,7 @@ but it must still:
 
 ## Hard rules
 
-- Choose an area before the first task when the repo has more than one.
+- Resolve the lane before named boot; retain it until explicit session end.
 - Send work that shares a file in order.
 - Return missing product choices to the PM and user.
 - Keep worker escalation inside the agent process.

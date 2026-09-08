@@ -35,6 +35,9 @@ state returns exit 3; establish the shared directory before named boot.
 
 ## Claims and handoffs
 
+A **claim** is one atomic ownership record assigning a ticket and its complete
+shared-resource set to one session generation.
+
 Propose any Ready ticket within the lane. Wait for PO confirmation before
 claiming, rechecking for dispatch, or sending workers. After confirmation,
 atomically claim the ticket and its complete shared-resource set, then recheck
@@ -62,8 +65,8 @@ the old generation directory, so a reused name receives no old mail.
 Use `send --ticket <id>` for PM-to-ticket requests: it resolves the actual
 owner. An unowned ticket returns exit 3 unless an explicit `--triage <name>` is
 provided. Never broadcast actionable unowned work by default. Direct messages
-use `--to <name>`; name resolution and durable delivery share the allocation
-lock. `broadcast --lane <lane>` creates an independent copy for each active
+use `--to <name>`; name resolution and durable delivery share the registry
+mutex. `broadcast --lane <lane>` creates an independent copy for each active
 peer in that lane, excluding the sender.
 
 Messages contain `from/subject/refs` frontmatter and a self-contained body.
@@ -85,7 +88,7 @@ watcher arguments so a peer's watcher never satisfies this session's guard.
 All commands return JSON. Success is `{ok:true,...}`; failures go to stderr as
 `{ok:false,code,error,...}`. Exit 2 = invalid arguments; 3 = absent registration,
 name, or ownership; 4 = malformed/incomplete state or I/O failure; 5 = conflict,
-stale generation, exhausted pool, or outstanding work; 6 = occupied lock.
+stale generation, exhausted pool, or outstanding work; 6 = occupied registry mutex.
 Only exit 3 permits a legacy fallback. Never fail open on other errors.
 
 A session is `{name,role,lane,session_id,harness,generation,status,paths,claims}` plus
@@ -118,10 +121,11 @@ These flags identify accountability; they are not authentication credentials.
 | `broadcast` | `--lane NAME --subject TEXT --body-file PATH` | independent `messages` |
 | `archive-message` | `--message ID` | `message` |
 
-The registry is committed by atomic replacement under a bounded exclusive
-mkdir lock, with file and directory sync. Delivery is recorded before inbox
+The **registry mutex** is the exclusive mkdir guard that serializes registry
+reads and writes. The registry is committed by atomic replacement under that
+mutex, with bounded acquisition and file and directory sync. Delivery is recorded before inbox
 materialization; run `boot` to materialize recorded mail after an I/O failure. Inspect the
 recipient inbox before sending again; repeating `send` creates a new message.
-An occupied lock or incomplete state requires owner inspection and restoration
-from durable evidence before manual recovery. Never remove a lock or reuse a
+An occupied registry mutex or incomplete state requires owner inspection and restoration
+from durable evidence before manual recovery. Never remove the registry mutex or reuse a
 name because a process disappeared. The tool makes no tracker API calls.

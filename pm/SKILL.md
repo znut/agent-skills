@@ -93,7 +93,7 @@ merge.
 ## Product area
 
 The PM covers the full product request even when it spans several engineering
-areas. Do not split requirements by the TL's area rules. Tickets and board
+lanes. Do not split requirements by the TL's lane rules. Tickets and board
 updates remain separate records; doc changes use separate worktrees.
 
 A repo may define a separate PM skill for a customer group or contact channel.
