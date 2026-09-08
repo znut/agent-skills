@@ -58,9 +58,10 @@ change.
 
 The manager owns every wait on an external system. When a worker returns
 `awaiting_external`, the manager watches the outcome with the runtime's watch
-mechanism, covering every terminal state, and resumes the same worker with the
-result. It stops the worker's stray background tasks before the resume. It
-starts a fresh worker with the saved state only when the resume fails.
+mechanism, covering every terminal state, and resumes the same worker with
+SendMessage while its transcript lives, delivering the result. It stops the
+worker's stray background tasks before the resume, and starts a fresh worker
+with the saved state only when the resume fails.
 
 The active worker owns the task from its first edit through checks, review,
 push, and, when the repo uses PRs, the open PR. After a third `BLOCK`, the next
@@ -160,19 +161,22 @@ Every worker prompt must state all of the following.
 
 ### External waits
 
-- A worker that ends its turn waiting is never resumed by the runtime; its
-  completion notices go to the manager. Treat any wait on an external system —
-  a CI run, a deploy, a remote queue — longer than about two minutes as a
-  return point, not a wait. Do not sleep for it, loop-poll it, or wait on a
-  background command for it.
-- At a return point: run the required checks for the work done so far, commit,
-  confirm a clean tree, push the branch, and return `awaiting_external` with
-  the pushed tip, the review state, the external id or URL, one exact check
-  command, and the ordered remaining work. Then stop.
-- The manager watches the outcome and resumes the same worker with the result.
-  The resumed worker finishes the task. A new commit after the resume needs a
-  fresh review round as usual.
-- A wait under about two minutes stays a plain foreground command.
+- A long command of your own (a gate, a test suite, a build) runs in the
+  foreground under the foreground cap. If the harness backgrounds it, or you
+  started it in the background, wait on its output file with a foreground
+  until-loop, each wait under the cap, repeated until it ends; never end your
+  turn with your own task still running — nobody is notified when it finishes.
+- A wait on an EXTERNAL system (a CI run, a deploy, a remote queue) is a
+  return point, never a wait: run the checks for the work so far, commit,
+  confirm a clean tree, push, and return `awaiting_external` with the pushed
+  tip, the review state, the external id or URL, one exact check command, and
+  the ordered remaining work. Then stop.
+- The manager watches the outcome and resumes the same worker with the
+  result; the resumed worker finishes the task. A new commit after the
+  resume needs a fresh review round.
+- Why: a stopped worker's background task completes into silence; the
+  manager can watch an external system but cannot see inside a worker's
+  shell.
 
 ### Review
 
