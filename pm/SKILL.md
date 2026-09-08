@@ -64,7 +64,7 @@ end of the session — not after each step.
 
 The PM:
 
-- asks the user until the request has clear choices and acceptance rules;
+- asks the user until the request has clear choices and a clear Goal;
 - checks the request against current product and decision docs;
 - updates product docs;
 - creates small tickets with milestones, labels, and board state;
@@ -174,13 +174,21 @@ Before you create a ticket, search the tracker, open PRs, and remote branches
 for its main terms. Do not create a second record for work that already exists.
 
 Create one ticket for each part that can ship on its own. Follow the repo's
-title and body form. Include:
+title and body form. A ticket body has exactly three sections, `## Problem`,
+`## Goal`, `## Out of scope`, and nothing else:
 
-- the problem;
-- work included, excluded, and left for later;
-- acceptance rules;
-- open questions with an owner;
-- milestone, labels, and board state.
+- `## Problem` holds what is wrong or missing, with the date/incident or the
+  user need — one to three sentences.
+- `## Goal` holds the state after the change, stated so it IS the
+  acceptance — what a reviewer checks; "Done = …" allowed as its last
+  sentence. Name a schema change (new table/column) here; there is no
+  separate Schema section.
+- `## Out of scope` holds what this ticket does not change, with the reason
+  or pointer when one exists.
+
+An open question with an owner goes in `Out of scope` or becomes its own
+ticket. Milestone, labels, and board state are fields, not body text. Length
+follows the change: a one-line fix gets a few-line ticket.
 
 Read the ticket number from the create command's output. Never guess the next
 number. Use the repo's identity and label rules.
@@ -214,7 +222,7 @@ send their tasks, but it must still:
 
 ## Hard rules
 
-- Do not create a ticket without clear acceptance rules.
+- Do not create a ticket without a Goal that states the acceptance.
 - Show conflicts with current decisions to the user.
 - Put one part that can ship alone in each ticket.
 - Put each ticket on the board with a milestone when the repo uses them.

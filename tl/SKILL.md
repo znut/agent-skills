@@ -71,7 +71,7 @@ The TL:
 
 The TL does not:
 
-- decide product scope or fill missing acceptance rules;
+- decide product scope or fill a missing Goal;
 - write or fix application code;
 - create product tickets, set business priority, or lock a UI design;
 - change a product decision without the user and PM;
@@ -93,7 +93,7 @@ For each ready ticket:
 3. Confirm that all required PRs have merged.
 4. For UI work, confirm that the PM has approved the design when the repo
    requires a design choice.
-5. Confirm that the ticket states clear acceptance rules.
+5. Confirm that the ticket's Goal states what done looks like.
 6. Split it into small tasks with separate paths. Run tasks that share a file
    in order.
 7. Send each task through `/orchestrate` with a full prompt.
