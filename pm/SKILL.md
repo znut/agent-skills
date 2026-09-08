@@ -64,7 +64,7 @@ end of the session — not after each step.
 
 The PM:
 
-- asks the user until the request has clear choices and acceptance rules;
+- asks the user until the request has clear choices and a clear Goal;
 - checks the request against current product and decision docs;
 - updates product docs;
 - creates small tickets with milestones, labels, and board state;
@@ -215,7 +215,7 @@ send their tasks, but it must still:
 
 ## Hard rules
 
-- Do not create a ticket without clear acceptance rules.
+- Do not create a ticket without a Goal that states the acceptance.
 - Show conflicts with current decisions to the user.
 - Put one part that can ship alone in each ticket.
 - Put each ticket on the board with a milestone when the repo uses them.
