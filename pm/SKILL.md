@@ -168,13 +168,20 @@ Before you create a ticket, search the tracker, open PRs, and remote branches
 for its main terms. Do not create a second record for work that already exists.
 
 Create one ticket for each part that can ship on its own. Follow the repo's
-title and body form. Include:
+title and body form. A ticket body has exactly three labelled lines, no other
+section:
 
-- the problem;
-- work included, excluded, and left for later;
-- acceptance rules;
-- open questions with an owner;
-- milestone, labels, and board state.
+- `Problem:` what is wrong or missing, with the date/incident or the user
+  need — one to three sentences.
+- `Goal:` the state after the change, stated so it IS the acceptance — what a
+  reviewer checks; "Done = …" allowed as the last clause. Name a schema
+  change (new table/column) here; there is no separate Schema section.
+- `Out of scope:` what this ticket does not change, with the reason or
+  pointer when one exists.
+
+An open question with an owner goes in `Out of scope` or becomes its own
+ticket. Milestone, labels, and board state are fields, not body text. Length
+follows the change: a one-line fix gets a few-line ticket.
 
 Read the ticket number from the create command's output. Never guess the next
 number. Use the repo's identity and label rules.
