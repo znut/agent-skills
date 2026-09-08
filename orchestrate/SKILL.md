@@ -117,6 +117,12 @@ Before opening a PR, confirm again that the recorded base belongs to
 
 ## Before dispatch
 
+Named PM/TL sessions follow [claims and handoffs](session-bus.md#claims-and-handoffs):
+PO confirmation precedes claim and dispatch recheck; the ticket plus shared
+resources are acquired atomically. Carry owner session ID, harness, generation,
+and confirmation reference into every worker prompt. Associate each PR with
+its claim and check ownership before owner actions.
+
 - Search open PRs and remote branches for the ticket number, feature terms,
   and planned branch name. Stop and ask the user if the work already exists.
 - Settle choices that change scope or behavior.

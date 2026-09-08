@@ -22,6 +22,7 @@ case "$role" in
 	pm) inbox_name="pm-inbox" ;;
 	tl-product) inbox_name="tl-product-inbox" ;;
 	tl-platform) inbox_name="tl-platform-inbox" ;;
+	tl-*) [[ "$role" =~ ^tl-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || exit 2; inbox_name="$role-inbox" ;;
 	*)
 		echo "usage: ${0##*/} <pm|tl-product|tl-platform>" >&2
 		exit 2
@@ -56,26 +57,17 @@ path_of() { # <key> <local_md>
 }
 
 find_local_md() {
-	# .agent/orchestrate.local.md is the harness-neutral location (ez-opd #2444);
-	# the per-harness files are the legacy fallback for un-migrated machines.
-	local agent_md="$repo_root/.agent/orchestrate.local.md"
-	local pi_md="$repo_root/.pi/orchestrate.local.md"
-	local claude_md="$repo_root/.claude/orchestrate.local.md"
-	if [ -f "$agent_md" ]; then
-		printf '%s' "$agent_md"
-	elif [ -f "$pi_md" ] && [ -f "$claude_md" ]; then
-		if [ -n "${PI_CODING_AGENT:-}" ]; then
-			printf '%s' "$pi_md"
-		elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-			printf '%s' "$claude_md"
-		else
-			printf '%s' "$pi_md"
-		fi
-	elif [ -f "$pi_md" ]; then
-		printf '%s' "$pi_md"
-	elif [ -f "$claude_md" ]; then
-		printf '%s' "$claude_md"
-	fi
+	local common primary candidate
+	common=$(git rev-parse --git-common-dir)
+	primary=$(cd "$(dirname "$common")" && pwd)
+	for candidate in "$primary/.agent/orchestrate.local.md" "$repo_root/.agent/orchestrate.local.md"; do
+		if [ -f "$candidate" ]; then printf '%s' "$candidate"; return; fi
+	done
+	candidate=''
+	if [ -n "${CODEX_THREAD_ID:-}" ]; then candidate="$repo_root/.codex/orchestrate.local.md"
+	elif [ -n "${PI_CODING_AGENT:-}" ]; then candidate="$repo_root/.pi/orchestrate.local.md"
+	elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then candidate="$repo_root/.claude/orchestrate.local.md"; fi
+	if [ -n "$candidate" ] && [ -f "$candidate" ]; then printf '%s' "$candidate"; fi
 }
 
 human_age() { # <seconds>
@@ -139,7 +131,22 @@ else
 	comment_cursor_dir=''
 fi
 
+named_json=''
+script_dir=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
+if named_json=$(bun "$script_dir/agent-session.mjs" current 2>"$tmpdir/named-error"); then
+	named_role=$(printf '%s' "$named_json" | jq -r '.session | if .role == "pm" then "pm" else "tl-" + .lane end')
+	[ "$named_role" = "$role" ] || { echo 'boot-report: requested role differs from named session' >&2; exit 5; }
+	if [ -n "${AGENT_SESSION_GENERATION:-}" ] && [ "$(printf '%s' "$named_json" | jq -r .session.generation)" != "$AGENT_SESSION_GENERATION" ]; then
+		echo 'boot-report: stale named session generation' >&2; exit 5
+	fi
+else
+	named_code=$?
+	if [ "$named_code" -ne 3 ]; then cat "$tmpdir/named-error" >&2; exit "$named_code"; fi
+	named_json=''
+fi
+named_path() { printf '%s' "$named_json" | jq -r --arg key "$1" '.session.paths[$key]'; }
 printf '# boot-report — role: %s\n' "$role"
+if [ -n "$named_json" ]; then section 'Named session'; printf '%s\n' "$named_json"; fi
 
 # 1. Identity
 section Identity
@@ -209,6 +216,7 @@ if [ -z "$var_dir" ] && [ -d "$(dirname "$repo_root")/state" ]; then var_dir="$(
 if [ -z "$var_dir" ]; then var_dir="$HOME/.config/agent-tools/var/$(basename "$repo_root")"; fi
 rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/null || true)
 rules_stamp="$var_dir/rules-read/${role}.stamp"
+if [ -n "$named_json" ]; then rules_stamp=$(named_path rules_stamp); fi
 if [ -z "$rules_tree" ]; then
 	printf 'rules:   no .agent/ tree on origin/%s (legacy .claude/orchestrate.md — read it)\n' "$default_branch"
 else
@@ -232,6 +240,7 @@ fi
 # ez-opd #2445 shape). Printed bounded; the agent folds it into the ready report.
 section "Handoff note"
 handoff="$var_dir/notes/${role}.md"
+if [ -n "$named_json" ]; then handoff=$(named_path notes); fi
 if [ -f "$handoff" ]; then
 	printf 'file:    %s (modified %s)\n' "$handoff" "$(date -r "$handoff" '+%Y-%m-%d %H:%M' 2>/dev/null || stat -c %y "$handoff" 2>/dev/null | cut -c1-16)"
 	head -40 "$handoff"
@@ -246,7 +255,7 @@ fi
 section "Memory index"
 mem_slug=$(printf '%s' "$repo_root" | sed 's|/|-|g')
 mem_index="$HOME/.claude/projects/${mem_slug}/memory/MEMORY.md"
-if [ -f "$mem_index" ]; then
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -f "$mem_index" ]; then
 	mem_lines=$(wc -l < "$mem_index" | tr -d ' ')
 	mem_bytes=$(wc -c < "$mem_index" | tr -d ' ')
 	mem_stamp="$(dirname "$mem_index")/.prune-stamp"
@@ -266,10 +275,11 @@ fi
 
 # 3. Bus inbox
 section "Bus inbox"
-if [ -z "$session_bus_dir" ]; then
+if [ -z "$session_bus_dir" ] && [ -z "$named_json" ]; then
 	printf 'skipped: session_bus_dir not declared (no orchestrate.local.md)\n'
 else
 	inbox="$session_bus_dir/$inbox_name"
+	if [ -n "$named_json" ]; then inbox=$(named_path inbox); fi
 	if [ ! -d "$inbox" ]; then
 		printf 'missing: %s\n' "$inbox"
 	else
@@ -415,10 +425,11 @@ fi
 
 # 6. Comment-cursor delta
 section "Comment-cursor delta"
-if [ -z "$comment_cursor_dir" ]; then
+if [ -z "$comment_cursor_dir" ] && [ -z "$named_json" ]; then
 	printf 'skipped: comment_cursor_dir not declared (no orchestrate.local.md)\n'
 else
 	cursor_file="$comment_cursor_dir/$role.json"
+	if [ -n "$named_json" ]; then cursor_file=$(named_path comment_cursor); fi
 	if [ ! -f "$cursor_file" ]; then
 		printf 'missing: %s\n' "$cursor_file"
 	elif [ -z "$gh_status_dir" ] || [ ! -d "$gh_status_dir/events" ]; then

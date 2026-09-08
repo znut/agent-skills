@@ -12,11 +12,11 @@ description: >
 
 ## Start
 
-Run `boot-report pm` once (the `tools/boot-report.sh` collector from the
-agent-skills tools family, installed on PATH like `bgh`; fall back to
-`<agent-skills>/tools/boot-report.sh pm` if the name is missing), then apply
-judgment (acting on bus mail, advancing cursors, and dispatching work stays
-manual).
+Read `/orchestrate`'s [named-session boot](../orchestrate/session-bus.md#boot-and-identity)
+and run its `agent-session boot` entrypoint with `--role pm` (PM has no lane).
+Announce the returned name and PM role immediately; retain its generation
+through compaction and repeated boot until explicit session end. Then run
+`boot-report <role>` as that reference directs.
 
 Act on the report's boot sections before anything else: `Rules freshness`
 UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
