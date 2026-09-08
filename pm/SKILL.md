@@ -168,16 +168,17 @@ Before you create a ticket, search the tracker, open PRs, and remote branches
 for its main terms. Do not create a second record for work that already exists.
 
 Create one ticket for each part that can ship on its own. Follow the repo's
-title and body form. A ticket body has exactly three labelled lines, no other
-section:
+title and body form. A ticket body has exactly three sections, `## Problem`,
+`## Goal`, `## Out of scope`, and nothing else:
 
-- `Problem:` what is wrong or missing, with the date/incident or the user
-  need — one to three sentences.
-- `Goal:` the state after the change, stated so it IS the acceptance — what a
-  reviewer checks; "Done = …" allowed as the last clause. Name a schema
-  change (new table/column) here; there is no separate Schema section.
-- `Out of scope:` what this ticket does not change, with the reason or
-  pointer when one exists.
+- `## Problem` holds what is wrong or missing, with the date/incident or the
+  user need — one to three sentences.
+- `## Goal` holds the state after the change, stated so it IS the
+  acceptance — what a reviewer checks; "Done = …" allowed as its last
+  sentence. Name a schema change (new table/column) here; there is no
+  separate Schema section.
+- `## Out of scope` holds what this ticket does not change, with the reason
+  or pointer when one exists.
 
 An open question with an owner goes in `Out of scope` or becomes its own
 ticket. Milestone, labels, and board state are fields, not body text. Length
