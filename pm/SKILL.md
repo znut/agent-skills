@@ -113,6 +113,12 @@ The PM owns layout, wording, and user-flow choices. Read any design rules before
 you draft or judge a screen. Put those rules in each design task and test each
 draft against them. Do not show the user a draft that breaks them.
 
+A route's source-of-truth mock keeps one stable file name (the route's, with a
+surface suffix for a drawer or dialog); every round edits it in place, and dated
+files beside it are round history. Before writing any mock file, check whether
+the path exists: a references tree is rarely under version control, so an
+unchecked write destroys the only copy.
+
 Before the first line of a mock, read the repo's design source of truth — the
 shared theme and density token files and the design rules the repo names — and
 copy the token names into the mock's header. Every size, colour, and spacing in
