@@ -25,10 +25,8 @@ tools/
                               (install on PATH like bgh:
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
-  main-health/                post-merge full-suite runner on the main tip
-                              (env: MAIN_HEALTH_STEP_TIMEOUT per-step watchdog,
-                              MAIN_HEALTH_SKIP_PATTERN skip-eligible paths;
-                              runs at background QoS)
+  main-health/                post-merge suite runner on the default tip;
+                              steps come from the config's mainHealth block
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   agent-session(.mjs)         named PM/TL sessions: boot, claims, inbox
                               (contract in orchestrate/session-bus.md)
@@ -54,6 +52,7 @@ shows the shape (fill-me-in placeholders); copy it to
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
 | `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see below |
+| `mainHealth` | main-health | yes, if using main-health | `repo` (primary checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and covers all of them in one process (one 40s loop, one GraphQL request per
@@ -100,6 +99,12 @@ local file — it never clones/commits/pushes.
 invocation, debounced as a whole run (skips all steps if the last run for
 that config started < 60s ago). Appends one line per step to
 `$AGENT_TOOLS_HOME/var/<name>/on-merge.log`: `<ISO time> <step> exit=<code>`.
+
+`main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
+the config's `mainHealth.steps` on the fetched default tip in a locked
+worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`
+plus one `step-<name>.log` per step. A red run also touches
+`gh-status/events/main-health-<sha8>.red`, so lane watchers see it.
 
 ## Install
 
