@@ -21,7 +21,7 @@ cd <repo>
 git config agent.bot-token-file '~/.config/<bot>.token'
 ```
 
-No config → clear error (never silently falls back to the human login).
+No config → clear error (never silently falls back to the user's own login).
 One-call override: `BGH_TOKEN_FILE=<path> bgh …`.
 
 ## Self-event log

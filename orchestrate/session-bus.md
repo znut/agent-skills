@@ -4,7 +4,7 @@
 
 On `/pm` or `/tl`, read this section before the boot report. Resolve the role
 from the invoked skill. PM has no lane; TL resolves its lane from the
-invocation or repo rules and asks the PO before registering if it is absent. A lane limits eligible
+invocation or repo rules and asks the user before registering if it is absent. A lane limits eligible
 tickets; multiple sessions may share it. Never invent fixed subareas.
 
 Run `agent-session boot --role pm` or `agent-session boot --role tl --lane <lane>` from the project checkout.
@@ -38,7 +38,7 @@ state returns exit 3; establish the shared directory before named boot.
 A **claim** is one atomic ownership record assigning a ticket and its complete
 shared-resource set to one session generation.
 
-Propose any Ready ticket within the lane. Wait for PO confirmation before
+Propose any Ready ticket within the lane. Wait for the user's confirmation before
 claiming, rechecking for dispatch, or sending workers. After confirmation,
 atomically claim the ticket and its complete shared-resource set, then recheck
 Ready status and current open work before dispatch. If that final recheck
@@ -54,7 +54,7 @@ Use `associate-pr` as soon as the PR exists; `check-owner` before owner actions.
 An ownership conflict reports its actual owner and never overwrites any claim.
 Before a normal handoff, stop the old workers and watchers, save their branch,
 record quiescence evidence, and `release` the ticket. The next owner claims only
-after PO confirmation. Never infer quiescence from idle time or a dead shell.
+after the user's confirmation. Never infer quiescence from idle time or a dead shell.
 
 Wrap writes the returned notes path (state only, at most 40 lines). Explicit
 `end` refuses outstanding claims and pending inbox work. No extra branch evidence is required after ownership has been released. History and inbox archives remain in
