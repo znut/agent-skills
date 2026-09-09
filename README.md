@@ -41,7 +41,8 @@ you use:
 - Claude Code: `~/.claude/skills/`
 - Codex: `~/.codex/skills/`
 
-A link lets a pull in this repo update the installed skill at once.
+A link lets a pull in this repo update the installed skill at once. Upgrading a machine or repo
+from before 2026-09-09: `MIGRATION.md`.
 
 ## Set up a repo
 
