@@ -2,8 +2,8 @@
 name: orchestrate
 description: >
   Run repo work through subagents. Split work into small tasks, give each worker
-  an isolated git worktree, check the result, and require the worker to commit,
-  pass review, and deliver through the repo's delivery mode. Read project rules
+  an isolated git worktree, and require the worker to commit, pass a fresh
+  review, and deliver through the repo's delivery mode. Read project rules
   from the repo. Pair this skill with /tl for engineering work or /pm for
   product work. Trigger: "orchestrate", "fan out agents", "dispatch subagents",
   "parallel agents", "multi-agent", or "/orchestrate".
@@ -11,341 +11,165 @@ description: >
 
 # Orchestrate
 
-This skill tells agents how to deliver work. It does not decide which work a
-PM or TL owns.
+This skill is the delivery engine: how a task becomes a reviewed, pushed
+branch or a ready PR. `/tl` and `/pm` decide which work; `/review-gate` is the
+reviewer's procedure. The user's instructions win over the repo rules, and the
+repo rules win over this skill.
 
 ## Read the repo rules
 
-Run `git fetch origin -q`. If the role's boot collector reports the rules tree
-(`.agent/`) UNCHANGED since this role's last read, skip the rules read: the rules
-are already in the role's memory and handoff state, and a single section may be
-grepped from the remote tip when one rule is in doubt. Otherwise read
-`.agent/orchestrate.md` from the remote default branch with
-`git show origin/<default>:.agent/orchestrate.md` (on CHANGED, only the files
-the collector lists), then write the stamp the collector prints. If that file does
-not exist, run setup. Read each named file from the same remote tip.
+Run `git fetch origin -q`. If the role's boot report says the rules tree
+(`.agent/`) is UNCHANGED since this role last read it, skip the read and grep
+one section from the remote tip when a rule is in doubt. Otherwise read
+`.agent/orchestrate.md` and each file it names from the remote default branch
+with `git show origin/<default>:<path>`, then write the stamp the report
+prints. If the file does not exist, run setup from [bootstrap.md](bootstrap.md)
+once.
 
-The repo rules must state:
+Load `/comm` for anything you write to a person. Tell each worker to load it
+at the PR step, before it writes the PR body, comments, or ticket text.
 
-- the remote and default branch;
-- the delivery mode: `pr` or `push-only`;
-- git and host identity;
-- doc read order;
-- check commands;
-- the review command and checklist;
-- PR labels, state, body, and issue links;
-- artifact rules;
-- code rules for workers;
-- worker types in order, the reviewer type, and the worker limit.
+## Roles
 
-If the repo has no rules, read [bootstrap.md](bootstrap.md), ask the user for
-the missing facts, and add the files through this process. Do this once. Later
-runs read the files and do not read `bootstrap.md`.
+The manager talks with the user, settles open choices, splits work, sends
+tasks, and checks each PR. It never edits a worker's change: a failed check
+goes back to a worker with the exact findings.
 
-Load `/comm`. Every worker prompt tells the worker to load `/comm` at the PR
-step, immediately before it writes the PR body, PR comments, or ticket text;
-code comments follow the pasted code rules while it codes. Load `/tl` for engineering work or `/pm` for product work. If the role remains
-unclear, ask the user before you send work to an agent.
-
-## Duties
-
-The manager talks with the user, settles open choices, splits the work, sends
-tasks to workers, and inspects each open PR. The manager does not edit a worker's
-change.
+The worker owns a task from first edit through checks, review, push, and the
+open PR. It starts only the review's fresh reviewer. A reviewer starts no agent.
 
 The manager owns every wait on an external system. When a worker returns
-`awaiting_external`, the manager watches the outcome with the runtime's watch
-mechanism, covering every terminal state, and resumes the same worker with
-SendMessage while its transcript lives, delivering the result. It stops the
-worker's stray background tasks before the resume, and starts a fresh worker
-with the saved state only when the resume fails.
+`awaiting_external`, watch the outcome with the runtime's watch mechanism,
+then resume the same worker with the result while its transcript lives. Stop
+its stray background tasks first, and start a fresh worker from the saved
+state only when the resume fails.
 
-The active worker owns the task from its first edit through checks, review,
-push, and, when the repo uses PRs, the open PR. After a third `BLOCK`, the next
-worker takes ownership. A worker may start the review's fresh reviewers — one,
-or the repo-defined panel derived from the diff — and no other agent. Each
-reviewer uses the worker's worktree while the worker pauses. A reviewer may
-start no agent.
-
-The same rules apply when the manager changes repo files. Start from the right
-default-branch tip, use a separate worktree, pass review with no open `BLOCK`,
-and deliver through the repo's delivery mode.
-
-Unless the delivery mode is `push-only`, only this result counts as
-done:
-
-- all checks pass;
-- a fresh reviewer returns `PASS` for the final commit with no open `BLOCK`;
-- the branch exists on the remote;
-- a PR exists with all required labels, text, and artifacts;
-- for `draft_first: required`, the manager has checked the draft and marked its
-  unchanged PR ready;
-- the agent reports the PR URL.
-
-Then wait for the user's review and clear approval. Never merge.
-
-With push-only delivery, require the same base, worktree, checks, commit, and
-fresh `PASS`. Push the reviewed commit and report the branch. Skip PR, label,
-and PR artifact steps.
+The same rules apply when the manager changes repo files itself: a worktree,
+checks, a fresh review, and the repo's delivery mode.
 
 ## Choose the base
 
-Before each first dispatch:
-
-1. Run `git fetch origin` in the main checkout. Do not edit, switch branches,
-   pull, commit, or merge there.
-2. Compare local `<default>` with `origin/<default>` by ancestry.
-3. If both point to the same commit, use either. If local `<default>` is an
-   ancestor of `origin/<default>`, use the remote tip.
-4. If local `<default>` is ahead of `origin/<default>`, stop before work and
-   ask the user to publish or undo the local commits. A PR from that base would
-   include commits that the remote default branch lacks.
-5. If the refs have split, stop and ask the user. Neither ref is the newer
-   linear tip. Do not compare commit dates.
-6. Create a new branch and worktree at the selected commit. Record the base
-   SHA and confirm that `HEAD` matches it before any edit.
-
-For a replacement worker or a higher worker type, start a new worktree at the
-pushed `origin/<branch>` tip. Do not restart from the default branch. The same
-running worker makes its first two review fixes in its current worktree.
-
-Before opening a PR, confirm again that the recorded base belongs to
-`origin/<default>`.
+Fetch, then start from whichever of local `<default>` and `origin/<default>`
+contains the other. Ask the user only when they have split. A PR cut from an
+unpushed local tip carries those commits; say so in the report. Record the
+base SHA. A replacement worker continues from the pushed `origin/<branch>`
+tip, not from the default branch.
 
 ## Before dispatch
 
-Named PM/TL sessions follow [claims and handoffs](session-bus.md#claims-and-handoffs):
-PO confirmation precedes claim and dispatch recheck; the ticket plus shared
-resources are acquired atomically. Carry owner session ID, harness, generation,
-and confirmation reference into every worker prompt. Associate each PR with
-its claim and check ownership before owner actions.
-
-- Search open PRs and remote branches for the ticket number, feature terms,
-  and planned branch name. Stop and ask the user if the work already exists.
-- Settle choices that change scope or behavior.
-- Give parallel workers separate files. Run work that shares files in order.
-- Keep the number of live workers within both the repo and runtime limits.
-- Use one worker for normal work. Use two separate workers only when a wrong
-  choice could harm security, auth, stored data, schema changes, or money. Give
-  them the same task in separate worktrees, compare the results, and keep one.
-- Send read-only location questions to a read-only search agent when the
-  runtime provides one.
+- Named PM/TL sessions follow [claims and handoffs](session-bus.md#claims-and-handoffs):
+  confirm with the user, claim the ticket and its shared resources, then
+  recheck for existing work.
+- Search open PRs and remote branches for the ticket and feature terms. Stop
+  and ask if the work already exists.
+- Settle choices that change scope or behavior. Never guess a product or
+  business choice.
+- Run independent tasks in parallel when that saves time; run tasks that share
+  files in order. Stay within the repo and runtime worker limits.
+- For a change that could harm security, auth, stored data, schema, or money,
+  consider two workers on the same task in separate worktrees and keep the
+  better result.
+- Send location questions to a read-only search agent when the runtime has one.
 
 ## Worker prompt
 
-Every worker prompt must state all of the following.
+Give each worker the ticket, the worktree path, the base SHA, the paths it
+owns, the repo's code rules copied word for word, and the owner session
+fields from the claim. Then the contract:
 
-### Rules and scope
+- Read the repo rules and review checklist from `origin/<default>`, then the
+  repo docs in the stated order.
+- Work only in the named worktree and paths. Never touch the main checkout,
+  another worktree, or agent settings.
+- Make one small change that satisfies the ticket. Test project logic, edge
+  cases, and known bugs; do not test the framework. Comment only where the
+  code cannot state the reason itself.
+- Branch as `feat/<slug>`, `fix/<slug>`, or `chore/<slug>`. Run the repo's
+  checks for the changed paths; fix or report each failure. Stage only task
+  files. Commit before review.
+- **External waits.** A long command of your own (a gate, a test suite, a
+  build) runs in the foreground under the foreground cap. If the harness
+  backgrounds it, or you started it in the background, wait on its output
+  file with a foreground until-loop, each wait under the cap, repeated until
+  it ends; never end your turn with your own task still running — nobody is
+  notified when it finishes. A wait on an EXTERNAL system (a CI run, a deploy,
+  a remote queue) is a return point: run the checks for the work so far,
+  commit, push, and return `awaiting_external` with the pushed tip, the
+  review state, the external id or URL, one exact check command, and the
+  ordered remaining work. The manager watches and resumes you with the result.
+- **Review.** Fetch; if new `origin/<default>` commits touch the same files,
+  merge them and rerun the checks. Push. When the repo uses draft-first PRs,
+  open the draft now through the repo's gh identity, with `Resolves #N` for
+  each ticket the merge closes and each required artifact; a repo that opens
+  ready PRs opens after `PASS` instead. Then pause and start one fresh
+  reviewer of the repo's reviewer type on your worktree, or the panel the repo
+  derives from the diff, started concurrently. Each follows `/review-gate`
+  with the reviewed SHA, base SHA, frozen default-branch SHA, task, acceptance
+  rules, checklist, and changed paths. Do not name the model that wrote the
+  change.
+  - `PASS` from every reviewer: stop editing and report.
+  - `BLOCK`: fix every finding, rerun the checks, commit, push, and review
+    again. After the third `BLOCK`, push what you have, open no further PR,
+    and return every finding; the manager sends the branch to the next worker
+    type.
+  - `ERROR`: start another reviewer. An error uses no attempt.
+- Remove your worktree with plain `git worktree remove <path>` from outside it
+  once the task is delivered; report `harness-locked` when the runtime holds
+  it.
+- Never merge.
 
-- First read the repo rules and review checklist from `origin/<default>` with
-  `git show`. Then read the repo docs in the stated order.
-- Work only in the named worktree and only on the named paths.
-- Make one small change. Write only the code, tests, and comments the task
-  needs. Test project logic, important edge cases, and known bugs. Do not test
-  framework behavior. Add a comment only when the code cannot state the reason
-  or rule on its own.
-- Copy the repo's code rules into the prompt without changing their words.
-- Never edit the main checkout, another worktree, or user agent settings.
-- Start no agent except the review round's fresh reviewer — or, when the repo
-  rules derive a reviewer panel from the diff, that panel's fresh reviewers,
-  started concurrently. No reviewer may start an agent.
-
-### Branch and checks
-
-- For first work, follow **Choose the base** and create a branch named
-  `feat/<slug>`, `fix/<slug>`, or `chore/<slug>`.
-- For later work, continue from the pushed `origin/<branch>` tip in a new
-  worktree.
-- Run every check that the repo rules require for the changed paths. Read the
-  command output. Fix each failure or report the exact failure.
-- Stage only task files. Do not use `git add .`. Commit before review.
-- Run `git status --porcelain` after the commit. Do not start review until it
-  prints nothing.
-
-### External waits
-
-- A long command of your own (a gate, a test suite, a build) runs in the
-  foreground under the foreground cap. If the harness backgrounds it, or you
-  started it in the background, wait on its output file with a foreground
-  until-loop, each wait under the cap, repeated until it ends; never end your
-  turn with your own task still running — nobody is notified when it finishes.
-- A wait on an EXTERNAL system (a CI run, a deploy, a remote queue) is a
-  return point, never a wait: run the checks for the work so far, commit,
-  confirm a clean tree, push, and return `awaiting_external` with the pushed
-  tip, the review state, the external id or URL, one exact check command, and
-  the ordered remaining work. Then stop.
-- The manager watches the outcome and resumes the same worker with the
-  result; the resumed worker finishes the task. A new commit after the
-  resume needs a fresh review round.
-- Why: a stopped worker's background task completes into silence; the
-  manager can watch an external system but cannot see inside a worker's
-  shell.
-
-### Review
-
-- Fetch before review. If new `origin/<default>` commits change the same files,
-  merge them into the task branch, rerun the needed checks, and commit the
-  result before review. Record the exact `origin/<default>` SHA after this work.
-  Finish every fetch and ref update before the worker pauses; the reviewer must
-  not fetch or write refs.
-- Ask a fresh agent of the repo's reviewer type to review the exact committed
-  diff and run the repo's review command. When the repo rules derive a reviewer
-  panel from the diff, start every panelist fresh and concurrently with its own
-  focus contract; the round passes only when every panelist returns `PASS`, and
-  one panelist writes any required marker.
-- Pause the worker. Give the reviewer the worker's worktree, reviewed SHA,
-  branch, base SHA, frozen default-branch SHA, task, acceptance rules,
-  checklist, and changed paths. The reviewer must confirm that `HEAD` equals
-  the reviewed SHA and that
-  `git status --porcelain` prints nothing before and after review. Do not name
-  the model that wrote the change.
-- A reviewer returns `PASS`, `BLOCK`, or `ERROR`. Each `BLOCK` must name a real
-  flaw and give a file and line. A crash, timeout, or tool fault returns
-  `ERROR` and does not use a review attempt.
-- On the first `BLOCK`, the same running worker fixes every finding, reruns
-  checks, commits, confirms a clean worktree, and starts a new reviewer.
-- On the second `BLOCK`, the same worker gets one more fix. It repeats the
-  checks, commit, clean-worktree confirmation, and fresh review.
-- On the third `BLOCK`, rerun the required checks, commit only remaining task
-  changes, confirm a clean worktree, push the continuation branch, open no PR,
-  and return every finding. The manager must send the pushed branch to the next
-  worker type at once.
-- A project checklist may define nonblocking findings. A reviewer may return
-  `PASS` with those findings; handle them as the project rules require.
-- On `PASS`, make no more source or doc changes. Confirm that `HEAD` still
-  equals the reviewed SHA and that `git status --porcelain` prints nothing.
-  Push that exact commit. Open a PR only when the repo uses PR delivery.
-
-### PR and cleanup
-
-- Push with `git push -u origin <branch>`.
-- Confirm that `git ls-remote origin refs/heads/<branch>` equals the reviewed
-  SHA. Do not open a PR when they differ.
-- If the delivery mode is `push-only`, report the pushed branch and
-  skip the rest of the PR and artifact steps.
-- On `PASS`, open the PR with `gh pr create --base <default> --head <branch>`.
-  When `draft_first: required` is set, pass `--draft`. Apply required labels
-  and follow any pre-PR gate the repo runs.
-- Use `Resolves #N` for each ticket that should close on merge. A plain `#N`
-  only links the ticket.
-- Add each required artifact. Open and inspect the first artifact made by a
-  new tool or fixture.
-- Wait for the PR's required CI checks. With `draft_first: required`, report
-  the draft to the manager and do not mark it ready.
-- After push and PR work, run plain `git worktree remove <path>` from outside
-  the worktree. Never use `--force` or a broad `git worktree prune`. A runtime
-  lock means `worktree_cleanup: harness-locked`. A refusal due to changed or
-  untracked files means work remains; report it.
-- Wait for the user's review and clear approval. Never merge.
-
-### Return form
+Return:
 
 ```yaml
 status: pass | blocked | awaiting_external
-worker_type: <repo agent type>
-base_sha: <sha>
 branch: <branch>
-pr_url: <url on pass; n/a otherwise>
-labels: [<labels>]
-summary: <what changed and why>
-files_changed: [<paths>]
-diff_stat: <summary>
-verify:
-  typecheck: pass | n/a
-  lint: pass | n/a
-  test: pass | n/a
-review: <rounds and final result>
-reviewed_sha: <sha that passed and was pushed>
-review_findings: [<open BLOCK findings copied word for word>]
-artifacts: <urls or n/a>
+reviewed_sha: <sha>
+pr_url: <url or n/a>
+review: <rounds, final verdict, where it is recorded, open findings>
 open_questions: [<question and owner>]
-worktree_cleanup: removed | harness-locked | failed
-awaiting: <external id or URL + one exact check command + ordered remaining work; only with status awaiting_external>
+worktree: removed | harness-locked
+awaiting: <external id or URL, one exact check command, ordered remaining work; only with awaiting_external>
 ```
 
-Put each open question in the PR body. Never guess a product or business
-choice.
+Put each open question in the PR body.
 
-## Worker types and review results
+## Worker types
 
-The repo rules name logical worker and reviewer types. Provider files choose
-their models and effort. This skill must not name, map, or guess provider
-models.
+The repo rules name logical worker types in order and a reviewer type.
+Provider agent files choose their models and effort; this skill never names a
+model. Start with the first type. After a third `BLOCK`, a new worker of the
+next type continues from the pushed branch with every finding. If the last
+type also gets a third `BLOCK`, stop and report the commits, checks, and
+findings.
 
-Start with the first worker type unless the repo rules allow another start.
-Do not raise the type because a task looks hard. Do not pass a model or effort
-override. Provider agent files choose both.
+## Check the PR before it is ready
 
-When a worker gets a third `BLOCK`, treat that result as work in progress. Send
-a new worker of the next type the pushed branch and every finding. Do not hand
-the branch to the user as the finished result. If the last worker type also
-gets a third `BLOCK`, stop and report the commits, checks, and findings. Do not
-create a new type.
+The manager checks and never fixes:
 
-## Review after the PR opens
+1. The PR head equals the remote branch tip and the reviewed SHA.
+2. The repo's proof of checks is green for that SHA: CI, or the local gate
+   result the repo names.
+3. The final verdict names that SHA, came from a fresh reviewer (the full
+   panel where the repo derives one), and holds no open `BLOCK`.
+4. Labels, text, and required artifacts are present; open one artifact.
+5. Scope, decision records, secrets, `.env` files, and lockfile changes are
+   what the ticket asked for.
 
-The manager inspects the PR but does not fix it.
+Then mark the PR ready and report the URL. A push after ready voids the
+check: flip the PR back to draft, recheck, and re-ready. The poller's
+`ready-stale` event flags a push that slipped through. The user reviews and
+merges; agents never merge. After the merge, fetch and start work that waited
+on it.
 
-1. Confirm that the exact PR head and remote branch tip match the reviewed
-   commit.
-2. Open the PR diff and inspect at least one changed file.
-3. Confirm that CI passes, labels and text are right, and required artifacts
-   exist and look right.
-4. Confirm that the final review came from fresh reviewers — the full derived
-   panel where the repo defines one — its marker names the PR tip when the repo
-   uses markers, and no `BLOCK` remains.
-5. Inspect scope, decision records, secrets, `.env` files, and lockfile
-   changes.
-6. With `draft_first: required`, confirm the PR head again, then mark that
-   exact PR ready.
-
-If any of these steps fails, send a fresh worker the exact findings and the
-pushed branch. Do not edit the PR yourself. If every step passes, report the
-ready URL and wait for the user. The user does not review a draft PR.
-
-If the repo provides a local PR status service, watch it after reporting the
-PR. A merge notice says what happened; it does not grant approval. After the
-user merges, fetch and start any task that depended on that merge.
+With push-only delivery, the same checks apply to the pushed branch and the
+report ends there.
 
 ## Worktree rules
 
-- Each worker gets a new worktree. No two workers share one.
-- A fresh reviewer may use the active worker's worktree only while the worker
-  pauses and only to read the committed tip. It may write only a required
-  review marker outside the worktree files.
-- Keep all edits and git writes out of the main checkout. `git fetch origin`
-  is the only allowed main-checkout git write.
-- A later worker may need a detached worktree because an old runtime worktree
-  still holds the branch. Start at `origin/<branch>`, then push with
-  `git push origin HEAD:refs/heads/<branch>`. Before a SHA marker runs, update
-  the local branch ref to the commit under review.
-- If a push conflicts, update the branch in its worktree, rerun all checks and
-  review, then push again.
-- If a worker stops before it cleans up, remove only its named worktree after
-  you confirm that all useful work reached the remote or no longer matters.
-
-## Failures
-
-| Problem                                         | Action                                                                                                            |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| A check fails                                   | The running worker fixes it. If it cannot continue, send a fresh worker of the same type the exact output.        |
-| A worker stops or returns nothing               | Inspect its branch and worktree without changing them, then send a fresh worker of the same type the saved state. |
-| A worker waits on a command but does not return | Stop its stray background tasks, then resume the same worker and point it at the external-waits rule. Use a fresh worker with the saved state only when the resume fails. |
-| A push conflicts                                | Update in the worktree, rerun checks and review, then push.                                                       |
-| Scope grows                                     | Split it into small tasks and separate PRs.                                                                       |
-| A product choice remains open                   | Ask the user. Do not guess.                                                                                       |
-| The last worker type gets a third `BLOCK`       | Stop and report every finding and saved commit.                                                                   |
-
-## Hard rules
-
-- The worker owns the task through the reviewed pushed branch and, when the
-  repo uses PRs, the open PR.
-- Only a green PR with a fresh `PASS` and no open `BLOCK` counts as delivery,
-  except when the delivery mode is `push-only`.
-- The manager never fixes a worker's change.
-- No agent edits the user's main checkout.
-- A worker starts only fresh reviewers. A reviewer starts no agent.
-- Read command output before you report a result.
-- Do not add secrets, `.env` files, lockfiles, or agent settings unless the task
-  calls for them.
-- Never merge. Wait for the user's clear approval for each PR.
+- One new worktree per worker. A reviewer may read the paused worker's
+  worktree and writes nothing in it.
+- `git fetch origin` is the only git write allowed in the main checkout.
+- If an old runtime worktree still holds the branch, start detached at
+  `origin/<branch>` and push with `git push origin HEAD:refs/heads/<branch>`.
+- Remove a stopped worker's worktree only after its useful work reached the
+  remote.

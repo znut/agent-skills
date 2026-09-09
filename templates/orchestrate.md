@@ -11,19 +11,16 @@ process from the shared skills into the repo file.
 - Default branch: `<name>`.
 - Git host: `<GitHub or other>`.
 - Delivery: `<GitHub PR | commit and push only>`.
+- Draft first: `<yes | no>`. With yes, the worker opens a draft and the TL
+  marks it ready after the final check.
 - Identity: `<bot and token source | user's current login>`.
 - Package tool and lockfile: `<names and rules>`.
-- The user reviews and merges each PR. Agents never merge.
 
 ## Hook settings
 
-Delete this section if the repo uses no PR hook. Use only values that the hook
-documents.
+Delete this section unless the repo opts out of a shared hook.
 
-- bot_identity: `<required | off>`
-- review_marker: `<required | off>`
-- verify_marker: `<required | off>`
-- draft_first: `<required | delete this line>`
+- watch_guard: `<off | delete this line>`
 
 ## Work areas
 
@@ -81,23 +78,14 @@ Known command limits: `<facts or none>`.
 
 - Checklist: `<path>`.
 - Mechanical scan: `<script | checklist table>`.
-- Review form: `<fresh reviewer with SHA marker and hook | fresh reviewer
-without marker>`.
-- Marker command: `<command | none>`.
-- PR hook: `<path | none>`.
+- Reviewer verdict goes to: `<PR review | return block>`.
+- Proof of checks: `<CI | local gate and its result path>`.
 - Blocking findings: `<severities or rules that prevent PASS>`.
 - Nonblocking findings: `<severities, required action, or none>`.
 
 ## PRs
 
 Delete this section when delivery stops after commit and push.
-
-### Draft-first
-
-When `draft_first: required` is set, the worker opens with `--draft`, adds
-required artifacts, and waits for checks. The manager checks the exact PR and
-SHA, CI, labels, text, and artifacts, then marks it ready. The user reviews the
-ready PR.
 
 ### Labels
 
@@ -110,7 +98,6 @@ ready PR.
 ### Title and body
 
 - Title form: `<form>`.
-- Draft state: `<ready | draft until final check>`.
 - Body sections: `<goal, reason, decisions, open questions, artifacts>`.
 - Use `Resolves #N` for each issue that the merge should close.
 - Do not add file lists, diff counts, or check marks when the host already

@@ -1,10 +1,8 @@
-# bgh — bot-identity gh wrapper
+# bgh — per-clone-identity gh wrapper
 
-`bgh <anything gh takes>` = `GH_TOKEN=$(cat <repo's token file>) gh <anything>`.
-
-Kills the per-command inline-prefix boilerplate that the review-gate hook's
-bot-identity guard demands, without weakening the guard: bare mutating `gh`
-stays blocked; `bgh` is bot-authored by construction.
+`bgh <anything gh takes>` runs `gh` as the identity the clone declares: a bot
+token file, or the user's own login. Scripts and agents call `bgh` for every
+GitHub write, so identity is the clone's choice, never the call site's.
 
 ## Install (once per machine)
 
@@ -25,12 +23,6 @@ git config agent.bot-token-file '~/.config/<bot>.token'
 
 No config → clear error (never silently falls back to the human login).
 One-call override: `BGH_TOKEN_FILE=<path> bgh …`.
-
-## Hook interplay
-
-With `git config agent.gh-wrapper bgh`, the review-gate hook treats `bgh` as
-`gh` for its draft and marker checks and requires no token prefix; bare
-mutating `gh` still blocks. See `tools/hooks/README.md`.
 
 ## Self-event log
 

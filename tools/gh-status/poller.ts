@@ -432,9 +432,9 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
 
 		// Ready-stale: a READY (non-draft, open) PR whose head moved while ready —
-		// someone pushed without flipping draft first. Alarm for the push gate's
-		// blind spots (pushes from machines without the hook). Marker clears when
-		// the PR goes back to draft or leaves OPEN.
+		// someone pushed without flipping draft first, so the manager's final
+		// check is void until it re-runs. Marker clears when the PR goes back to
+		// draft or leaves OPEN.
 		const staleMarker = `${eventsDir}/pr-${pr.number}.ready-stale`
 		if (pr.state === "OPEN" && !pr.isDraft) {
 			if (prev && prev.state === "OPEN" && prev.isDraft === false && prev.headOid && sha && prev.headOid !== sha) {
