@@ -21,15 +21,16 @@ case "$role" in
 esac
 inbox_name="$role-inbox"
 
-# Write pi session role marker for bgh self-log auto-derivation.
-if [ -n "${PI_SESSION_ID:-}" ]; then
-	case ${PI_SESSION_ID} in
-		*/*|*..*) : ;; # path-unsafe session id: skip
-		*)
-			mkdir -p /tmp/pi-session-roles 2>/dev/null &&
-				printf '%s\n' "$role" > "/tmp/pi-session-roles/${PI_SESSION_ID}" 2>/dev/null || true ;;
-	esac
-fi
+# Session role marker, /tmp/<harness>-session-roles/<session id>: the
+# statusline labels the session with it and bgh derives its self-event log
+# from it. Written for whichever harness ids are present.
+for pair in "cc:${CLAUDE_CODE_SESSION_ID:-}" "pi:${PI_SESSION_ID:-}" "codex:${CODEX_THREAD_ID:-}"; do
+	sid=${pair#*:}
+	[ -n "$sid" ] || continue
+	case $sid in */*|*..*) continue ;; esac # path-unsafe session id: skip
+	mkdir -p "/tmp/${pair%%:*}-session-roles" 2>/dev/null &&
+		printf '%s' "$role" > "/tmp/${pair%%:*}-session-roles/$sid" 2>/dev/null || true
+done
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
@@ -226,6 +227,24 @@ else
 		printf 'rules:   .agent/@%s never read by role %s → read .agent/orchestrate.md + the files it names, then stamp:\n' "$rules_short" "$role"
 		printf 'stamp:   mkdir -p %s && echo "%s %s" > %s\n' "$(dirname "$rules_stamp")" "$rules_tree" "$(date +%F)" "$rules_stamp"
 	fi
+fi
+
+# 2b2. Main health — the last post-merge suite verdict on the default tip.
+section "Main health"
+mh="$var_dir/main-health/state.json"
+if [ -f "$mh" ]; then
+	mh_green=$(jq -r '.green' "$mh" 2>/dev/null || printf '?')
+	mh_sha=$(jq -r '.sha[0:8]' "$mh" 2>/dev/null || printf '?')
+	mh_at=$(jq -r '.finishedAt' "$mh" 2>/dev/null || printf '?')
+	if [ "$mh_green" = true ]; then
+		printf 'green at %s (%s)\n' "$mh_sha" "$mh_at"
+	else
+		printf 'RED at %s (%s): failed %s — see %s/run.log and step-<name>.log\n' "$mh_sha" "$mh_at" \
+			"$(jq -r '.steps | to_entries[] | select(.value == "FAIL") | .key' "$mh" 2>/dev/null | paste -sd, -)" "$(dirname "$mh")"
+	fi
+	[ "$mh_sha" = "$remote_short" ] || printf 'note: verdict is for %s; origin/%s tip is %s\n' "$mh_sha" "$default_branch" "${remote_short:-?}"
+else
+	printf '(no main-health state at %s)\n' "$mh"
 fi
 
 # 2c. Handoff note — the previous same-role session's note, printed bounded;

@@ -11,9 +11,9 @@
 #                  (default '^docs/|\.md$')
 #     stepTimeout  optional seconds per step (default 1800)
 #
-# Green = state.json refreshed. Red = a monotonic marker
-# events/main-health-<sha8>.red in the config's gh-status events dir, which
-# sessions already watch. Runs in a dedicated locked worktree at the fetched
+# The verdict is state.json (`green` true or false, one entry per step);
+# boot-report prints it at every PM and TL boot. Runs in a dedicated locked
+# worktree at the fetched
 # default tip; skips when state.json already records that sha, or when every
 # change since the last green run matches skipPattern; reruns once when the
 # tip moved during the run. Steps run under nice -n 19 (not taskpolicy -b:
@@ -37,7 +37,6 @@ WT=${WT:-"$(dirname "$REPO")/$(basename "$REPO")-worktrees/main-health"}
 STEP_TIMEOUT=$(cfg '.mainHealth.stepTimeout // 1800')
 SKIP_PATTERN=$(cfg '.mainHealth.skipPattern // "^docs/|\\.md$"')
 VAR="$HOME_DIR/var/$CONFIG_NAME/main-health"
-EVENTS="$HOME_DIR/var/$CONFIG_NAME/gh-status/events"
 mkdir -p "$VAR"
 while IFS='=' read -r key value; do
 	[ -n "$key" ] && export "$key=$value"
@@ -126,13 +125,7 @@ run_pass() {
 	printf '{ "sha": "%s", "finishedAt": "%s", "green": %s, "steps": { %s"_": "end" } }\n' \
 		"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GREEN" "$STEPS" > "$VAR/state.json"
 
-	if [ "$GREEN" = false ]; then
-		mkdir -p "$EVENTS"
-		printf 'main RED at %s — see %s/state.json + run.log\n' "$SHA" "$VAR" > "$EVENTS/main-health-${SHA:0:8}.red"
-		log "run RED sha=$SHA"
-	else
-		log "run green sha=$SHA"
-	fi
+	if [ "$GREEN" = false ]; then log "run RED sha=$SHA"; else log "run green sha=$SHA"; fi
 }
 
 run_pass

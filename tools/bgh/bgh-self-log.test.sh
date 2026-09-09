@@ -9,7 +9,7 @@ failures=0
 
 # Clean up markers and temp dirs on exit.
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp" "/tmp/pi-session-roles/test-pi-session" "/tmp/pi-session-roles/a" "/tmp/cc-session-roles/test-cc-session"' EXIT
+trap 'rm -rf "$tmp" "/tmp/pi-session-roles/test-pi-session" "/tmp/pi-session-roles/a" "/tmp/cc-session-roles/test-cc-session" "/tmp/codex-session-roles/test-codex-session"' EXIT
 
 # --- stub gh -----------------------------------------------------------------
 mkdir -p "$tmp/bin"
@@ -134,6 +134,18 @@ printf '%s\n' "tl-lane" > "/tmp/cc-session-roles/test-cc-session"
 (
 	unset PI_SESSION_ID || true
 	export CLAUDE_CODE_SESSION_ID="test-cc-session"
+	run_bgh pr comment 1 --body "hello"
+)
+assert_id_logged "$sev_dir/tl-lane.ids"
+
+# (f2) Codex branch -----------------------------------------------------------
+echo "--- case (f2): Codex branch ---"
+reset_sev
+mkdir -p /tmp/codex-session-roles
+printf '%s' "tl-lane" > "/tmp/codex-session-roles/test-codex-session"
+(
+	unset CLAUDE_CODE_SESSION_ID PI_SESSION_ID || true
+	export CODEX_THREAD_ID="test-codex-session"
 	run_bgh pr comment 1 --body "hello"
 )
 assert_id_logged "$sev_dir/tl-lane.ids"

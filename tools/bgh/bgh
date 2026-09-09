@@ -71,7 +71,7 @@ fi
 # Derive BGH_SELF_LOG for posting-shaped calls only (pr/issue comment, pr
 # review, api POST/PATCH on comments or reviews): scraping a READ would log a
 # stranger's comment id and the watcher would swallow that real event. The
-# role comes from the session's role marker, the dir from
+# role comes from the marker boot-report writes for the session, the dir from
 # `git config agent.self-events-dir`. An explicit BGH_SELF_LOG always wins.
 if [ -z "${BGH_SELF_LOG:-}" ]; then
 	posting=""
@@ -92,6 +92,9 @@ if [ -z "${BGH_SELF_LOG:-}" ]; then
 		elif [ -n "${PI_SESSION_ID:-}" ]; then
 			derive_session_id=${PI_SESSION_ID}
 			role_marker_dir="/tmp/pi-session-roles"
+		elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+			derive_session_id=${CODEX_THREAD_ID}
+			role_marker_dir="/tmp/codex-session-roles"
 		fi
 		if [ -n "$derive_session_id" ]; then
 			case $derive_session_id in

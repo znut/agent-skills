@@ -41,21 +41,14 @@ failure the agent reads and acts on.
 
 ## Self-event log
 
-`bgh` can automatically log the ids of comments and reviews it creates so the
-session's watcher can skip its own echoes. Set `BGH_SELF_LOG=<file>` explicitly,
-or let `bgh` derive it from the session harness and role marker:
-
-- **Claude Code**: when `BGH_SELF_LOG` is unset and `CLAUDE_CODE_SESSION_ID` is
-  set, `bgh` reads the role from `/tmp/cc-session-roles/$CLAUDE_CODE_SESSION_ID`
-  and writes to `<agent.self-events-dir>/<role>.ids` for posting-shaped calls.
-- **pi**: when `BGH_SELF_LOG` is unset, `CLAUDE_CODE_SESSION_ID` is empty, and
-  `PI_SESSION_ID` is set, `bgh` reads the role from
-  `/tmp/pi-session-roles/$PI_SESSION_ID` and writes to the same path.
+`bgh` logs the ids of the comments and reviews it creates so the session's
+watcher can skip its own echoes. Set `BGH_SELF_LOG=<file>` explicitly, or let
+`bgh` derive it: for posting-shaped calls it reads the role from the session's
+marker, `/tmp/<cc|pi|codex>-session-roles/<session id>`, which `boot-report`
+writes at every PM and TL boot, and appends to
+`<agent.self-events-dir>/<role>.ids`.
 
 Posting-shaped calls are `pr comment`, `issue comment`, `pr review`, and `api`
 calls to comments/reviews endpoints using `POST` or `PATCH`. Path-unsafe
 session ids (`/`, `..`) are skipped. Explicit `BGH_SELF_LOG` always wins;
 absent config or marker falls back to plain `gh`.
-
-`tools/boot-report.sh <role>` writes the pi role marker when `PI_SESSION_ID` is
-present.

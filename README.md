@@ -63,5 +63,5 @@ review process, so a skill update changes every repo that links these skills.
 `tools/` contains optional local programs: a PR status poller that turns
 GitHub into local files, a board snapshot, a post-merge step runner, a local
 main-health suite, a per-clone gh identity wrapper, a session boot report,
-named PM/TL sessions, a worktree hook, and two small Claude Code hooks. Each
+named PM/TL sessions, a worktree hook, and a Claude Code stop hook. Each
 documents its own setup in `tools/README.md` or its folder.

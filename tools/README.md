@@ -21,7 +21,8 @@ tools/
   board-snapshot/             board -> $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md
   on-merge/run.mjs            generic post-merge step runner
   bgh/                        bot-identity gh wrapper (per-repo token file)
-  boot-report.sh              read-only session-boot state collector for TL/PM roles
+  boot-report.sh              session-boot state collector for TL/PM roles; also
+                              writes the session's role marker under /tmp
                               (install on PATH like bgh:
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
@@ -30,7 +31,7 @@ tools/
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   agent-session(.mjs)         named PM/TL sessions: boot, claims, inbox
                               (contract in orchestrate/session-bus.md)
-  hooks/                      Claude Code hooks: session-role marker, watch-guard
+  hooks/                      Claude Code Stop hook: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 
@@ -57,8 +58,8 @@ shows the shape (fill-me-in placeholders); copy it to
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and covers all of them in one process (one 40s loop, one GraphQL request per
 configured repo per cycle plus one repo-wide `issues/comments?since=` REST
-call feeding `events/issue-<n>.log|.commented|.comments.json` — same shapes as
-the PR comment events; configs with a `board` block add a 1-point
+call feeding `events/issue-<n>.log|.comments.json` — same shapes as the PR
+comment events; configs with a `board` block add a 1-point
 `projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
 when that stamp moves — agents read the board file with zero API calls). `board-snapshot` and `on-merge` are invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
@@ -79,15 +80,17 @@ block the rest.
 `gh-status/poller.ts` — per config `<name>`, under
 `$AGENT_TOOLS_HOME/var/<name>/gh-status/`:
 
-- `status/pr-<n>.json`, `status/state.json`
-- `events/pr-<n>.merged` / `.closed` / `.checks-success` / `.checks-failure` /
-  `.changes-requested` / `.ready-stale`
-- `events/pr-<n>.commented` (mtime-bump, consume-then-rewatch) +
-  `events/pr-<n>.comments.json`
+- `status/pr-<n>.json` (current snapshot per PR), `status/state.json`
+- `events/pr-<n>.log` — the PR's timeline, append-only JSONL: merged, closed,
+  checks-success, checks-failure, approved, changes-requested, commented,
+  ready-stale. One watcher per PR covers everything.
+- `events/pr-<n>.merged` — marker, for watchers that key on a path
+- `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
+  `events/issue-<n>.comments.json` — the latest comment batch and the issue
+  timeline
 
-The one notable design choice: `comments.json` is written **before** the
-`.commented` marker bumps, so a watcher woken by the marker's mtime can never
-observe it before the payload file exists.
+Files of PRs that left the tracked window and have been merged or closed for
+thirty days are removed, as are issue files idle that long.
 
 `board-snapshot/board-snapshot.mjs` — `$AGENT_TOOLS_HOME/var/<name>/board-snapshot.md`
 (atomic write) plus `$AGENT_TOOLS_HOME/var/<name>/.board-snapshot-last-run`
@@ -103,8 +106,8 @@ that config started < 60s ago). Appends one line per step to
 `main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
 the config's `mainHealth.steps` on the fetched default tip in a locked
 worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`
-plus one `step-<name>.log` per step. A red run also touches
-`gh-status/events/main-health-<sha8>.red`, so lane watchers see it.
+plus one `step-<name>.log` per step. boot-report prints the last verdict at
+every PM and TL boot.
 
 ## Install
 
