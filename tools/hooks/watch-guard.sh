@@ -52,5 +52,5 @@ if pgrep -f "watch-lane.sh $role" > /dev/null 2>&1; then
 	exit 0
 fi
 
-echo "watch-guard: NO $role watcher armed (no 'watch-lane.sh $role' process alive). Re-arm before stopping: ONE persistent Monitor-tool task running single-shot 'bash scripts/watch-lane.sh $role [pr#...]' — on fire: sweep/archive, THEN re-arm a fresh one. Never loop-wrap it (presence-based bus fires re-fire pre-sweep and the rate-limiter kills the watcher); background-bash arming is reap-prone in remote-control sessions." >&2
+echo "watch-guard: no '$role' watcher alive. Before stopping, arm one persistent Monitor task running 'bash scripts/watch-lane.sh $role [pr#...]'; on fire, sweep and archive, then re-arm. Never loop-wrap it: a re-fire before the sweep kills the watcher." >&2
 exit 2

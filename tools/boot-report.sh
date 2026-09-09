@@ -1,33 +1,25 @@
 #!/usr/bin/env bash
 # boot-report.sh — one-call session boot state collector for TL/PM roles.
 #
-# Usage: tools/boot-report.sh <pm|tl-product|tl-platform>
+# Usage: tools/boot-report.sh <pm|tl-<lane>>
 #
-# Read-only. Prints bounded, labeled sections from the current project checkout.
-# No cursors are advanced, no archives touched, no state written.
-#
-# Role scoping: the pm role reads only its own lane — gh-status and the
-# comment-cursor delta cover issue logs + PRs labeled `pm` (bot-only logs
-# dropped), Open PRs lists pm-labeled PRs plus a count of the rest, Worktree
-# hygiene is a one-line count. TL roles get every section in full.
-#
-# Path resolution follows the repo's existing convention: parse
-# .agent/orchestrate.local.md, else .pi/ or .claude/orchestrate.local.md (prefer the one
-# matching the current harness env vars, else .pi), reading the second backtick
-# field of lines shaped `- `key`: `value``.
+# Read-only: prints bounded, labeled sections from the current checkout and
+# writes no state. The pm role reads only its own lane (issue logs plus PRs
+# labeled `pm`, bot-only logs dropped, worktree hygiene as a count); TL roles
+# get every section. Paths come from .agent/orchestrate.local.md, else the
+# current harness's orchestrate.local.md, one `- `key`: `value`` per line.
 set -euo pipefail
 
 role="${1:-}"
 case "$role" in
-	pm) inbox_name="pm-inbox" ;;
-	tl-product) inbox_name="tl-product-inbox" ;;
-	tl-platform) inbox_name="tl-platform-inbox" ;;
-	tl-*) [[ "$role" =~ ^tl-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || exit 2; inbox_name="$role-inbox" ;;
+	pm) ;;
+	tl-*) [[ "$role" =~ ^tl-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || exit 2 ;;
 	*)
-		echo "usage: ${0##*/} <pm|tl-product|tl-platform>" >&2
+		echo "usage: ${0##*/} <pm|tl-<lane>>" >&2
 		exit 2
 		;;
 esac
+inbox_name="$role-inbox"
 
 # Write pi session role marker for bgh self-log auto-derivation.
 if [ -n "${PI_SESSION_ID:-}" ]; then
@@ -210,8 +202,8 @@ fi
 section "Rules freshness"
 var_dir=''
 if [ -n "$session_bus_dir" ]; then var_dir=$(dirname "$session_bus_dir"); fi
-# Fallback order when the repo declares no bus dir: a `state/` sibling of the
-# repo (durable state inside the declared working tree), else the legacy var dir.
+# Fallback when the repo declares no bus dir: a `state/` sibling of the repo,
+# else the agent-tools var dir.
 if [ -z "$var_dir" ] && [ -d "$(dirname "$repo_root")/state" ]; then var_dir="$(dirname "$repo_root")/state"; fi
 if [ -z "$var_dir" ]; then var_dir="$HOME/.config/agent-tools/var/$(basename "$repo_root")"; fi
 rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/null || true)
@@ -236,8 +228,8 @@ else
 	fi
 fi
 
-# 2c. Handoff note — the previous same-role session's note (harness-neutral,
-# ez-opd #2445 shape). Printed bounded; the agent folds it into the ready report.
+# 2c. Handoff note — the previous same-role session's note, printed bounded;
+# the agent folds it into the ready report.
 section "Handoff note"
 handoff="$var_dir/notes/${role}.md"
 if [ -n "$named_json" ]; then handoff=$(named_path notes); fi
@@ -498,7 +490,7 @@ else
 		if [ -n "${BOOT_BOARD_FILTER:-}" ]; then
 			printf '(filter: BOOT_BOARD_FILTER=%s)\n' "$BOOT_BOARD_FILTER"
 		else
-			printf '(no lane filter — set BOOT_BOARD_FILTER to an ERE, e.g. "Control Plane|Platform|Shared")\n'
+			printf '(no lane filter — set BOOT_BOARD_FILTER to an ERE over the row text)\n'
 		fi
 		printf '%s\n' "$ready_rows"
 		total=$(grep '| Ready |' "$board_snapshot_file" 2>/dev/null | grep -E -- "$board_filter" | wc -l | tr -d ' ')
@@ -562,7 +554,7 @@ while IFS= read -r branch; do
 	fi
 done < <(git for-each-ref refs/heads --format='%(refname:short)')
 if [ "$lane_scoped" -eq 1 ]; then
-	printf 'prunable: %s · dead-pid locked: %s · locked (no pid): %s · no remote counterpart: %s — TL-lane trees; run boot-report tl-product for the list\n' \
+	printf 'prunable: %s · dead-pid locked: %s · locked (no pid): %s · no remote counterpart: %s — TL-lane trees; run boot-report tl-<lane> for the list\n' \
 		"$(grep -c '^prunable:' "$wt_out" || true)" \
 		"$(grep -c '^locked with DEAD pid' "$wt_out" || true)" \
 		"$(grep -c '^locked (no pid)' "$wt_out" || true)" \

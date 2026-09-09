@@ -68,13 +68,13 @@ assert_id_not_logged() {
 echo "--- case (a): pi posting-shaped with marker ---"
 reset_sev
 mkdir -p /tmp/pi-session-roles
-printf '%s\n' "tl-platform" > "/tmp/pi-session-roles/test-pi-session"
+printf '%s\n' "tl-lane" > "/tmp/pi-session-roles/test-pi-session"
 (
 	unset CLAUDE_CODE_SESSION_ID || true
 	export PI_SESSION_ID="test-pi-session"
 	run_bgh pr comment 1 --body "hello"
 )
-assert_id_logged "$sev_dir/tl-platform.ids"
+assert_id_logged "$sev_dir/tl-lane.ids"
 
 # (b) pi read-shaped call ------------------------------------------------------
 echo "--- case (b): pi read-shaped ---"
@@ -84,7 +84,7 @@ reset_sev
 	export PI_SESSION_ID="test-pi-session"
 	run_bgh api "repos/x/y/issues"
 )
-assert_id_not_logged "$sev_dir/tl-platform.ids"
+assert_id_not_logged "$sev_dir/tl-lane.ids"
 
 # (c) pi posting-shaped with NO marker ---------------------------------------
 echo "--- case (c): pi posting-shaped without marker ---"
@@ -95,14 +95,14 @@ rm -f "/tmp/pi-session-roles/test-pi-session"
 	export PI_SESSION_ID="test-pi-session"
 	run_bgh pr comment 1 --body "hello"
 )
-assert_id_not_logged "$sev_dir/tl-platform.ids"
+assert_id_not_logged "$sev_dir/tl-lane.ids"
 
 # (d) explicit BGH_SELF_LOG overrides derivation -----------------------------
 echo "--- case (d): explicit BGH_SELF_LOG overrides ---"
 reset_sev
 explicit_log="$tmp/explicit.ids"
 mkdir -p "$sev_dir"
-printf '%s\n' "tl-platform" > "/tmp/pi-session-roles/test-pi-session"
+printf '%s\n' "tl-lane" > "/tmp/pi-session-roles/test-pi-session"
 (
 	unset CLAUDE_CODE_SESSION_ID || true
 	export PI_SESSION_ID="test-pi-session"
@@ -110,32 +110,32 @@ printf '%s\n' "tl-platform" > "/tmp/pi-session-roles/test-pi-session"
 	run_bgh pr comment 1 --body "hello"
 )
 assert_id_logged "$explicit_log"
-assert_id_not_logged "$sev_dir/tl-platform.ids"
+assert_id_not_logged "$sev_dir/tl-lane.ids"
 
 # (e) path-unsafe PI_SESSION_ID ----------------------------------------------
 echo "--- case (e): path-unsafe PI_SESSION_ID ---"
 reset_sev
 # create a sibling that would match a naive prefix if not guarded
 mkdir -p "/tmp/pi-session-roles/a"
-printf '%s\n' "tl-platform" > "/tmp/pi-session-roles/a/b"
+printf '%s\n' "tl-lane" > "/tmp/pi-session-roles/a/b"
 (
 	unset CLAUDE_CODE_SESSION_ID || true
 	export PI_SESSION_ID="a/b"
 	run_bgh pr comment 1 --body "hello"
 )
-assert_id_not_logged "$sev_dir/tl-platform.ids"
+assert_id_not_logged "$sev_dir/tl-lane.ids"
 
 # (f) Claude Code branch regression ------------------------------------------
 echo "--- case (f): Claude Code branch regression ---"
 reset_sev
 mkdir -p /tmp/cc-session-roles
-printf '%s\n' "tl-platform" > "/tmp/cc-session-roles/test-cc-session"
+printf '%s\n' "tl-lane" > "/tmp/cc-session-roles/test-cc-session"
 (
 	unset PI_SESSION_ID || true
 	export CLAUDE_CODE_SESSION_ID="test-cc-session"
 	run_bgh pr comment 1 --body "hello"
 )
-assert_id_logged "$sev_dir/tl-platform.ids"
+assert_id_logged "$sev_dir/tl-lane.ids"
 
 if [ "$failures" -eq 0 ]; then
 	echo "ALL PASS"

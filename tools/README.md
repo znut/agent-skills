@@ -9,13 +9,6 @@ materialize the result as local files. Agents then just read a file — faster
 than an API call, and it costs zero additional GitHub requests no matter how
 many agents are watching.
 
-Seven tool families: a multi-repo PR status poller (`gh-status`), a
-project-board-to-markdown renderer (`board-snapshot`), a generic post-merge
-step runner (`on-merge`), a bot-identity `gh` wrapper (`bgh`), a post-merge
-main-health runner (`main-health`), a WorktreeCreate hook that puts agent
-worktrees outside the repo (`worktree-hook`), and a read-only session-boot
-state collector (`boot-report`) for TL/PM roles.
-
 ## Layout
 
 ```
@@ -37,6 +30,9 @@ tools/
                               MAIN_HEALTH_SKIP_PATTERN skip-eligible paths;
                               runs at background QoS)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
+  agent-session(.mjs)         named PM/TL sessions: boot, claims, inbox
+                              (contract in orchestrate/session-bus.md)
+  hooks/                      Claude Code hooks: session-role marker, watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 

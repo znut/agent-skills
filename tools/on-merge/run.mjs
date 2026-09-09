@@ -49,9 +49,7 @@ async function runStep(config, step, logFile) {
 	}
 	if (step.type === "command") {
 		try {
-			// env: process.env passed explicitly — see board-snapshot.mjs's ghJson
-			// comment; Bun's exec*Sync doesn't reliably inherit env mutated at
-			// runtime unless told to.
+			// env passed explicitly: see ghJson in board-snapshot.mjs.
 			execSync(step.cmd, { cwd: expandHome(step.cwd), stdio: "pipe", env: process.env })
 			appendLog(logFile, `${at} command(${step.cmd}) exit=0`)
 		} catch (e) {
