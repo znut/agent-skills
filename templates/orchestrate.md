@@ -80,6 +80,7 @@ Known command limits: `<facts or none>`.
 - Mechanical scan: `<script | checklist table>`.
 - Reviewer verdict goes to: `<PR review | return block>`.
 - Proof of checks: `<CI | local gate and its result path>`.
+- Ready check: `<command the gh wrapper runs before pr ready | none>`.
 - Blocking findings: `<severities or rules that prevent PASS>`.
 - Nonblocking findings: `<severities, required action, or none>`.
 

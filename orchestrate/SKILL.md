@@ -156,7 +156,9 @@ The manager checks and never fixes:
 5. Scope, decision records, secrets, `.env` files, and lockfile changes are
    what the ticket asked for.
 
-Then mark the PR ready and report the URL. A push after ready voids the
+Then mark the PR ready and report the URL. A repo may enforce these through
+its gh wrapper's ready check; a refusal names what is missing, and the
+manager gets that done before trying again. A push after ready voids the
 check: flip the PR back to draft, recheck, and re-ready. The poller's
 `ready-stale` event flags a push that slipped through. The user reviews and
 merges; agents never merge. After the merge, fetch and start work that waited

@@ -24,6 +24,21 @@ git config agent.bot-token-file '~/.config/<bot>.token'
 No config → clear error (never silently falls back to the user's own login).
 One-call override: `BGH_TOKEN_FILE=<path> bgh …`.
 
+## Ready check
+
+`bgh pr ready <n>` first runs the check the clone declares:
+
+```sh
+git config agent.ready-check 'bash scripts/final-check.sh'
+```
+
+bgh runs `<command> <n>` from the repo root and refuses to mark the PR ready
+when it exits non-zero, leaving the check's output on the terminal. `--undo`
+is never gated. The clone decides what ready needs, such as a green local
+gate result for the head and a review verdict naming it; bgh only holds the
+door. No shell parsing is involved, and a refusal is an ordinary command
+failure the agent reads and acts on.
+
 ## Self-event log
 
 `bgh` can automatically log the ids of comments and reviews it creates so the

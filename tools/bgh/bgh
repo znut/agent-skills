@@ -27,6 +27,28 @@ run_logged() {
 	exit $rc
 }
 
+# Ready check: `pr ready <n>` (not --undo) first runs the clone's declared
+# check, `git config agent.ready-check '<command>'`, as `<command> <n>` from
+# the repo root, and refuses when it fails. The clone decides what ready
+# needs (a green gate result, a review verdict); bgh only holds the door.
+case " $* " in
+	*" pr ready "*)
+		case " $* " in
+			*" --undo "*) ;;
+			*)
+				check=$(git config --get agent.ready-check 2>/dev/null || true)
+				if [ -n "$check" ]; then
+					n=""
+					for a in "$@"; do case $a in [0-9]*) n=$a; break ;; esac; done
+					top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+					if ! (cd "$top" && sh -c "$check \"\$1\"" bgh "$n"); then
+						echo "bgh: ready check failed for PR ${n:-<current branch>}; not marking ready" >&2
+						exit 1
+					fi
+				fi ;;
+		esac ;;
+esac
+
 tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
 if [ -z "$tf" ]; then
 	ident=$(git config --get agent.gh-identity 2>/dev/null || true)

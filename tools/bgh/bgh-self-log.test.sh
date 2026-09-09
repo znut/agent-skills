@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# bgh-self-log.test.sh — smoke test for bgh BGH_SELF_LOG auto-derivation.
-# Self-contained bash; uses a stub gh on PATH (never the real gh).
+# bgh-self-log.test.sh — smoke tests for bgh: BGH_SELF_LOG auto-derivation
+# and the ready check. Self-contained bash; uses a stub gh on PATH (never the
+# real gh) and a temporary global git config.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -28,7 +29,7 @@ fi
 # --- git config isolated to temp file -----------------------------------------
 export GIT_CONFIG_GLOBAL="$tmp/.gitconfig"
 sev_dir="$tmp/self-events"
-git config agent.self-events-dir "$sev_dir"
+git config --global agent.self-events-dir "$sev_dir"
 
 # Use the bot-token path with a dummy token file; personal mode exits before
 # auto-derivation, so the bot path is needed to exercise self-log derivation.
@@ -136,6 +137,47 @@ printf '%s\n' "tl-lane" > "/tmp/cc-session-roles/test-cc-session"
 	run_bgh pr comment 1 --body "hello"
 )
 assert_id_logged "$sev_dir/tl-lane.ids"
+
+# (g) ready check declared and failing: refuse, gh not called ----------------
+echo "--- case (g): ready check fails ---"
+cat > "$tmp/check-fail" <<'EOF'
+#!/bin/sh
+echo "gate red for pr $1"; exit 1
+EOF
+cat > "$tmp/check-pass" <<'EOF'
+#!/bin/sh
+[ "$1" = "5" ] && exit 0; exit 1
+EOF
+chmod +x "$tmp/check-fail" "$tmp/check-pass"
+# The stub gh prints an issuecomment URL; the check scripts never do, so that
+# token tells a real gh call apart from the check's own output.
+gh_called() { case $1 in *issuecomment*) return 0 ;; *) return 1 ;; esac; }
+git config --global agent.ready-check "$tmp/check-fail"
+if out=$(run_bgh pr ready 5 2>/dev/null); then
+	echo "FAIL: ready allowed despite a failing check"; ((failures++)) || true
+elif gh_called "$out"; then
+	echo "FAIL: gh was called after a failed check"; ((failures++)) || true
+else
+	echo "PASS: ready refused, gh not called"
+fi
+
+# (h) ready check passes: gh called ------------------------------------------
+echo "--- case (h): ready check passes ---"
+git config --global agent.ready-check "$tmp/check-pass"
+if out=$(run_bgh pr ready 5 2>/dev/null) && gh_called "$out"; then
+	echo "PASS: ready allowed after a passing check"
+else
+	echo "FAIL: ready blocked despite a passing check"; ((failures++)) || true
+fi
+
+# (i) --undo is never gated ---------------------------------------------------
+echo "--- case (i): --undo bypasses the check ---"
+git config --global agent.ready-check "$tmp/check-fail"
+if out=$(run_bgh pr ready 5 --undo 2>/dev/null) && gh_called "$out"; then
+	echo "PASS: undo not gated"
+else
+	echo "FAIL: undo was gated"; ((failures++)) || true
+fi
 
 if [ "$failures" -eq 0 ]; then
 	echo "ALL PASS"
