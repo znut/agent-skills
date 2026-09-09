@@ -41,7 +41,7 @@ maintainers, testability for everyone. Use these terms exactly.
    something varies across it (production + test counts as two).
 5. **Simplify first.** The zero-new-mechanism option is evaluated before any
    other; a new mechanism is proposed only as the sole owner of one named
-   effect. Minimum correct code; tests cover our logic, edges, and known bugs
+   effect. Minimum correct code; tests exercise our logic, edges, and known bugs
    — never the framework.
 6. **Accept dependencies, return results.** A module that constructs its own
    dependencies or mutates its inputs is hard to test through its interface.

@@ -7,7 +7,7 @@ harness-created worktree (`isolation: "worktree"`, `EnterWorktree`,
 
 Why: repo-wide tooling (editors, linters, indexers, glob-based scripts) never
 sweeps nested checkouts, and a worktree's relative paths (`../..`) can't land
-inside the primary tree. Worktrees are created DETACHED at the fetched
+inside the main checkout. Worktrees are created DETACHED at the fetched
 default-branch tip — no stub branches; workers branch per their contract.
 
 Install (per repo):
@@ -34,5 +34,4 @@ Install (per repo):
 }
 ```
 
-Cleanup tooling must scan the sibling dir (see the host repo's
-`scripts/cleanup-worktrees.sh` for a dual-root transition example).
+Cleanup tooling must scan the sibling dir.

@@ -27,10 +27,9 @@ Then `/reload` (or restart pi). The segment appears after the first fetch.
 
 ## Configuration
 
-| Variable                  | Default | Meaning                                                                                          |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `QUOTA_POLL_SECONDS`      | `60`    | Poll interval; `0` disables polling (refreshes still happen after agent turns, throttled to 20s) |
-| `KIMI_QUOTA_POLL_SECONDS` | —       | Backward-compatible fallback when `QUOTA_POLL_SECONDS` is unset                                  |
+| Variable             | Default | Meaning                                                                                          |
+| -------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `QUOTA_POLL_SECONDS` | `60`    | Poll interval; `0` disables polling (refreshes after agent turns continue, throttled to 20s) |
 
 Credential source: `~/.pi/agent/auth.json` → `kimi-coding` (`key` or `access`)
 and `openai-codex` (`access` and `accountId`). A missing credential leaves that

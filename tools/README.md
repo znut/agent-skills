@@ -1,20 +1,9 @@
 # tools/
 
 Local, config-driven background services for agents working across GitHub
-repos. The purpose: when several agents/workers are running in parallel on a
-local machine, each polling GitHub for PR status, board state, or merge
-events adds up fast — you exhaust the GitHub API quota and every check pays a
-network round trip. These services poll GitHub **once**, centrally, and
-materialize the result as local files. Agents then just read a file — faster
-than an API call, and it costs zero additional GitHub requests no matter how
-many agents are watching.
-
-Seven tool families: a multi-repo PR status poller (`gh-status`), a
-project-board-to-markdown renderer (`board-snapshot`), a generic post-merge
-step runner (`on-merge`), a bot-identity `gh` wrapper (`bgh`), a post-merge
-main-health runner (`main-health`), a WorktreeCreate hook that puts agent
-worktrees outside the repo (`worktree-hook`), and a read-only session-boot
-state collector (`boot-report`) for TL/PM roles.
+repos. They poll GitHub once, centrally, and materialize the result as local
+files — many parallel agents each polling would exhaust the API quota. Agents
+read a file: no API call, no quota, however many agents watch.
 
 ## Layout
 
@@ -27,16 +16,19 @@ tools/
   gh-status/poller.ts         multi-repo PR status poller (bun)
   board-snapshot/             board -> $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md
   on-merge/run.mjs            generic post-merge step runner
-  bgh/                        bot-identity gh wrapper (per-repo token file)
-  boot-report.sh              read-only session-boot state collector for TL/PM roles
+  bgh/                        per-clone-identity gh wrapper; install as gh too
+                              (bgh/README.md)
+  boot-report.sh              session-boot state collector for TL/PM roles; also
+                              writes the session's role marker under /tmp
                               (install on PATH like bgh:
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
-  main-health/                post-merge full-suite runner on the main tip
-                              (env: MAIN_HEALTH_STEP_TIMEOUT per-step watchdog,
-                              MAIN_HEALTH_SKIP_PATTERN skip-eligible paths;
-                              runs at background QoS)
+  main-health/                post-merge suite runner on the default tip;
+                              steps come from the config's mainHealth block
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
+  agent-session(.mjs)         named PM/TL sessions: boot, claims, inbox
+                              (contract in orchestrate/session-bus.md)
+  hooks/                      Claude Code Stop hook: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 
@@ -57,13 +49,14 @@ shows the shape (fill-me-in placeholders); copy it to
 | `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
-| `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see below |
+| `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see `onMerge` step types |
+| `mainHealth` | main-health | yes, if using main-health | `repo` (main checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
-and covers all of them in one process (one 40s loop, one GraphQL request per
+and polls all of them in one process (one 40s loop, one GraphQL request per
 configured repo per cycle plus one repo-wide `issues/comments?since=` REST
-call feeding `events/issue-<n>.log|.commented|.comments.json` — same shapes as
-the PR comment events; configs with a `board` block add a 1-point
+call feeding `events/issue-<n>.log|.comments.json` — same shapes as the PR
+comment events; configs with a `board` block add a 1-point
 `projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
 when that stamp moves — agents read the board file with zero API calls). `board-snapshot` and `on-merge` are invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
@@ -84,21 +77,17 @@ block the rest.
 `gh-status/poller.ts` — per config `<name>`, under
 `$AGENT_TOOLS_HOME/var/<name>/gh-status/`:
 
-- `status/pr-<n>.json`, `status/state.json`
-- `events/pr-<n>.merged` / `.closed` / `.checks-success` / `.checks-failure` /
-  `.checks-info.json` / `.approved` / `.changes-requested`
-- `events/pr-<n>.commented` (mtime-bump, consume-then-rewatch) +
-  `events/pr-<n>.comments.json`
-- `events/pr-<n>.head-<sha8>` — touched whenever an OPEN PR is first seen
-  or its head moves (older head-* markers for that PR are removed the same
-  poll, all of them once the PR leaves OPEN). No `.log` line — a push must
-  not wake lane watchers. The on-merge watcher's `WatchPaths` already
-  covers `events/`, so an `onMerge` command step that wants to react to a
-  push (not just a merge) can key off this marker.
+- `status/pr-<n>.json` (current snapshot per PR), `status/state.json`
+- `events/pr-<n>.log` — the PR's timeline, append-only JSONL: merged, closed,
+  checks-success, checks-failure, approved, changes-requested, commented,
+  ready-stale. One watcher per PR sees every event.
+- `events/pr-<n>.merged` — marker, for watchers that key on a path
+- `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
+  `events/issue-<n>.comments.json` — the latest comment batch and the issue
+  timeline
 
-The one notable design choice: `comments.json` is written **before** the
-`.commented` marker bumps, so a watcher woken by the marker's mtime can never
-observe it before the payload file exists.
+Files of PRs that left the tracked window and have been merged or closed for
+thirty days are removed, as are issue files idle that long.
 
 `board-snapshot/board-snapshot.mjs` — `$AGENT_TOOLS_HOME/var/<name>/board-snapshot.md`
 (atomic write) plus `$AGENT_TOOLS_HOME/var/<name>/.board-snapshot-last-run`
@@ -111,12 +100,18 @@ invocation, debounced as a whole run (skips all steps if the last run for
 that config started < 60s ago). Appends one line per step to
 `$AGENT_TOOLS_HOME/var/<name>/on-merge.log`: `<ISO time> <step> exit=<code>`.
 
+`main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
+the config's `mainHealth.steps` on the fetched default tip in a locked
+worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`
+plus one `step-<name>.log` per step. boot-report prints the last verdict at
+every PM and TL boot.
+
 ## Install
 
 1. `bun install` isn't needed — everything here is dependency-free (bun/node
    builtins only). You do need `bun` and the GitHub CLI (`gh`) on `PATH`.
 2. Add a config file per target repo under `$AGENT_TOOLS_HOME/config/`
-   (default `~/.config/agent-tools/config/`) — see the contract above.
+   (default `~/.config/agent-tools/config/`) — see Config contract.
 3. Run `tools/install.sh <name>`. It resolves your `bun` and `gh`
    locations, renders both `tools/launchd/*.plist.template` files with those
    paths substituted in, lints them with `plutil -lint`, and writes the
@@ -129,8 +124,8 @@ that config started < 60s ago). Appends one line per step to
 `<name>` here is only used for the on-merge watcher's `WatchPaths` argument
 (it watches one config's `gh-status/events/` dir and runs that config's
 `onMerge` steps). If you're tracking multiple repos with `gh-status` but only
-want on-merge behavior for one of them, that's exactly what this supports —
-`gh-status` itself always covers every config.
+want on-merge behavior for one of them, that is the intended use;
+`gh-status` polls every config regardless.
 
 ### Uninstall
 
@@ -150,29 +145,6 @@ bun tools/board-snapshot/board-snapshot.mjs <name>
 bun tools/on-merge/run.mjs <name>
 timeout 15 bun tools/gh-status/poller.ts || true   # poller loops forever by default
 ```
-
-### Migrating from an existing single-repo poller
-
-If you're replacing an existing bespoke local poller/watcher pair with this
-tool family:
-
-1. Stop the old service:
-   ```bash
-   launchctl bootout gui/$UID/<old-label>
-   ```
-2. Back up the old service's directory if you want to keep its
-   README/source for reference — the next step may reuse its path as a
-   symlink target.
-3. Install and bootstrap this repo's services (see Install above).
-4. If anything still hardcodes the **old** var/output path (a script, a
-   convention doc, another agent's tool config), point it at the new
-   location with a compatibility symlink instead of updating every
-   reference at once:
-   ```bash
-   ln -sfn "$AGENT_TOOLS_HOME/var/<name>/gh-status" <old-path>/gh-status
-   ```
-   Confirm the old path still resolves (`cat <old-path>/gh-status/status/state.json`),
-   then update references at your own pace and drop the symlink later.
 
 ## Verify
 

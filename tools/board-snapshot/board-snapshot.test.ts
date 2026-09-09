@@ -98,7 +98,7 @@ describe("stripTimestamp", () => {
 		expect(stripTimestamp(a)).toBe(stripTimestamp(b))
 	})
 
-	it("still detects a real content change", () => {
+	it("detects a real content change", () => {
 		const a = renderMarkdown([item({ number: 1 })], "2026-07-14T00:00:00.000Z")
 		const b = renderMarkdown([item({ number: 2 })], "2026-07-14T00:00:00.000Z")
 		expect(stripTimestamp(a)).not.toBe(stripTimestamp(b))
@@ -106,7 +106,7 @@ describe("stripTimestamp", () => {
 })
 
 describe("isWithinDebounce", () => {
-	it("is true just under the debounce window", () => {
+	it("is true one second inside the debounce window", () => {
 		expect(isWithinDebounce(NOW - 59_000, NOW, 60_000)).toBe(true)
 	})
 

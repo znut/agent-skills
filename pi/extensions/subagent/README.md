@@ -109,14 +109,12 @@ Subagent state is stored under the pi machine state directory, outside any repo:
 ```
 
 This keeps spawned processes and their artifacts out of project working trees
-and avoids conflicts between concurrent checkouts. State created before session
-ownership was added is intentionally not shown, because it cannot be attributed
-safely to a current Pi session.
+and avoids conflicts between concurrent checkouts. State without an owner id is not shown: it cannot be attributed to a session.
 
 ## Limitations
 
 - Async subagents are children of the parent pi process. In `pi -p` print mode
-the parent exits after the turn, so async agents should be collected with
+the parent exits after the turn, so collect async agents with
 `await_agent` in the same turn. In TUI/monitor sessions the parent stays alive
 and follow-up pings work.
 - Nested subagents work, but each level must load this extension.

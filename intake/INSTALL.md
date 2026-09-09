@@ -1,7 +1,7 @@
 # Installing the intake skill
 
 For the product team member handing this to a stakeholder: fill in the
-repository name below, grant the stakeholder's GitHub account issue-create
+target repository name, grant the stakeholder's GitHub account issue-create
 access (triage) on that repository, and send them this folder with the two
 prerequisites done or done together on a call.
 

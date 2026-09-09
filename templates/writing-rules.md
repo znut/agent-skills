@@ -1,6 +1,6 @@
 # Writing rules overlay — <repo>
 
-The `comm` skill owns every prose rule and register. This file owns what is
+The `comm` skill owns every prose rule and register. The overlay owns what is
 repo-specific: canonical terms, glossary, repo-only registers, sweep lists.
 
 ## Canonical terms
@@ -9,7 +9,7 @@ Banned synonyms never appear in NEW text; sweep them convert-as-touched.
 
 | Concept | Canonical | Banned synonyms |
 | --- | --- | --- |
-| The human principal | PO | the user, the human, stakeholder |
+| The person who owns the product | `<repo term>` | the user, the human, stakeholder |
 
 ## Glossary — workflow terms
 
@@ -36,5 +36,5 @@ round 1
 
 [attribution]
 ruled
-per PO
+per <repo term>
 ```

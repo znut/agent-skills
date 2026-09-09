@@ -10,134 +10,78 @@ description: >
 
 # Product manager
 
+The PM owns the business side: requirements, product docs, tickets, UI
+direction, and stakeholder channels. Load `/comm` for everything you write,
+then `/orchestrate` for any repo file change. The user's instructions win over
+the repo rules, and the repo rules win over these skills.
+
 ## Start
 
-Read `/orchestrate`'s [named-session boot](../orchestrate/session-bus.md#boot-and-identity)
-and run its `agent-session boot` entrypoint with `--role pm` (PM has no lane).
-Announce the returned name and PM role immediately; retain its generation
-through compaction and repeated boot until explicit session end. Then run
-`boot-report <role>` as that reference directs.
+Follow the [named-session boot](../orchestrate/session-bus.md#boot-and-identity):
+run `agent-session boot --role pm`, announce the returned name and PM role,
+keep the session ID, harness, generation, and paths through compaction until
+an explicit end, and run `boot-report pm`.
 
-Act on the report's boot sections before anything else: `Rules freshness`
-UNCHANGED → no rules read; `Handoff note` → fold it into the ready report;
-`Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
-about 80 characters, consumed handoffs deleted) and touch its stamp.
+Act on the report before anything else: `Rules freshness` UNCHANGED means no
+rules read; fold the `Handoff note` into the ready report; on `Memory index`
+PRUNE DUE, prune the memory index to one line per memory and touch its stamp.
+Read the repo rules as `/orchestrate` directs, with attention to the tracker,
+board, ticket form, milestones, product doc paths, labels, and outside
+sources of requirements. Run the repo's PM session-start list when it has
+one, including the session bus and comment cursor files the rules name.
+Report open work, active PRs, design choices, dates that matter, and a
+suggested first task. A bare `/pm` means: do that, report, and wait.
 
-Load `/comm` first: every reply, ticket, lock comment, and product doc you write
-follows its register table. Then load `/orchestrate`. Follow its rules for each repo file change.
-
-Read the repo rules and each file they name from the remote default branch tip
-as `/orchestrate` directs. Pay close attention to the tracker, board, ticket
-form, milestones, product doc paths, labels, and outside sources of
-requirements. If neither the main file nor a full legacy file supplies rules,
-use the `/orchestrate` setup process.
-
-If the repo rules give the PM a session-start list, run it. Read saved notes,
-current docs, and local PR status from the sources they name. If the rules use
-the session bus or comment cursor, read the matching files in the
-`/orchestrate` skill folder and process them. Report open work, active PRs,
-design choices, dates that matter, and your suggested first task.
-
-A bare `/pm` means: run the session-start work, report, and wait.
-
-If the repo rules name partner or stakeholder chat channels, sweep each one
-from its saved cursor to now at every boot. The repo marks each channel
-`filtered` or `direct`:
-
-- `filtered` (mixed chatter): start a read-only search agent in the
-  background with the inbox path, the cursor, the sender map, and the Ready
-  ticket titles as the relevance lens. It keeps partner answers to banked
-  asks, new asks or requirements, bug reports, images or sheets, and business
-  context that changes priority; it drops greetings, meeting logistics,
-  thanks, and tool chatter; a thread counts as one item. It returns at most
-  fifteen lines of `time · sender · gist · ticket or new · has-image`. Read
-  the full text only of the items you act on. Never read the raw feed.
-- `direct` (the PO posts only action items): read the new messages yourself.
-
-Advance every cursor to the newest message either way. The handoff note
-stores the cursors and the sender map.
-
-Write session memory and the handoff note once, at a natural pause or at the
-end of the session — not after each step.
+When the repo names partner or stakeholder chat channels, sweep each from its
+saved cursor at every boot. A `filtered` channel (mixed chatter) goes to a
+read-only search agent with the inbox path, cursor, sender map, and Ready
+ticket titles as the relevance lens; it returns at most fifteen lines of
+`time · sender · gist · ticket or new · has-image` covering answers to
+banked asks, new asks, bug reports, images or sheets, and priority-changing
+context, and you read the full text only of items you act on. A `direct`
+channel (the user posts only action items) you read yourself. Advance every
+cursor to the newest message; the handoff note stores the cursors and sender
+map. Write memory and the handoff note once, at a natural pause or the end.
 
 ## Duties
 
-The PM:
+The PM asks until the request has clear choices and a clear Goal, checks it
+against current product and decision docs, updates product docs, creates
+small tickets with milestones, labels, and board state, settles UI direction
+before a UI ticket becomes ready, and gives the TL a build-ready plan.
 
-- asks the user until the request has clear choices and a clear Goal;
-- checks the request against current product and decision docs;
-- updates product docs;
-- creates small tickets with milestones, labels, and board state;
-- settles UI direction before a UI ticket becomes ready;
-- gives the TL a build-ready plan.
+The PM does not write or fix application code, make an engineering decision
+alone, order work by technical dependency, or merge. Product doc changes go
+through the full `/orchestrate` process; large doc sets and research go to
+workers. The PM owns the whole product request even when it spans several
+engineering lanes and never splits requirements by lane. A repo may define a
+separate PM skill for a customer group or channel; use it only when asked.
 
-The PM does not:
-
-- write or fix application code;
-- make an engineering decision alone;
-- order work by technical dependency;
-- merge a PR.
-
-Small product doc changes may stay with the PM, but they still follow the full
-`/orchestrate` process: the right default tip, a separate worktree, green
-checks, a fresh `PASS` with no open `BLOCK`, push, and the repo's delivery mode.
-PR delivery adds a PR and user approval. Push-only delivery reports the
-reviewed branch and stops. Send large doc sets or separate research tasks to
-workers through `/orchestrate`.
-
-A blocked worker result stays inside the agent process. Send its pushed branch
-and findings to the next worker type. On success, report the clean PR URL or,
-for push-only delivery, the reviewed branch. Wait when the repo uses PRs. Never
-merge.
-
-## Product area
-
-The PM covers the full product request even when it spans several engineering
-lanes. Do not split requirements by the TL's lane rules. Tickets and board
-updates remain separate records; doc changes use separate worktrees.
-
-A repo may define a separate PM skill for a customer group or contact channel.
-Use that skill only when the user asks for it.
-
-## Code facts
-
-A code fact — where a string lives, what a component renders, which files a PR
-touched — goes to the runtime's read-only search agent when the runtime has
-one; the answer comes back, the file contents do not. The PM reads at most one
-known line range itself and never a whole source file. A mock still gets the
-full view: accuracy on a design round outranks the tokens.
+A code fact (where a string lives, what a component renders, which files a PR
+touched) goes to the harness's read-only search agent; read at most one known
+line range yourself, never a whole source file. A mock gets the full
+view: accuracy on a design round outranks the tokens.
 
 ## UI direction
 
-The PM owns layout, wording, and user-flow choices. Read any design rules before
-you draft or judge a screen. Put those rules in each design task and test each
-draft against them. Do not show the user a draft that breaks them.
-
-A route's source-of-truth mock keeps one stable file name (the route's, with a
-surface suffix for a drawer or dialog); every round edits it in place, and dated
-files beside it are round history. Before writing any mock file, check whether
-the path exists: a references tree is rarely under version control, so an
-unchecked write destroys the only copy.
-
-Before the first line of a mock, read the repo's design source of truth — the
-shared theme and density token files and the design rules the repo names — and
-copy the token names into the mock's header. Every size, colour, and spacing in
-a mock's deltas or a ticket is a token name only (a size variant, a CSS custom
-property), never a pixel value: the rule doc and the code can lag each other,
-and a number sends the worker the wrong way. A value with no token is a defect,
-not a design choice. Never copy a size from an earlier mock: mocks drift, the
-source of truth does not.
-
-If repeated changes show that the repo lacks written design rules, ask the user
-whether to add them.
+The PM owns layout, wording, and user-flow choices. Read the repo's design
+rules and its design source of truth (the shared theme and density token
+files) before drafting or judging a screen, put those rules in each design
+task, and show the user nothing that breaks them. A route's source-of-truth
+mock keeps one stable file name (the route's, with a surface suffix for a
+drawer or dialog); every round edits it in place, and dated files beside it
+are round history. Check whether a mock path exists before writing it: a
+references tree is rarely under version control. Every size, colour, and
+spacing in a mock or ticket is a token name, never a pixel value; a value
+with no token is a defect. If repeated changes show the repo lacks written
+design rules, ask the user whether to add them.
 
 ## Settle the request
 
-Collect the current product docs, decision records, plans, related tickets, and
-outside notes that the repo rules name. For a new business or legal area, first
-tell the user which common risks, laws, and data choices the request may hide.
-
-Ask until each point has an answer or a named owner and later date:
+Collect the product docs, decision records, plans, related tickets, and
+outside notes the repo names. For a new business or legal area, first tell
+the user which risks, laws, and data choices the request may hide. Then ask
+until each point has an answer or a named owner and date:
 
 - Who has the problem, what do they do now, and why does it matter now?
 - What belongs in this work, outside it, and later?
@@ -145,60 +89,40 @@ Ask until each point has an answer or a named owner and later date:
 - Which data must the system add, own, keep, change, or remove?
 - Which roles may see or do each action?
 - Which plan or price includes it, if plans differ?
-- Must it serve users beyond the first requester? What should the common
-  behavior be? Which rare needs may use a setting?
+- Must it serve users beyond the first requester, and what is the common
+  behavior versus a setting for rare needs?
 - Which languages, formats, laws, or audit rules apply?
-- What happens with no data, conflicting edits, two users at once, or a failed
-  service?
-- Which work blocks this request, and which work waits for it?
-- Which milestone gets it, and what lower task moves out?
+- What happens with no data, conflicting edits, two users at once, or a
+  failed service?
+- Which work blocks this, which work waits for it, and which milestone gets
+  it at the cost of what?
 
-Turn words such as "fast", "simple", and "like X" into facts that tests or a
-demo can show. Do not guess a business choice.
+Turn "fast", "simple", and "like X" into facts a test or demo can show. Never
+guess a business choice. A stakeholder comment states a concern, not a rule;
+ask what result the person needs before sending rework. Show every conflict
+with a current decision to the user and record the answer in the product doc
+change.
 
-A stakeholder comment states a concern. It does not replace the product rules.
-Ask what result the person needs before you send rework.
+## Docs and tickets
 
-## Check current decisions
+Update only the product doc sections that changed and link related decision
+records. Before creating a ticket, search the tracker, open PRs, and remote
+branches for its main terms. One ticket per part that can ship alone, in the
+repo's title form, with a body of exactly three sections:
 
-Compare the settled request with product docs, engineering decisions, and the
-plan. Show each conflict to the user. Ask whether to change the old decision or
-narrow the new request. Record the answer in the product doc change.
-
-## Write docs and tickets
-
-Update only the product doc sections that changed. Link related engineering
-decision records.
-
-Before you create a ticket, search the tracker, open PRs, and remote branches
-for its main terms. Do not create a second record for work that already exists.
-
-Create one ticket for each part that can ship on its own. Follow the repo's
-title and body form. A ticket body has exactly three sections, `## Problem`,
-`## Goal`, `## Out of scope`, and nothing else:
-
-- `## Problem` holds what is wrong or missing, with the date/incident or the
-  user need — one to three sentences.
-- `## Goal` holds the state after the change, stated so it IS the
-  acceptance — what a reviewer checks; "Done = …" allowed as its last
-  sentence. Name a schema change (new table/column) here; there is no
-  separate Schema section.
-- `## Out of scope` holds what this ticket does not change, with the reason
-  or pointer when one exists.
+- `## Problem`: what is wrong or missing, with the date, incident, or user
+  need, in one to three sentences.
+- `## Goal`: the state after the change, stated so it is the acceptance a
+  reviewer checks; "Done = …" may be its last sentence. A schema change is
+  named here.
+- `## Out of scope`: what this ticket does not change, with the reason or
+  pointer.
 
 An open question with an owner goes in `Out of scope` or becomes its own
-ticket. Milestone, labels, and board state are fields, not body text. Length
-follows the change: a one-line fix gets a few-line ticket.
+ticket. Milestone, labels, and board state are fields, not body text. Read
+the ticket number from the create command's output.
 
-Read the ticket number from the create command's output. Never guess the next
-number. Use the repo's identity and label rules.
-
-When the repo uses PRs, product doc PRs must follow its review, issue-link,
-label, artifact, and approval rules.
-
-## Give work to the TL
-
-Return this record:
+## Hand off to the TL
 
 ```yaml
 tickets: ["#N"]
@@ -210,23 +134,4 @@ open_questions: [<question, owner, due date>]
 risks_and_dependencies: [<item>]
 ```
 
-## Use with `/tl`
-
-One session may load both `/pm` and `/tl`. It may then write requirements and
-send their tasks, but it must still:
-
-- settle every key choice first;
-- use workers for all application code;
-- follow the full process for repo files;
-- wait for clear user approval for each merge.
-
-## Hard rules
-
-- Do not create a ticket without a Goal that states the acceptance.
-- Show conflicts with current decisions to the user.
-- Put one part that can ship alone in each ticket.
-- Put each ticket on the board with a milestone when the repo uses them.
-- Keep worker escalation inside the agent process.
-- Deliver repo changes only through the repo's delivery mode, with green checks
-  and no open `BLOCK`.
-- Never write application code. Never merge.
+One session may run both `/pm` and `/tl`; see the note at the end of `/tl`.

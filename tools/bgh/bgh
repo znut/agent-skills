@@ -1,36 +1,82 @@
 #!/bin/sh
-# bgh — per-clone-identity gh wrapper. Resolves the current repo's configured
-# identity and execs gh as it: a bot token when the clone declares one, or the
-# human's own gh login when the clone opts into personal identity. Repo
-# scripts call bgh unconditionally either way — identity is the CLONE's
-# choice, never the call site's.
+# bgh — per-clone-identity gh wrapper. Runs gh as the identity the clone
+# declares: a bot token when the clone sets one, the user's own gh login when
+# it opts into personal identity. Repo scripts call bgh unconditionally;
+# identity is the clone's choice, never the call site's. Installed as `gh`
+# ahead of the real binary on PATH, it makes every gh call in a clone use
+# that clone's identity, the way a per-repo tool-version file picks a runtime.
 #
-# Per-repo config (machine-local .git/config — never committed, and shared by
-# every worktree of the repo). Exactly one of:
+# Per-repo config (machine-local .git/config, shared by every worktree).
+# Exactly one of:
 #   git config agent.bot-token-file '~/.config/<bot>.token'   # bot identity
 #   git config agent.gh-identity personal                     # own gh login
 # One-call override: BGH_TOKEN_FILE=<path> bgh …
+# A preset GH_TOKEN, or a directory outside any git repo, runs the real gh
+# unchanged: the caller chose the identity, or there is no clone to ask.
 set -eu
+
+# The real gh: the first executable named gh on PATH that is not this script.
+self=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
+real_gh=""
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+	c="$d/gh"
+	[ -x "$c" ] || continue
+	[ "$c" -ef "$self" ] && continue
+	real_gh=$c
+	break
+done
+IFS=$old_ifs
+[ -n "$real_gh" ] || { echo 'bgh: no gh binary on PATH' >&2; exit 1; }
+
+# With BGH_SELF_LOG set, append the ids of the comments and reviews this call
+# created, so the session's watcher can skip its own echoes (gh-status
+# timeline events carry the same id). Exits with gh's status.
+run_logged() {
+	rc=0
+	out=$("$real_gh" "$@") || rc=$?
+	[ -n "$out" ] && printf '%s\n' "$out"
+	{
+		printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -oE 'discussion_r[0-9]+' | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -oE '"id": ?[0-9]+' | head -1 | grep -oE '[0-9]+'
+		printf '%s\n' "$out" | grep -xE '[0-9]{6,}'
+	} 2>/dev/null | sort -u >> "$BGH_SELF_LOG" || true
+	exit $rc
+}
+
+# Ready check: `pr ready <n>` (not --undo) first runs the clone's declared
+# check, `git config agent.ready-check '<command>'`, as `<command> <n>` from
+# the repo root, and refuses when it fails. The clone decides what ready
+# needs (a green gate result, a review verdict); bgh only holds the door.
+case " $* " in
+	*" pr ready "*)
+		case " $* " in
+			*" --undo "*) ;;
+			*)
+				check=$(git config --get agent.ready-check 2>/dev/null || true)
+				if [ -n "$check" ]; then
+					n=""
+					for a in "$@"; do case $a in [0-9]*) n=$a; break ;; esac; done
+					top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+					if ! (cd "$top" && sh -c "$check \"\$1\"" bgh "$n"); then
+						echo "bgh: ready check failed for PR ${n:-<current branch>}; not marking ready" >&2
+						exit 1
+					fi
+				fi ;;
+		esac ;;
+esac
+
+[ -n "${GH_TOKEN:-}" ] && exec "$real_gh" "$@"
+git rev-parse --git-dir >/dev/null 2>&1 || exec "$real_gh" "$@"
 
 tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
 if [ -z "$tf" ]; then
 	ident=$(git config --get agent.gh-identity 2>/dev/null || true)
 	if [ "$ident" = "personal" ]; then
-		# Personal mode: plain gh with the user's own auth (gh auth login).
-		# Same self-log contract as the bot path, for watcher self-echo skip.
-		if [ -n "${BGH_SELF_LOG:-}" ]; then
-			rc=0
-			out=$(gh "$@") || rc=$?
-			[ -n "$out" ] && printf '%s\n' "$out"
-			{
-				printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
-				printf '%s\n' "$out" | grep -oE 'discussion_r[0-9]+' | grep -oE '[0-9]+'
-				printf '%s\n' "$out" | grep -oE '"id": ?[0-9]+' | head -1 | grep -oE '[0-9]+'
-				printf '%s\n' "$out" | grep -xE '[0-9]{6,}'
-			} 2>/dev/null | sort -u >> "$BGH_SELF_LOG" || true
-			exit $rc
-		fi
-		exec gh "$@"
+		[ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
+		exec "$real_gh" "$@"
 	fi
 	echo 'bgh: no identity configured for this repo.' >&2
 	echo "  bot:       git config agent.bot-token-file '~/.config/<bot>.token'" >&2
@@ -44,19 +90,11 @@ if [ ! -r "$tf" ]; then
 	echo "bgh: token file not readable: $tf" >&2
 	exit 1
 fi
-# Self-event capture: BGH_SELF_LOG=<file> appends the ids of comments/reviews
-# this call CREATED, so the session's watcher can skip its own echoes
-# (gh-status timeline events carry the same id). Explicit env always wins.
-#
-# Auto-derivation: when BGH_SELF_LOG is unset AND the call is
-# posting-shaped, derive <agent.self-events-dir>/<role>.ids from the session
-# role marker — posting discipline without per-call env. Gated to
-# posting-shaped calls ONLY: the id-scrape run on a READ (e.g. `bgh api
-# .../comments`) would capture a STRANGER's comment id, and the watcher would
-# then swallow that real event as a self-echo. Subagent shells share the
-# session id, so a worker's posts log to its orchestrator's role file — the
-# session's own watcher correctly skips them. Fast path when neither explicit
-# nor derivable: plain exec, zero overhead.
+# Derive BGH_SELF_LOG for posting-shaped calls only (pr/issue comment, pr
+# review, api POST/PATCH on comments or reviews): scraping a READ would log a
+# stranger's comment id and the watcher would swallow that real event. The
+# role comes from the marker boot-report writes for the session, the dir from
+# `git config agent.self-events-dir`. An explicit BGH_SELF_LOG always wins.
 if [ -z "${BGH_SELF_LOG:-}" ]; then
 	posting=""
 	case " $* " in
@@ -76,6 +114,9 @@ if [ -z "${BGH_SELF_LOG:-}" ]; then
 		elif [ -n "${PI_SESSION_ID:-}" ]; then
 			derive_session_id=${PI_SESSION_ID}
 			role_marker_dir="/tmp/pi-session-roles"
+		elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+			derive_session_id=${CODEX_THREAD_ID}
+			role_marker_dir="/tmp/codex-session-roles"
 		fi
 		if [ -n "$derive_session_id" ]; then
 			case $derive_session_id in
@@ -91,16 +132,7 @@ if [ -z "${BGH_SELF_LOG:-}" ]; then
 		fi
 	fi
 fi
-if [ -n "${BGH_SELF_LOG:-}" ]; then
-	rc=0
-	out=$(GH_TOKEN=$(cat "$tf") gh "$@") || rc=$?
-	[ -n "$out" ] && printf '%s\n' "$out"
-	{
-		printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
-		printf '%s\n' "$out" | grep -oE 'discussion_r[0-9]+' | grep -oE '[0-9]+'
-		printf '%s\n' "$out" | grep -oE '"id": ?[0-9]+' | head -1 | grep -oE '[0-9]+'
-		printf '%s\n' "$out" | grep -xE '[0-9]{6,}'
-	} 2>/dev/null | sort -u >> "$BGH_SELF_LOG" || true
-	exit $rc
-fi
-GH_TOKEN=$(cat "$tf") exec gh "$@"
+GH_TOKEN=$(cat "$tf")
+export GH_TOKEN
+[ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
+exec "$real_gh" "$@"

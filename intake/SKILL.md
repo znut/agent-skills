@@ -10,9 +10,9 @@ product team can review and schedule. This skill runs on the stakeholder's
 OWN machine under their OWN GitHub login. It needs the `gh` CLI and nothing
 else: no repository clone, no package manager, no build tools.
 
-This file is the generic layer. The target repository supplies the specific
+This skill is the generic layer. The target repository supplies the specific
 layer — labels, title form, language, template, scopes — in its intake rules
-file. The rules file wins over this file on any conflict.
+file, which wins on any conflict.
 
 ## Start
 
@@ -36,7 +36,7 @@ file. The rules file wins over this file on any conflict.
 
 - Speak the stakeholder's language — the rules file names it. One question
   at a time. Short questions, no software jargon.
-- Cover, in whatever order the conversation allows:
+- Ask, in whatever order the conversation allows:
   - who has the problem, and what they do about it today;
   - where it goes wrong, and what that costs (time, money, mistakes);
   - what a good outcome would look like — something the person could SEE;

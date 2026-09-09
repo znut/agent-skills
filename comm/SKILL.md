@@ -8,7 +8,7 @@ description: >
 
 # Communication convention
 
-PO = the person who owns the product. Load this skill before talking. The repo overlay
+Load this skill before talking. The repo overlay
 (`.agent/writing-rules.md`, from `templates/writing-rules.md`) owns the
 canonical-term table, the glossary, any repo-only register, and the
 machine-read sweep lists.

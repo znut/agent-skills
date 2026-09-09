@@ -4,7 +4,7 @@
 
 On `/pm` or `/tl`, read this section before the boot report. Resolve the role
 from the invoked skill. PM has no lane; TL resolves its lane from the
-invocation or repo rules and asks the PO before registering if it is absent. A lane limits eligible
+invocation or repo rules and asks the user before registering if it is absent. A lane limits eligible
 tickets; multiple sessions may share it. Never invent fixed subareas.
 
 Run `agent-session boot --role pm` or `agent-session boot --role tl --lane <lane>` from the project checkout.
@@ -28,8 +28,8 @@ that this session read the rules. Existing sessions that have not adopted named
 boot retain their role-only paths; never claim or drain their inboxes.
 
 State resolves from `--state-dir`, then `AGENT_STATE_DIR`, then the parent of
-`session_bus_dir` in the primary checkout's `.agent/orchestrate.local.md` found
-through Git's common directory. Every checkout on the same Mac must point to
+`session_bus_dir` in the main checkout's `.agent/orchestrate.local.md` found
+through Git's common directory. Every checkout on the same machine must point to
 the same state directory for shared name and resource exclusion. No configured
 state returns exit 3; establish the shared directory before named boot.
 
@@ -38,7 +38,7 @@ state returns exit 3; establish the shared directory before named boot.
 A **claim** is one atomic ownership record assigning a ticket and its complete
 shared-resource set to one session generation.
 
-Propose any Ready ticket within the lane. Wait for PO confirmation before
+Propose any Ready ticket within the lane. Wait for the user's confirmation before
 claiming, rechecking for dispatch, or sending workers. After confirmation,
 atomically claim the ticket and its complete shared-resource set, then recheck
 Ready status and current open work before dispatch. If that final recheck
@@ -54,7 +54,7 @@ Use `associate-pr` as soon as the PR exists; `check-owner` before owner actions.
 An ownership conflict reports its actual owner and never overwrites any claim.
 Before a normal handoff, stop the old workers and watchers, save their branch,
 record quiescence evidence, and `release` the ticket. The next owner claims only
-after PO confirmation. Never infer quiescence from idle time or a dead shell.
+after the user's confirmation. Never infer quiescence from idle time or a dead shell.
 
 Wrap writes the returned notes path (state only, at most 40 lines). Explicit
 `end` refuses outstanding claims and pending inbox work. No extra branch evidence is required after ownership has been released. History and inbox archives remain in
@@ -75,8 +75,8 @@ At boot and each watcher fire, act on each pending message, then call
 the durable registry is authoritative and will restore pending mail. External
 gate events written directly into the resolved generation inbox are not peer
 registry messages: after acting, move them into that same generation archive.
-Do not register a daemon as PM/TL or give it a name. Legacy peer inboxes keep
-their existing file-move consumption until named adoption. `end` checks both
+Do not register a daemon as PM/TL or give it a name. Role-only inboxes keep
+file-move consumption until named adoption. `end` checks both
 registry-pending mail and actual inbox entries. Arm one
 single-shot watcher on the returned inbox and owner event paths; re-arm only
 after consuming and archiving the fired messages. Machine sleep may stop a
@@ -89,12 +89,12 @@ All commands return JSON. Success is `{ok:true,...}`; failures go to stderr as
 `{ok:false,code,error,...}`. Exit 2 = invalid arguments; 3 = absent registration,
 name, or ownership; 4 = malformed/incomplete state or I/O failure; 5 = conflict,
 stale generation, exhausted pool, or outstanding work; 6 = occupied registry mutex.
-Only exit 3 permits a legacy fallback. Never fail open on other errors.
+Only exit 3 permits the role-only fallback. Never fail open on other errors.
 
 A session is `{name,role,lane,session_id,harness,generation,status,paths,claims}` plus
 audit fields; PM `lane` is null. `paths` includes `inbox`, `archive`, `notes`, `rules_stamp`,
-`cursors` (alias of `comment_cursor`), `comment_cursor`, `event_cursors`,
-`watchlist`, `self_events`, and `merged_seen`. Paths include the generation
+`comment_cursor`, `event_cursors`, `watchlist`, `self_events`, and
+`merged_seen`. Paths include the generation
 under `session-bus/<pm|tl-lane>/<name>/<generation>/`; consume returned paths,
 never reconstruct them. Ownership is returned as `{session,claim}` where
 `claim` includes `ticket,resources,confirmation,generation,prs`.

@@ -75,7 +75,7 @@ try {
   }
   const paths = (s) => {
     const dir = path.join(stateDir, 'session-bus', s.role === 'pm' ? 'pm' : `tl-${s.lane}`, s.name.toLowerCase(), s.generation);
-    return { inbox: path.join(dir, 'inbox'), archive: path.join(dir, 'inbox', 'archive'), comment_cursor: path.join(dir, 'cursors.json'), event_cursors: path.join(dir, 'event-cursors'), merged_seen: path.join(dir, 'merged-seen'), notes: path.join(dir, 'notes.md'), cursors: path.join(dir, 'cursors.json'), watchlist: path.join(dir, 'watchlist'), self_events: path.join(dir, 'self-events'), rules_stamp: path.join(dir, 'rules.stamp') };
+    return { inbox: path.join(dir, 'inbox'), archive: path.join(dir, 'inbox', 'archive'), comment_cursor: path.join(dir, 'cursors.json'), event_cursors: path.join(dir, 'event-cursors'), merged_seen: path.join(dir, 'merged-seen'), notes: path.join(dir, 'notes.md'), watchlist: path.join(dir, 'watchlist'), self_events: path.join(dir, 'self-events'), rules_stamp: path.join(dir, 'rules.stamp') };
   };
   const validSession = s => s && names.includes(s.name) && ['pm', 'tl'].includes(s.role) && (s.role === 'pm' ? s.lane === null : safe(s.lane)) && safe(s.session_id) && safe(s.harness) && /^[a-f0-9-]{36}$/.test(s.generation) && ['active', 'ended'].includes(s.status);
   if (db?.version !== 1 || !Array.isArray(db.sessions) || !Array.isArray(db.claims) || !Array.isArray(db.messages) || !db.sessions.every(validSession)) fail(4, 'Malformed registry', { registry });

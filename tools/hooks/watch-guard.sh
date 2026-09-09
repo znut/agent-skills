@@ -8,7 +8,7 @@
 # OWN role's watcher. Fail-open: missing cwd, unreadable input, or
 # stop_hook_active -> allow.
 # Repo opt-out: `- watch_guard: off` under `## Hook settings` in
-# .agent/orchestrate.md (legacy: .claude/orchestrate.md).
+# .agent/orchestrate.md.
 
 input=$(cat)
 
@@ -19,9 +19,7 @@ esac
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && [ -f "$cwd/scripts/watch-lane.sh" ] || exit 0
 
-for f in "$cwd/.agent/orchestrate.md" "$cwd/.claude/orchestrate.md"; do
-	command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$f" 2>/dev/null && exit 0
-done
+command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$cwd/.agent/orchestrate.md" 2>/dev/null && exit 0
 
 # Role-scoping: this session's role marker decides WHICH watcher must be
 # alive. A bare `pgrep watch-lane.sh` false-passes on a PEER session's
@@ -30,7 +28,7 @@ done
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 role=""
 case "$sid" in ""|*/*|*..*) ;; *) role=$(cat "/tmp/cc-session-roles/$sid" 2>/dev/null || true) ;; esac
-# A registered generation must match its own watcher, even without a legacy marker.
+# A registered generation must match its own watcher, even without a role marker.
 script_dir=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
 if [ -n "$sid" ]; then
 	if named=$(cd "$cwd" && bun "$script_dir/../agent-session.mjs" current --session-id "$sid" --harness claude 2>&1); then
@@ -54,5 +52,5 @@ if pgrep -f "watch-lane.sh $role" > /dev/null 2>&1; then
 	exit 0
 fi
 
-echo "watch-guard: NO $role watcher armed (no 'watch-lane.sh $role' process alive). Re-arm before stopping: ONE persistent Monitor-tool task running single-shot 'bash scripts/watch-lane.sh $role [pr#...]' — on fire: sweep/archive, THEN re-arm a fresh one. Never loop-wrap it (presence-based bus fires re-fire pre-sweep and the rate-limiter kills the watcher); background-bash arming is reap-prone in remote-control sessions." >&2
+echo "watch-guard: no '$role' watcher alive. Before stopping, arm one persistent Monitor task running 'bash scripts/watch-lane.sh $role [pr#...]'; on fire, sweep and archive, then re-arm. Never loop-wrap it: a re-fire before the sweep kills the watcher." >&2
 exit 2

@@ -1,69 +1,40 @@
 /**
- * gh-status — shared local GitHub PR status poller for Claude agents.
+ * gh-status — shared local GitHub PR status poller for agents.
  *
- * Generalized multi-repo port of a single-repo local poller. Reads every
- * $AGENT_TOOLS_HOME/config/*.json and polls each repo once per cycle via one
- * GraphQL request, materializing PR state as local files under
+ * Reads every $AGENT_TOOLS_HOME/config/*.json and polls each repo once per
+ * cycle via one GraphQL request, materializing PR state as local files under
  * $AGENT_TOOLS_HOME/var/<name>/gh-status/ so any number of agents can watch for
  * merge/CI/comment/review events with zero GitHub calls and zero model-token
  * polling:
  *
  *   status/pr-<n>.json      — current snapshot per PR (overwritten every poll)
  *   status/state.json       — full snapshot of the last poll + comment cursors
- *   events/pr-<n>.log       — UNIFIED per-PR timeline (append-only JSONL:
- *     {at, type, id?, actor?, body?, kind?, path?, line?, sha?}) — one watcher +
- *     line-cursor backfill covers merge/close/checks/approval(+body)/comments.
- *     Legacy per-type markers below stay during the transition.
- *   events/pr-<n>.merged    — marker, touched once when the PR is seen merged
- *   events/pr-<n>.closed    — marker, touched once when closed without merge
- *   events/pr-<n>.checks-success / .checks-failure — marker per CI outcome
- *   events/pr-<n>.checks-info.json — payload written on a checks-success/
- *                             failure TRANSITION only: {conclusion, runId,
- *                             runUrl, failedJobs: [{name, failedSteps,
- *                             firstErrorLines}]}. Job/log detail only fetched
- *                             for failures.
- *   events/pr-<n>.commented — bumped (mtime) whenever NEW comment/review
- *                             activity is observed since the last poll
- *   events/pr-<n>.comments.json — payload written alongside `.commented`:
- *                             array of the new comments/reviews since the
- *                             last cursor ({author, createdAt, kind, path?,
- *                             line?, body}). Overwritten each firing.
- *   events/pr-<n>.approved  — marker, touched when reviewDecision becomes APPROVED
- *   events/pr-<n>.changes-requested — marker, touched on CHANGES_REQUESTED
- *   events/pr-<n>.head-<sha8> — marker, touched whenever an OPEN PR is first
- *                             seen or its headOid moves; every other head-*
- *                             marker for that PR is removed on the same
- *                             poll, and all of them are removed once the PR
- *                             leaves OPEN. No timeline log line (a push must
- *                             not wake lane watchers). Meant for an onMerge
- *                             command step (the on-merge watcher's
- *                             WatchPaths already covers events/) that reacts
- *                             to a push, not just a merge — see tools/README.md.
- *
- *   events/issue-<n>.log / .commented / .comments.json — ISSUE comments,
- *     same shapes as the pr-<n> comment events: one repo-wide
- *     `issues/comments?since=` REST call per cycle feeds them; PR-owned
- *     comments are routed to the pr-<n> flow, first sight is baseline-only.
+ *   events/pr-<n>.log       — the PR's timeline, append-only JSONL
+ *     {at, type, id?, actor?, body?, kind?, path?, line?, sha?}: merged,
+ *     closed, checks-success, checks-failure, approved, changes-requested,
+ *     commented, ready-stale. One watcher per PR plus a line cursor sees
+ *     every event; transitions are detected against the previous snapshot.
+ *   events/pr-<n>.merged    — marker, touched once, for watchers that key
+ *                             on a path
+ *   events/pr-<n>.comments.json — the new comments/reviews since the last
+ *                             cursor ({author, createdAt, kind, path?, line?,
+ *                             body}), overwritten each batch
+ *   events/issue-<n>.log / .comments.json — ISSUE comments, same shapes: one
+ *     repo-wide `issues/comments?since=` REST call per cycle feeds them;
+ *     PR-owned comments are routed to the pr-<n> flow, first sight is
+ *     baseline-only.
  *
  * Configs with a `board` block additionally get a 1-point board-change probe
  * per cycle that re-derives $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md on
  * change (see probeBoard) — agents read the board from that file, no API calls.
  *
- * Markers for merged/closed are monotonic facts. CI and approval markers are
- * re-created if a new push flips the rollup/decision (the stale opposite
- * marker is removed). The `commented` marker uses a different, "consume then
- * rewatch" pattern — see tools/README.md for details.
+ * Files of PRs that left the tracked window and have been merged or closed
+ * for PRUNE_AFTER_MS are removed, as are issue files idle that long.
  *
- * Payload fetches (comments.json, checks-info.json) only ever run on a
- * detected transition/change — the steady-state poll is always exactly one
- * GraphQL request per configured repo; extra REST calls happen only when
- * there's something new to report, and any failure in those follow-up calls
- * is caught locally so it never aborts the main poll loop.
- *
- * IMPROVEMENT over the original single-repo poller: `comments.json` is now
- * written BEFORE the `.commented` marker is bumped (was: marker-then-payload),
- * so a watcher woken by the marker's mtime can never observe the marker
- * without its payload file already present.
+ * The comments payload fetch only runs on a detected change — the
+ * steady-state poll is always exactly one GraphQL request per configured
+ * repo, and a failure in the follow-up call is caught locally so it never
+ * aborts the main poll loop.
  */
 
 import { renameSync } from "node:fs"
@@ -72,6 +43,8 @@ import { expandHome } from "../lib/fs-util.mjs"
 
 const POLL_MS = 40_000
 const PR_WINDOW = 30
+export const PRUNE_AFTER_MS = 30 * 24 * 60 * 60 * 1000
+const PRUNE_EVERY_MS = 60 * 60 * 1000
 
 const QUERY = `
 query($owner: String!, $name: String!) {
@@ -132,6 +105,18 @@ type PollState = {
 	commentCursors: Record<string, { count: number; lastAt: string | null }>
 	boardUpdatedAt?: string | null
 	issueCommentCursor?: string | null
+	prunedAt?: string | null
+}
+
+type Snapshot = {
+	state?: string
+	isDraft?: boolean
+	merged?: boolean
+	mergedAt?: string | null
+	updatedAt?: string
+	headOid?: string | null
+	checks?: string | null
+	reviewDecision?: string | null
 }
 
 type CommentPayload = {
@@ -214,8 +199,8 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 	}
 	for (const r of reviews) {
 		// Bare Approve/Request-changes with no written comment carries no text;
-		// the state transition itself is already covered by the approved /
-		// changes-requested markers, so skip it here.
+		// the state transition itself is already an approved / changes-requested
+		// event, so skip it here.
 		if (!r.submitted_at || Date.parse(r.submitted_at) <= sinceMs) continue
 		if (!r.body || !r.body.trim()) continue
 		out.push({ id: r.id, author: r.user?.login ?? "unknown", createdAt: r.submitted_at, kind: "review", body: capBody(r.body) })
@@ -223,94 +208,6 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 
 	out.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 	return out
-}
-
-type FailedJob = { name: string; failedSteps: string[]; firstErrorLines: string[] }
-type ChecksInfo = { conclusion: string; runId: number | null; runUrl: string | null; failedJobs: FailedJob[] }
-
-const ANSI_RE = /\x1b\[[0-9;]*m/g
-const LOG_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*/
-const ERROR_LINE_RE = /error TS\d+:|Error:|FAIL\b|✗/
-const MAX_ERROR_LINES = 15
-
-function cleanLogLine(line: string): string {
-	return line.replace(ANSI_RE, "").replace(LOG_TIMESTAMP_RE, "").trim()
-}
-
-async function fetchJobLogErrorLines(owner: string, repo: string, jobId: number, token: string): Promise<string[]> {
-	const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`, {
-		headers: ghHeaders(token),
-	})
-	if (!res.ok) throw new Error(`job log fetch HTTP ${res.status}`)
-	const text = await res.text()
-	const matched: string[] = []
-	for (const line of text.split("\n")) {
-		if (!ERROR_LINE_RE.test(line)) continue
-		matched.push(cleanLogLine(line))
-		if (matched.length >= MAX_ERROR_LINES) break
-	}
-	return matched
-}
-
-/**
- * Runs only on a checks-success/failure marker TRANSITION (see poll()) —
- * never on the steady-state path. `fetchLogs` gates the expensive
- * jobs+per-job-log calls, used only for the FAILURE case; success only
- * needs the run identity (conclusion/runId/runUrl). Swallows its own errors
- * (logs to poller.log) so a flaky follow-up call never breaks the main poll.
- */
-async function writeChecksInfo(
-	owner: string,
-	repo: string,
-	eventsDir: string,
-	prNumber: number,
-	sha: string | null,
-	conclusion: string,
-	fetchLogs: boolean,
-	token: string,
-): Promise<void> {
-	const info: ChecksInfo = { conclusion, runId: null, runUrl: null, failedJobs: [] }
-	try {
-		if (!sha) throw new Error("no commit sha available")
-		const runsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${sha}&per_page=20`, {
-			headers: ghHeaders(token),
-		})
-		if (!runsRes.ok) throw new Error(`list runs HTTP ${runsRes.status}`)
-		const runsBody = (await runsRes.json()) as {
-			workflow_runs: Array<{ id: number; html_url: string; conclusion: string | null; created_at: string }>
-		}
-		const runs = runsBody.workflow_runs ?? []
-		const wantConclusion = fetchLogs ? "failure" : "success"
-		const candidates = runs.filter((r) => r.conclusion === wantConclusion)
-		const chosen = (candidates.length ? candidates : runs).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-		if (chosen) {
-			info.runId = chosen.id
-			info.runUrl = chosen.html_url
-		}
-
-		if (fetchLogs && chosen) {
-			const jobsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${chosen.id}/jobs`, {
-				headers: ghHeaders(token),
-			})
-			if (!jobsRes.ok) throw new Error(`list jobs HTTP ${jobsRes.status}`)
-			const jobsBody = (await jobsRes.json()) as {
-				jobs: Array<{ id: number; name: string; conclusion: string | null; steps: Array<{ name: string; conclusion: string | null }> }>
-			}
-			for (const job of (jobsBody.jobs ?? []).filter((j) => j.conclusion === "failure")) {
-				const failedSteps = job.steps.filter((s) => s.conclusion === "failure").map((s) => s.name)
-				let firstErrorLines: string[] = []
-				try {
-					firstErrorLines = await fetchJobLogErrorLines(owner, repo, job.id, token)
-				} catch (e) {
-					console.error(`${new Date().toISOString()} pr-${prNumber} checks log fetch failed (job ${job.id}): ${e instanceof Error ? e.message : e}`)
-				}
-				info.failedJobs.push({ name: job.name, failedSteps, firstErrorLines })
-			}
-		}
-	} catch (e) {
-		console.error(`${new Date().toISOString()} pr-${prNumber} checks-info fetch failed: ${e instanceof Error ? e.message : e}`)
-	}
-	await writeAtomic(`${eventsDir}/pr-${prNumber}.checks-info.json`, `${JSON.stringify(info, null, "\t")}\n`)
 }
 
 async function readToken(tokenFile: string): Promise<string> {
@@ -324,19 +221,9 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 	renameSync(tmp, path)
 }
 
-/** Create-only marker: monotonic facts (merged, closed, checks-*, approved, changes-requested). */
+/** Create-only marker for a monotonic fact. */
 async function touch(path: string): Promise<void> {
 	if (!(await Bun.file(path).exists())) await Bun.write(path, `${new Date().toISOString()}\n`)
-}
-
-/**
- * Create-or-refresh marker: always (over)writes, bumping mtime even if the
- * file already exists. Used for `commented`, where an agent may `rm` the
- * marker after handling it and expects to be re-notified on the next new
- * comment even though the marker path itself isn't new.
- */
-async function bump(path: string): Promise<void> {
-	await Bun.write(path, `${new Date().toISOString()}\n`)
 }
 
 type TimelineEvent = {
@@ -345,7 +232,7 @@ type TimelineEvent = {
 	// lets a session skip fires for events it posted itself (self-echo
 	// exclusion; watch-lane matches against the role's posted-ids file).
 	id?: number
-	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented"
+	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented" | "ready-stale"
 	actor?: string
 	body?: string
 	kind?: string
@@ -357,34 +244,11 @@ type TimelineEvent = {
 // Unified per-PR timeline: one append-only JSONL file per PR so a session
 // arms ONE watcher (`find events -name 'pr-*.log' -newer <stamp>`) instead of
 // one loop per marker type, and backfills by reading lines since a stamp.
-// Legacy marker files stay during the transition — same firings, two shapes.
 async function appendEvent(eventsDir: string, key: string | number, ev: TimelineEvent): Promise<void> {
-	// key: bare number = PR (legacy callers), string = full prefix e.g. "issue-954"
+	// key: bare number = PR, string = full prefix e.g. "issue-954"
 	const name = typeof key === "number" ? `pr-${key}` : key
 	const { appendFileSync } = await import("node:fs")
 	appendFileSync(`${eventsDir}/${name}.log`, `${JSON.stringify(ev)}\n`)
-}
-
-async function rm(path: string): Promise<void> {
-	const { rmSync } = await import("node:fs")
-	try {
-		rmSync(path)
-	} catch {}
-}
-
-/** Remove every events/pr-<n>.head-* marker except `keep` (its bare filename), if given. */
-async function clearHeadMarkers(eventsDir: string, prNumber: number, keep?: string): Promise<void> {
-	const { readdirSync } = await import("node:fs")
-	const prefix = `pr-${prNumber}.head-`
-	let entries: string[]
-	try {
-		entries = readdirSync(eventsDir)
-	} catch {
-		return
-	}
-	for (const f of entries) {
-		if (f.startsWith(prefix) && f !== keep) await rm(`${eventsDir}/${f}`)
-	}
 }
 
 async function readPrevState(stateFile: string): Promise<PollState | null> {
@@ -396,15 +260,55 @@ async function readPrevState(stateFile: string): Promise<PollState | null> {
 }
 
 /**
+ * Drop the files of PRs that left the tracked window and have been merged or
+ * closed for PRUNE_AFTER_MS, and of issues whose log has been idle that long.
+ * Open PRs outside the window keep their files: their state is unknown.
+ */
+export async function pruneOld(statusDir: string, eventsDir: string, window: Set<number>): Promise<void> {
+	const { readdirSync, rmSync, statSync } = await import("node:fs")
+	const cutoff = Date.now() - PRUNE_AFTER_MS
+	const events = readdirSync(eventsDir)
+	for (const f of readdirSync(statusDir)) {
+		const m = /^pr-(\d+)\.json$/.exec(f)
+		if (!m) continue
+		const n = Number(m[1])
+		if (window.has(n)) continue
+		let snap: Snapshot
+		try {
+			snap = (await Bun.file(`${statusDir}/${f}`).json()) as Snapshot
+		} catch {
+			continue
+		}
+		if (snap.state === "OPEN") continue
+		const last = Date.parse(snap.mergedAt ?? snap.updatedAt ?? "")
+		if (!Number.isFinite(last) || last > cutoff) continue
+		rmSync(`${statusDir}/${f}`, { force: true })
+		for (const e of events) if (e.startsWith(`pr-${n}.`)) rmSync(`${eventsDir}/${e}`, { force: true })
+	}
+	for (const e of events) {
+		const m = /^issue-(\d+)\.log$/.exec(e)
+		if (!m) continue
+		let mtime: number
+		try {
+			mtime = statSync(`${eventsDir}/${e}`).mtimeMs
+		} catch {
+			continue
+		}
+		if (mtime > cutoff) continue
+		for (const f of events) if (f.startsWith(`issue-${m[1]}.`)) rmSync(`${eventsDir}/${f}`, { force: true })
+	}
+}
+
+/**
  * ISSUE comment events — one repo-wide REST call per cycle
  * (`issues/comments?since=<cursor>`), mirroring the PR comment pattern:
- * `events/issue-<n>.comments.json` payload written BEFORE `events/issue-<n>.commented`
- * bumps, plus append-only `events/issue-<n>.log` JSONL. First run records the
- * cursor and never fires. Comments whose issue is actually a PR are skipped —
- * the PR flow above owns those (in-window PRs matched by number; out-of-window
- * checked via a per-cycle `issues/{n}` lookup, only on new-comment transitions).
- * All authors are emitted (bot included) — consumers filter by `actor`, same
- * contract as the PR events.
+ * `events/issue-<n>.comments.json` payload plus append-only
+ * `events/issue-<n>.log` JSONL. First run records the cursor and never fires.
+ * Comments whose issue is a PR are skipped — the PR flow owns those
+ * (in-window PRs matched by number; out-of-window checked via a per-cycle
+ * `issues/{n}` lookup, only on new-comment transitions). All authors are
+ * emitted (bot included) — consumers filter by `actor`, same contract as the
+ * PR events.
  */
 async function pollIssueComments(
 	config: RepoConfig,
@@ -452,7 +356,6 @@ async function pollIssueComments(
 		for (const p of payload) {
 			await appendEvent(eventsDir, `issue-${n}`, { at: p.createdAt, type: "commented", id: p.id, actor: p.author, body: p.body })
 		}
-		await bump(`${eventsDir}/issue-${n}.commented`)
 	}
 	return cursor
 }
@@ -528,8 +431,9 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		const commentCount = commentsTotal + reviewsTotal
 		const lastCommentAt = [commentsLatest, reviewsLatest].filter((d): d is string => !!d).sort().pop() ?? null
 
-		// Previous snapshot feeds the ready-stale check below — read BEFORE overwrite.
-		let prev: { state?: string; isDraft?: boolean; headOid?: string | null } | null = null
+		// The previous snapshot is the transition detector for every event
+		// that follows — read it BEFORE overwriting.
+		let prev: Snapshot | null = null
 		try {
 			prev = JSON.parse(await Bun.file(`${statusDir}/pr-${pr.number}.json`).text())
 		} catch {
@@ -546,7 +450,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			title: pr.title,
 			checks: rollup, // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | null
 			reviewDecision: pr.reviewDecision, // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
-			commentCount, // issue comments + reviews combined (see Pr.reviews note above)
+			commentCount, // issue comments + reviews combined
 			lastCommentAt,
 			updatedAt: pr.updatedAt,
 			headOid: sha,
@@ -554,116 +458,45 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
 
-		// Head-change marker: an OPEN PR is newly seen or a push landed on
-		// it. Distinct from .merged/.closed (monotonic once-only facts) —
-		// this is a "current head" pointer, so the old sha's marker is
-		// removed on each move. No timeline log line: a push must not wake
-		// lane watchers, only an onMerge command step (see
-		// tools/README.md).
-		if (pr.state === "OPEN") {
-			if (sha && (!prev || prev.headOid !== sha)) {
-				const marker = `pr-${pr.number}.head-${sha.slice(0, 8)}`
-				await touch(`${eventsDir}/${marker}`)
-				await clearHeadMarkers(eventsDir, pr.number, marker)
-			}
-		} else {
-			await clearHeadMarkers(eventsDir, pr.number)
-		}
-
 		// Ready-stale: a READY (non-draft, open) PR whose head moved while ready —
-		// someone pushed without flipping draft first. Alarm for the push gate's
-		// blind spots (pushes from machines without the hook). Marker clears when
-		// the PR goes back to draft or leaves OPEN.
-		const staleMarker = `${eventsDir}/pr-${pr.number}.ready-stale`
-		if (pr.state === "OPEN" && !pr.isDraft) {
-			if (prev && prev.state === "OPEN" && prev.isDraft === false && prev.headOid && sha && prev.headOid !== sha) {
-				if (!(await Bun.file(staleMarker).exists())) {
-					await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "ready-stale", sha })
-					await touch(staleMarker)
-				}
-			}
-		} else {
-			await rm(staleMarker)
+		// someone pushed without flipping draft first, so the manager's final
+		// check is void until it re-runs. Fires once per push, since the next
+		// snapshot carries the new head.
+		if (pr.state === "OPEN" && !pr.isDraft && prev?.state === "OPEN" && prev.isDraft === false && prev.headOid && sha && prev.headOid !== sha) {
+			await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "ready-stale", sha })
 		}
 
 		if (pr.merged) {
 			const marker = `${eventsDir}/pr-${pr.number}.merged`
 			if (!(await Bun.file(marker).exists())) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "merged" })
 			await touch(marker)
-		} else if (pr.state === "CLOSED") {
-			const marker = `${eventsDir}/pr-${pr.number}.closed`
-			if (!(await Bun.file(marker).exists())) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "closed" })
-			await touch(marker)
+		} else if (pr.state === "CLOSED" && prev?.state !== "CLOSED") {
+			await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "closed" })
 		}
 
+		// CI rollup: an outcome is news when it differs from the last one seen,
+		// or when it belongs to a new head.
+		const headMoved = !!sha && prev?.headOid !== sha
 		if (rollup === "SUCCESS") {
-			await rm(`${eventsDir}/pr-${pr.number}.checks-failure`)
-			const marker = `${eventsDir}/pr-${pr.number}.checks-success`
-			const isTransition = !(await Bun.file(marker).exists())
-			await touch(marker)
-			if (isTransition) {
-				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-success", sha })
-				try {
-					await writeChecksInfo(config.org, config.repo, eventsDir, pr.number, sha, "SUCCESS", false, token)
-				} catch (e) {
-					console.error(`${new Date().toISOString()} pr-${pr.number} checks-info write failed: ${e instanceof Error ? e.message : e}`)
-				}
-			}
+			if (prev?.checks !== "SUCCESS" || headMoved) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-success", sha })
 		} else if (rollup === "FAILURE" || rollup === "ERROR") {
-			await rm(`${eventsDir}/pr-${pr.number}.checks-success`)
-			const marker = `${eventsDir}/pr-${pr.number}.checks-failure`
-			const isTransition = !(await Bun.file(marker).exists())
-			await touch(marker)
-			if (isTransition) {
-				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-failure", sha })
-				try {
-					await writeChecksInfo(config.org, config.repo, eventsDir, pr.number, sha, rollup, true, token)
-				} catch (e) {
-					console.error(`${new Date().toISOString()} pr-${pr.number} checks-info write failed: ${e instanceof Error ? e.message : e}`)
-				}
-			}
-		} else if (rollup === "PENDING") {
-			// New push in flight — clear both outcomes so watchers wait on the fresh run.
-			await rm(`${eventsDir}/pr-${pr.number}.checks-success`)
-			await rm(`${eventsDir}/pr-${pr.number}.checks-failure`)
+			if ((prev?.checks !== "FAILURE" && prev?.checks !== "ERROR") || headMoved) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "checks-failure", sha })
 		}
 
-		// Approval decision — same create/clear shape as the checks rollup above.
-		if (pr.reviewDecision === "APPROVED") {
-			await rm(`${eventsDir}/pr-${pr.number}.changes-requested`)
-			const marker = `${eventsDir}/pr-${pr.number}.approved`
-			if (!(await Bun.file(marker).exists())) {
-				const rv = pr.reviews.nodes[0]
-				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "approved", actor: rv?.author?.login, body: capBody(rv?.body) })
-			}
-			await touch(marker)
-		} else if (pr.reviewDecision === "CHANGES_REQUESTED") {
-			await rm(`${eventsDir}/pr-${pr.number}.approved`)
-			const marker = `${eventsDir}/pr-${pr.number}.changes-requested`
-			if (!(await Bun.file(marker).exists())) {
-				const rv = pr.reviews.nodes[0]
-				await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "changes-requested", actor: rv?.author?.login, body: capBody(rv?.body) })
-			}
-			await touch(marker)
-		} else {
-			// REVIEW_REQUIRED or null: a later push (or dismissal) reset the
-			// decision — clear both so watchers wait on the fresh outcome.
-			await rm(`${eventsDir}/pr-${pr.number}.approved`)
-			await rm(`${eventsDir}/pr-${pr.number}.changes-requested`)
+		// Approval decision, same shape.
+		if (pr.reviewDecision === "APPROVED" && prev?.reviewDecision !== "APPROVED") {
+			const rv = pr.reviews.nodes[0]
+			await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "approved", actor: rv?.author?.login, body: capBody(rv?.body) })
+		} else if (pr.reviewDecision === "CHANGES_REQUESTED" && prev?.reviewDecision !== "CHANGES_REQUESTED") {
+			const rv = pr.reviews.nodes[0]
+			await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "changes-requested", actor: rv?.author?.login, body: capBody(rv?.body) })
 		}
 
-		// Comment/review activity — cursor-based, not a pure create/clear
-		// marker. No baseline (PR unseen since this poller last started, or
-		// new to the tracked window) => record the cursor only, never fire.
+		// Comment/review activity — cursor-based. No baseline (PR unseen since
+		// this poller last started, or new to the tracked window) => record
+		// the cursor only, never fire.
 		const prevCursor = prevCursors[String(pr.number)]
 		if (prevCursor !== undefined && commentCount > prevCursor.count) {
-			// IMPROVEMENT vs. the original single-repo poller: write the payload BEFORE
-			// bumping the marker, so a watcher woken by the marker's mtime can
-			// never observe `.commented` without `.comments.json` already
-			// present (the old order raced: marker-then-payload). The marker
-			// still bumps even if the payload fetch fails below (mirrors the
-			// original's "stale/missing sidecar until next transition"
-			// resilience contract), it just won't have fresh content this round.
 			try {
 				const sinceAt = prevCursor.lastAt ?? new Date(0).toISOString()
 				const newComments = await fetchNewComments(config.org, config.repo, pr.number, sinceAt, token)
@@ -674,7 +507,6 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			} catch (e) {
 				console.error(`${new Date().toISOString()} pr-${pr.number} comments payload fetch failed: ${e instanceof Error ? e.message : e}`)
 			}
-			await bump(`${eventsDir}/pr-${pr.number}.commented`)
 		}
 		nextCursors[String(pr.number)] = { count: commentCount, lastAt: lastCommentAt }
 	}
@@ -695,7 +527,17 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		console.error(`${new Date().toISOString()} [${config.name}] issue comments poll failed: ${e instanceof Error ? e.message : e}`)
 	}
 
-	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt, issueCommentCursor }
+	let prunedAt = prevState?.prunedAt ?? null
+	if (!prunedAt || Date.parse(prunedAt) < Date.now() - PRUNE_EVERY_MS) {
+		try {
+			await pruneOld(statusDir, eventsDir, new Set(prs.map((p) => p.number)))
+			prunedAt = fetchedAt
+		} catch (e) {
+			console.error(`${new Date().toISOString()} [${config.name}] prune failed: ${e instanceof Error ? e.message : e}`)
+		}
+	}
+
+	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt, issueCommentCursor, prunedAt }
 	await writeAtomic(stateFile, `${JSON.stringify(state, null, "\t")}\n`)
 }
 
