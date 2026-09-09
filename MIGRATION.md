@@ -45,11 +45,14 @@ through it.
 4. Per clone: `git config --unset agent.pr-status-dir`. Set
    `git config agent.ready-check '<command>'` when the repo has a check that
    decides ready (a local gate result, a verdict for the head).
-5. Optional cleanup: `.git/.review-gate`, `.git/.zcr-reviewed`,
+5. Install bgh as `gh` ahead of the real binary, so a bare `gh` in a clone
+   uses the clone's bot: `ln -s <agent-skills>/tools/bgh/bgh ~/.local/bin/gh`.
+   This replaces the hook's bot-identity guard.
+6. Optional cleanup: `.git/.review-gate`, `.git/.zcr-reviewed`,
    `.git/.verify-green` under each clone's git common dir; the poller's
    leftover marker kinds listed under What changed, which age out with their
    PRs.
-6. If you set `KIMI_QUOTA_POLL_SECONDS`, rename it to `QUOTA_POLL_SECONDS`.
+7. If you set `KIMI_QUOTA_POLL_SECONDS`, rename it to `QUOTA_POLL_SECONDS`.
 
 ## Each repo's rules
 

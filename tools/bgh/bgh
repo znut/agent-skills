@@ -2,21 +2,40 @@
 # bgh — per-clone-identity gh wrapper. Runs gh as the identity the clone
 # declares: a bot token when the clone sets one, the user's own gh login when
 # it opts into personal identity. Repo scripts call bgh unconditionally;
-# identity is the clone's choice, never the call site's.
+# identity is the clone's choice, never the call site's. Installed as `gh`
+# ahead of the real binary on PATH, it makes every gh call in a clone use
+# that clone's identity, the way a per-repo tool-version file picks a runtime.
 #
 # Per-repo config (machine-local .git/config, shared by every worktree).
 # Exactly one of:
 #   git config agent.bot-token-file '~/.config/<bot>.token'   # bot identity
 #   git config agent.gh-identity personal                     # own gh login
 # One-call override: BGH_TOKEN_FILE=<path> bgh …
+# A preset GH_TOKEN, or a directory outside any git repo, runs the real gh
+# unchanged: the caller chose the identity, or there is no clone to ask.
 set -eu
+
+# The real gh: the first executable named gh on PATH that is not this script.
+self=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
+real_gh=""
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+	c="$d/gh"
+	[ -x "$c" ] || continue
+	[ "$c" -ef "$self" ] && continue
+	real_gh=$c
+	break
+done
+IFS=$old_ifs
+[ -n "$real_gh" ] || { echo 'bgh: no gh binary on PATH' >&2; exit 1; }
 
 # With BGH_SELF_LOG set, append the ids of the comments and reviews this call
 # created, so the session's watcher can skip its own echoes (gh-status
 # timeline events carry the same id). Exits with gh's status.
 run_logged() {
 	rc=0
-	out=$(gh "$@") || rc=$?
+	out=$("$real_gh" "$@") || rc=$?
 	[ -n "$out" ] && printf '%s\n' "$out"
 	{
 		printf '%s\n' "$out" | grep -oE '#issuecomment-[0-9]+' | grep -oE '[0-9]+'
@@ -49,12 +68,15 @@ case " $* " in
 		esac ;;
 esac
 
+[ -n "${GH_TOKEN:-}" ] && exec "$real_gh" "$@"
+git rev-parse --git-dir >/dev/null 2>&1 || exec "$real_gh" "$@"
+
 tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
 if [ -z "$tf" ]; then
 	ident=$(git config --get agent.gh-identity 2>/dev/null || true)
 	if [ "$ident" = "personal" ]; then
 		[ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
-		exec gh "$@"
+		exec "$real_gh" "$@"
 	fi
 	echo 'bgh: no identity configured for this repo.' >&2
 	echo "  bot:       git config agent.bot-token-file '~/.config/<bot>.token'" >&2
@@ -113,4 +135,4 @@ fi
 GH_TOKEN=$(cat "$tf")
 export GH_TOKEN
 [ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
-exec gh "$@"
+exec "$real_gh" "$@"

@@ -191,6 +191,34 @@ else
 	echo "FAIL: undo was gated"; ((failures++)) || true
 fi
 
+# (k) installed as gh ahead of the real binary: no recursion, the real gh is
+# the first PATH entry that is not the shim itself.
+echo "--- case (k): invoked as gh through a symlink ---"
+mkdir -p "$tmp/shim"
+ln -s "$script_dir/bgh" "$tmp/shim/gh"
+if out=$(PATH="$tmp/shim:$PATH" gh pr comment 1 --body "hello" 2>&1) && gh_called "$out"; then
+	echo "PASS: gh shim reached the real gh"
+else
+	echo "FAIL: gh shim: $out"; ((failures++)) || true
+fi
+
+# (l) a preset GH_TOKEN passes through with no identity lookup ------------
+echo "--- case (l): preset GH_TOKEN passes through ---"
+if out=$(env -u BGH_TOKEN_FILE GH_TOKEN=preset "$script_dir/bgh" pr view 1 2>&1) && gh_called "$out"; then
+	echo "PASS: preset GH_TOKEN passed through"
+else
+	echo "FAIL: preset GH_TOKEN: $out"; ((failures++)) || true
+fi
+
+# (m) outside a git repo the real gh runs unchanged --------------------------
+echo "--- case (m): outside a git repo ---"
+mkdir -p "$tmp/nogit"
+if out=$(cd "$tmp/nogit" && env -u BGH_TOKEN_FILE "$script_dir/bgh" pr view 1 2>&1) && gh_called "$out"; then
+	echo "PASS: real gh ran outside a repo"
+else
+	echo "FAIL: outside a repo: $out"; ((failures++)) || true
+fi
+
 if [ "$failures" -eq 0 ]; then
 	echo "ALL PASS"
 	exit 0

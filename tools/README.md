@@ -16,7 +16,8 @@ tools/
   gh-status/poller.ts         multi-repo PR status poller (bun)
   board-snapshot/             board -> $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md
   on-merge/run.mjs            generic post-merge step runner
-  bgh/                        bot-identity gh wrapper (per-repo token file)
+  bgh/                        per-clone-identity gh wrapper; install as gh too
+                              (bgh/README.md)
   boot-report.sh              session-boot state collector for TL/PM roles; also
                               writes the session's role marker under /tmp
                               (install on PATH like bgh:

@@ -8,7 +8,14 @@ GitHub write, so identity is the clone's choice, never the call site's.
 
 ```sh
 ln -s ~/src/agent-skills/tools/bgh/bgh ~/.local/bin/bgh
+ln -s ~/src/agent-skills/tools/bgh/bgh ~/.local/bin/gh   # ahead of the real gh on PATH
 ```
+
+Installed as `gh`, every gh call in a clone uses that clone's identity, the
+way a per-repo tool-version file picks a runtime, and nothing can post as a
+person who never logged in. bgh finds the real binary as the first `gh` on
+PATH that is not itself. A preset `GH_TOKEN`, or a directory outside any git
+repo, runs the real gh unchanged.
 
 ## Configure (once per repo)
 
