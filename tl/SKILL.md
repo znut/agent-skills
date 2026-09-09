@@ -12,16 +12,15 @@ description: >
 
 ## Start
 
-Run `boot-report tl-product` or `boot-report tl-platform` once (the
-`tools/boot-report.sh` collector from the agent-skills tools family, installed
-on PATH like `bgh`; fall back to `<agent-skills>/tools/boot-report.sh <role>`
-if the name is missing). Set `BOOT_BOARD_FILTER=<ERE>` to restrict the board
-rows to the chosen area. Then apply judgment (acting on bus mail, advancing
-cursors, and dispatching work stays manual).
+Read `/orchestrate`'s [named-session boot](../orchestrate/session-bus.md#boot-and-identity)
+and run its `agent-session boot` entrypoint with this role and the chosen lane.
+Announce the returned name, role, and lane immediately; retain its generation
+through compaction and repeated boot until explicit session end. Then run
+`boot-report <role>` as that reference directs.
 
 Act on the report's boot sections before anything else: `Rules freshness`
 UNCHANGED → no rules read; `Handoff note` → fold it into the ready report. The
-note (`notes/<role>.md`, printed by the boot report) is written once, when the
+note (returned as `paths.notes` by named boot) is written once, when the
 user says wrap: overwrite it with the state the next boot needs, at most 40
 lines, no history; write nothing to it mid-session.
 `Memory index` PRUNE DUE → prune the memory index (one line per memory, hooks of
@@ -43,19 +42,14 @@ blocked tasks, dates that matter, and your suggested first task.
 
 A bare `/tl` means: run the session-start work, report, and wait.
 
-## Choose an area
+## Choose a lane
 
-Some repos divide work into areas so two TL sessions do not change the same
-files or tickets.
-
-- With zero or one area, take all work without asking.
-- With two or more areas, ask the user to choose before you send any task.
-- `/tl <area>` sets the area.
-- `/tl all` takes all areas. State this choice and use it only when no other TL
-  session runs.
-
-The chosen area limits paths, labels, and board items. Report a ticket outside
-that area; do not send it to a worker.
+The lane limits eligible tickets, not the number of TL sessions. `/tl <lane>`
+sets it. With one configured lane, use that lane; otherwise ask the PO before
+registering. A bare `/tl` resumes its registered lane or boots after the PO
+chooses one. Multiple named sessions may propose any Ready ticket in the same
+lane. Shared ticket and resource claims prevent overlap; do not assign fixed
+subareas.
 
 ## Duties
 
@@ -85,9 +79,10 @@ reviewed branch and stops.
 
 ## Work process
 
-For each ready ticket:
+For each ready ticket, propose it and wait for PO confirmation before claim,
+recheck, or dispatch. Then follow the [claim and handoff procedure](../orchestrate/session-bus.md#claims-and-handoffs):
 
-1. Confirm that it belongs to the chosen area.
+1. Confirm that it belongs to the chosen lane.
 2. Search open PRs and remote branches for the ticket and feature. Stop if the
    work already exists.
 3. Confirm that all required PRs have merged.
@@ -149,7 +144,7 @@ but it must still:
 
 ## Hard rules
 
-- Choose an area before the first task when the repo has more than one.
+- Resolve the lane before named boot; retain it until explicit session end.
 - Send work that shares a file in order.
 - Return missing product choices to the PM and user.
 - Keep worker escalation inside the agent process.

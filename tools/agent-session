@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec bun "$(dirname "$(realpath "$0")")/agent-session.mjs" "$@"
