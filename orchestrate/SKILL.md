@@ -108,10 +108,11 @@ fields from the claim. Then the contract:
   rules, checklist, and changed paths. Do not name the model that wrote the
   change.
   - `PASS` from every reviewer: stop editing and report.
-  - `BLOCK`: fix every finding, rerun the checks, commit, push, and review
-    again. After the third `BLOCK`, push what you have, open no further PR,
-    and return every finding; the manager sends the branch to the next worker
-    type.
+  - `BLOCK`: fix every finding, rerun the checks, commit, push, and start a
+    fresh reviewer with the last reviewed SHA and the open findings; it
+    reviews the delta since that SHA. After the third `BLOCK`, push what you
+    have, open no further PR, and return every finding; the manager sends
+    the branch to the next worker type.
   - `ERROR`: start another reviewer. An error uses no attempt.
 - Remove your worktree with plain `git worktree remove <path>` from outside it
   once the task is delivered; report `harness-locked` when the runtime holds

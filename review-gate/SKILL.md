@@ -35,7 +35,12 @@ the task does not need.
 
 ## Review
 
-Review `git diff <frozen-default-sha>...HEAD` against the task's acceptance
+Find the last verdict for this branch: the newest PR review naming a reviewed
+SHA, or the one the task passes. If it exists and its SHA is an ancestor of
+HEAD, review `git diff <last-reviewed-sha>...HEAD`: confirm each of its open
+findings is fixed and review what changed since; the earlier verdict's
+coverage carries forward for everything untouched. Otherwise review
+`git diff <frozen-default-sha>...HEAD`. Judge against the task's acceptance
 rules and nothing wider.
 
 - Run the repo's review script when the rules name one; otherwise scan added
