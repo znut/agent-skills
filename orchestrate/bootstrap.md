@@ -1,8 +1,6 @@
 # Add repo rules
 
-Use this file only when a repo has neither `.agent/orchestrate.md` nor a full
-legacy `.claude/orchestrate.md`. A link to a missing main file does not supply
-rules.
+Use this file only when a repo has no `.agent/orchestrate.md`.
 
 First inspect what the repo already uses:
 

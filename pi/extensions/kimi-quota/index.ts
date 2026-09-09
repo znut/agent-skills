@@ -364,10 +364,7 @@ export default function (pi: ExtensionAPI) {
 		ui = ctx.ui;
 		render();
 		void refresh();
-		const configuredPollSeconds =
-			process.env.QUOTA_POLL_SECONDS ??
-			process.env.KIMI_QUOTA_POLL_SECONDS ??
-			60;
+		const configuredPollSeconds = process.env.QUOTA_POLL_SECONDS ?? 60;
 		const pollSec = Math.max(0, Number(configuredPollSeconds) || 0);
 		if (pollSec > 0) timer = setInterval(() => void refresh(), pollSec * 1000);
 	});

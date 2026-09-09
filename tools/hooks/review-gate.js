@@ -11,27 +11,24 @@
  *    sees (agents have posted comments as the human login this way
  *    before), and env vars never persist across tool calls either.
  *    Reads (list/view/status/checks, api GET) are exempt. Applies even under
- *    ZCR_SKIP. Known false-positive: a quoted string containing something
+ *    REVIEW_GATE_SKIP. Known false-positive: a quoted string containing something
  *    like `; gh pr comment …` can trip the guard — fails in the block
  *    direction; reword the string or use --body-file.
  *
  * 2. Draft-first: an explicit repo setting requires `--draft` on every
  *    `gh pr create`.
  *
- * 3. Review/verify markers for `gh pr create` (unchanged): block unless BOTH
- *    markers are fresh for the head branch (each pinned to the branch tip
- *    sha — commits after invalidate):
- *      review marker  (<git-common-dir>/.review-gate/<branch>; legacy
- *                      .zcr-reviewed/<branch> honored for repos that predate
- *                      the current marker-dir name)
- *                      — /review-gate passed
- *      verify marker  (<git-common-dir>/.verify-green/<branch>)  — scripts/verify-mark.sh
+ * 3. Review/verify markers for `gh pr create`: block unless BOTH markers are
+ *    fresh for the head branch (each pinned to the branch tip sha — commits
+ *    after invalidate):
+ *      review marker  (<git-common-dir>/.review-gate/<branch>)  — /review-gate passed
+ *      verify marker  (<git-common-dir>/.verify-green/<branch>) — scripts/verify-mark.sh
  *
  * Fail-OPEN by design: any error / non-repo / parse failure → exit 0 (allow).
  * A broken gate must never block PRs globally. Escape hatches:
- * `REVIEW_GATE_SKIP=1` (legacy alias `ZCR_SKIP=1`) skips the marker checks
- * (pure-docs exception; NEVER the identity or draft-first guard);
- * `VERIFY_SKIP=1` skips only the verify marker.
+ * `REVIEW_GATE_SKIP=1` skips the marker checks (pure-docs exception; NEVER
+ * the identity or draft-first guard); `VERIFY_SKIP=1` skips only the verify
+ * marker.
  */
 const fs = require("fs")
 const path = require("path")
@@ -93,8 +90,6 @@ const cwd = (data && data.cwd) || process.cwd()
 //   - review_marker: off
 //   - verify_marker: off
 //   - draft_first: required
-// A legacy `## Enforcement policy` section in .claude/orchestrate.md also
-// works. The main file wins when both files hold a settings section.
 // Identity, review, and verify default ON and only literal `off` relaxes them.
 // Draft-first defaults OFF and only literal `required` enables it. The
 // /orchestrate bootstrap interview writes this section from the user's explicit
@@ -110,42 +105,29 @@ function policy() {
 		})
 			.toString()
 			.trim()
-		const sources = [
-			{
-				file: path.join(top, ".agent", "orchestrate.md"),
-				section: /^## Hook settings[ \t]*\r?$\n([\s\S]*?)(?=^#{1,2}(?:[ \t]|\r?$)|$(?![\s\S]))/m,
-			},
-			{
-				file: path.join(top, ".claude", "orchestrate.md"),
-				section: /^## Enforcement policy[ \t]*\r?$\n([\s\S]*?)(?=^#{1,2}(?:[ \t]|\r?$)|$(?![\s\S]))/m,
-			},
-		]
-		for (const { file, section } of sources) {
-			let text
-			try {
-				text = fs.readFileSync(file, "utf8")
-			} catch {
-				continue
-			}
-			const sec = section.exec(text)
-			if (!sec) continue
-			const isOff = (key) => {
-				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
-				return !!match && match[1] === "off"
-			}
-			const isRequired = (key) => {
-				const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
-				return !!match && match[1] === "required"
-			}
-			return (_policy = {
-				identity: !isOff("bot_identity"),
-				review: !isOff("review_marker"),
-				verify: !isOff("verify_marker"),
-				draft: isRequired("draft_first"),
-				readyPush: !isOff("ready_push_gate"),
-			})
+		let text
+		try {
+			text = fs.readFileSync(path.join(top, ".agent", "orchestrate.md"), "utf8")
+		} catch {
+			return (_policy = on)
 		}
-		return (_policy = on)
+		const sec = /^## Hook settings[ \t]*\r?$\n([\s\S]*?)(?=^#{1,2}(?:[ \t]|\r?$)|$(?![\s\S]))/m.exec(text)
+		if (!sec) return (_policy = on)
+		const isOff = (key) => {
+			const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
+			return !!match && match[1] === "off"
+		}
+		const isRequired = (key) => {
+			const match = new RegExp(`^[-*]\\s*${key}\\s*:\\s*(\\S+)`, "m").exec(sec[1])
+			return !!match && match[1] === "required"
+		}
+		return (_policy = {
+			identity: !isOff("bot_identity"),
+			review: !isOff("review_marker"),
+			verify: !isOff("verify_marker"),
+			draft: isRequired("draft_first"),
+			readyPush: !isOff("ready_push_gate"),
+		})
 	} catch {
 		return (_policy = on)
 	}
@@ -353,7 +335,7 @@ function blockIdentity(offenders) {
 				`  bgh <subcommand> …\n` +
 				`or an inline prefix on EACH gh invocation (\`GH_TOKEN=$(…); gh …\` does NOT work — the semicolon makes it an unexported shell var the gh child never sees):\n` +
 			`  GH_TOKEN=$(cat <token-file per the repo conventions>) gh <subcommand> …\n` +
-			`Applies even under REVIEW_GATE_SKIP/ZCR_SKIP. Reads (gh pr list/view, gh api GET) are exempt.\n` +
+			`Applies even under REVIEW_GATE_SKIP. Reads (gh pr list/view, gh api GET) are exempt.\n` +
 			`(Repo with no bot identity? The human can commit a "## Hook settings" section with "- bot_identity: off" in .agent/orchestrate.md.)`,
 	)
 	process.exit(2)
@@ -768,7 +750,7 @@ if (policy().draft) {
 }
 
 // Deliberate, explicit override (markers only — identity guard already ran).
-if (/\b(?:REVIEW_GATE_SKIP|ZCR_SKIP)=1\b/.test(cmd)) allow()
+if (/\bREVIEW_GATE_SKIP=1\b/.test(cmd)) allow()
 // Explicit human-committed per-repo opt-out (see policy() above); default ON.
 if (!policy().review && !policy().verify) allow()
 
@@ -797,9 +779,6 @@ if (hm) {
 	}
 }
 
-// Marker may live in .review-gate/ (current) or .zcr-reviewed/ (legacy name,
-// honored during the rename transition) — freshest match in either wins.
-const MARKER_DIRS = [".review-gate", ".zcr-reviewed"]
 const markerFile = branch.replace(/\//g, "__")
 
 function block(reason) {
@@ -823,38 +802,22 @@ function tipSha() {
 }
 
 if (policy().review) {
-	const existing = MARKER_DIRS.map((d) => path.join(commonDir, d, markerFile)).filter((p) => fs.existsSync(p))
-	if (existing.length === 0) block("no review marker")
-	const tip = tipSha()
-
-	let sawEmpty = false
-	let fresh = false
-	for (const p of existing) {
-		let want
-		try {
-			want = fs.readFileSync(p, "utf8").trim()
-		} catch {
-			allow() // unreadable marker → fail open
-		}
-		if (!want) {
-			sawEmpty = true
-			continue
-		}
-		if (want === tip) {
-			fresh = true
-			break
-		}
+	const marker = path.join(commonDir, ".review-gate", markerFile)
+	if (!fs.existsSync(marker)) block("no review marker")
+	let want
+	try {
+		want = fs.readFileSync(marker, "utf8").trim()
+	} catch {
+		allow() // unreadable marker → fail open
 	}
-	if (!fresh) {
-		if (sawEmpty) block("empty (legacy) review marker — re-run the review to pin the sha")
-		block("review marker is stale — the branch tip moved since the review")
-	}
+	if (!want) block("empty review marker — re-run the review to pin the sha")
+	if (want !== tipSha()) block("review marker is stale — the branch tip moved since the review")
 }
 
 // Verify-green marker (scripts/verify-mark.sh) — proof the local verify gate
 // passed at this tip (repos that gate merges on a local verify run instead of CI).
 if (policy().verify && !/\bVERIFY_SKIP=1\b/.test(cmd)) {
-	const vMarker = path.join(commonDir, ".verify-green", branch.replace(/\//g, "__"))
+	const vMarker = path.join(commonDir, ".verify-green", markerFile)
 
 	function blockVerify(reason) {
 		process.stderr.write(

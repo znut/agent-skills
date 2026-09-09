@@ -23,10 +23,7 @@ grepped from the remote tip when one rule is in doubt. Otherwise read
 `.agent/orchestrate.md` from the remote default branch with
 `git show origin/<default>:.agent/orchestrate.md` (on CHANGED, only the files
 the collector lists), then write the stamp the collector prints. If that file does
-not exist, read `.claude/orchestrate.md`. Follow its link when it points to the
-main file. A full legacy `.claude/orchestrate.md` may supply the rules for that
-run; ask the user whether to move it to `.agent/orchestrate.md`. If neither file
-supplies rules, run setup. Read each named file from the same remote tip.
+not exist, run setup. Read each named file from the same remote tip.
 
 The repo rules must state:
 

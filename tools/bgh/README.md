@@ -28,9 +28,9 @@ One-call override: `BGH_TOKEN_FILE=<path> bgh …`.
 
 ## Hook interplay
 
-The review-gate hook's bot-identity guard anchors on literal `gh` at command
-position, so `bgh` invocations pass untouched and bare mutating `gh` still
-blocks. The guard's error message names `bgh` as the preferred fix.
+With `git config agent.gh-wrapper bgh`, the review-gate hook treats `bgh` as
+`gh` for its draft and marker checks and requires no token prefix; bare
+mutating `gh` still blocks. See `tools/hooks/README.md`.
 
 ## Self-event log
 

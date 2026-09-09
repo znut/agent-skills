@@ -1,11 +1,8 @@
 /**
  * board-snapshot — renders a GitHub ProjectV2 board to a local markdown file.
  *
- * Generic port of an internal board-snapshot script with all git machinery
- * removed (no clone, no commit, no push, no change-detection-for-commit — a
- * project can instead derive this file straight into its own working tree
- * via a different mechanism if it wants it committed). This tool only ever
- * WRITES $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md.
+ * Writes only $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md; it never clones,
+ * commits, or pushes.
  *
  * CLI: `bun tools/board-snapshot/board-snapshot.mjs <configName>` — reads
  * $AGENT_TOOLS_HOME/config/<configName>.json for board identity + token.
@@ -62,8 +59,7 @@ function recordRun(stateFile) {
 // closed ticket forever (554 items on 2026-07-20; a capped sweep silently
 // drops the NEWEST rows). Two searches — all open + closed within retention —
 // cost proportional to the live working set. Each hit hoists its
-// projectItems field values; issues not on the target board are skipped
-// (parity with the old board-side pull, which also never saw draft items).
+// projectItems field values; issues not on the target board are skipped.
 // GitHub caps search at 1000 results per query — warned on, not handled:
 // 1000+ OPEN tickets is a process failure this tool can't paper over.
 function searchIssues(config, qualifiers) {

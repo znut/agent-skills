@@ -8,7 +8,7 @@
 # OWN role's watcher. Fail-open: missing cwd, unreadable input, or
 # stop_hook_active -> allow.
 # Repo opt-out: `- watch_guard: off` under `## Hook settings` in
-# .agent/orchestrate.md (legacy: .claude/orchestrate.md).
+# .agent/orchestrate.md.
 
 input=$(cat)
 
@@ -19,9 +19,7 @@ esac
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] && [ -f "$cwd/scripts/watch-lane.sh" ] || exit 0
 
-for f in "$cwd/.agent/orchestrate.md" "$cwd/.claude/orchestrate.md"; do
-	command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$f" 2>/dev/null && exit 0
-done
+command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$cwd/.agent/orchestrate.md" 2>/dev/null && exit 0
 
 # Role-scoping: this session's role marker decides WHICH watcher must be
 # alive. A bare `pgrep watch-lane.sh` false-passes on a PEER session's

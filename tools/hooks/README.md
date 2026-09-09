@@ -30,10 +30,6 @@ The first three settings are on unless set to `off`. `draft_first` is off
 unless it is exactly `required`; a missing setting does not require drafts.
 `/orchestrate` asks the user for these values. An agent must not choose them.
 
-The hook reads `.agent/orchestrate.md` first. If that file has no settings
-section, it checks the old `## Enforcement policy` section in
-`.claude/orchestrate.md`.
-
 ## Install the shared script
 
 Keep one copy of `review-gate.js`. Use its full path in each runtime's hook

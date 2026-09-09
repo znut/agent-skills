@@ -93,8 +93,8 @@ Only exit 3 permits a legacy fallback. Never fail open on other errors.
 
 A session is `{name,role,lane,session_id,harness,generation,status,paths,claims}` plus
 audit fields; PM `lane` is null. `paths` includes `inbox`, `archive`, `notes`, `rules_stamp`,
-`cursors` (alias of `comment_cursor`), `comment_cursor`, `event_cursors`,
-`watchlist`, `self_events`, and `merged_seen`. Paths include the generation
+`comment_cursor`, `event_cursors`, `watchlist`, `self_events`, and
+`merged_seen`. Paths include the generation
 under `session-bus/<pm|tl-lane>/<name>/<generation>/`; consume returned paths,
 never reconstruct them. Ownership is returned as `{session,claim}` where
 `claim` includes `ticket,resources,confirmation,generation,prs`.

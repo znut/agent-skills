@@ -86,15 +86,9 @@ block the rest.
 
 - `status/pr-<n>.json`, `status/state.json`
 - `events/pr-<n>.merged` / `.closed` / `.checks-success` / `.checks-failure` /
-  `.checks-info.json` / `.approved` / `.changes-requested`
+  `.changes-requested` / `.ready-stale`
 - `events/pr-<n>.commented` (mtime-bump, consume-then-rewatch) +
   `events/pr-<n>.comments.json`
-- `events/pr-<n>.head-<sha8>` — touched whenever an OPEN PR is first seen
-  or its head moves (older head-* markers for that PR are removed the same
-  poll, all of them once the PR leaves OPEN). No `.log` line — a push must
-  not wake lane watchers. The on-merge watcher's `WatchPaths` already
-  covers `events/`, so an `onMerge` command step that wants to react to a
-  push (not just a merge) can key off this marker.
 
 The one notable design choice: `comments.json` is written **before** the
 `.commented` marker bumps, so a watcher woken by the marker's mtime can never
@@ -150,29 +144,6 @@ bun tools/board-snapshot/board-snapshot.mjs <name>
 bun tools/on-merge/run.mjs <name>
 timeout 15 bun tools/gh-status/poller.ts || true   # poller loops forever by default
 ```
-
-### Migrating from an existing single-repo poller
-
-If you're replacing an existing bespoke local poller/watcher pair with this
-tool family:
-
-1. Stop the old service:
-   ```bash
-   launchctl bootout gui/$UID/<old-label>
-   ```
-2. Back up the old service's directory if you want to keep its
-   README/source for reference — the next step may reuse its path as a
-   symlink target.
-3. Install and bootstrap this repo's services (see Install above).
-4. If anything still hardcodes the **old** var/output path (a script, a
-   convention doc, another agent's tool config), point it at the new
-   location with a compatibility symlink instead of updating every
-   reference at once:
-   ```bash
-   ln -sfn "$AGENT_TOOLS_HOME/var/<name>/gh-status" <old-path>/gh-status
-   ```
-   Confirm the old path still resolves (`cat <old-path>/gh-status/status/state.json`),
-   then update references at your own pace and drop the symlink later.
 
 ## Verify
 

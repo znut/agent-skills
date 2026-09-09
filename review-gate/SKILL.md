@@ -36,11 +36,6 @@ ref, or run any other Git write. Read `.agent/orchestrate.md` with
 `git show <frozen-default-sha>:.agent/orchestrate.md`. Read the review checklist
 path, script, marker, hook, and default branch from that file.
 
-If the main file does not exist, read `.claude/orchestrate.md`. Follow its link
-when it points to the main file. A full legacy `.claude/orchestrate.md` may
-supply the rules for this run; the repo should later move them to
-`.agent/orchestrate.md`.
-
 Read the named checklist from the same frozen commit. If no repo rules or
 checklist exist, use this list and tell the parent:
 

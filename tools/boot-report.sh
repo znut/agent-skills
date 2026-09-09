@@ -218,7 +218,7 @@ rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/nul
 rules_stamp="$var_dir/rules-read/${role}.stamp"
 if [ -n "$named_json" ]; then rules_stamp=$(named_path rules_stamp); fi
 if [ -z "$rules_tree" ]; then
-	printf 'rules:   no .agent/ tree on origin/%s (legacy .claude/orchestrate.md — read it)\n' "$default_branch"
+	printf 'rules:   no .agent/ tree on origin/%s → run /orchestrate setup\n' "$default_branch"
 else
 	rules_short=$(printf '%s' "$rules_tree" | cut -c1-8)
 	if [ -f "$rules_stamp" ]; then

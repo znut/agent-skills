@@ -32,10 +32,9 @@ repo update the installed skill at once.
 
 ## Set up a repo
 
-Run `/orchestrate` when a repo has neither `.agent/orchestrate.md` nor a full
-legacy `.claude/orchestrate.md`. It reads `orchestrate/bootstrap.md`, checks
-what the repo already uses, and asks the user for each missing choice. It then
-adds:
+Run `/orchestrate` when a repo has no `.agent/orchestrate.md`. It reads
+`orchestrate/bootstrap.md`, checks what the repo already uses, and asks the
+user for each missing choice. It then adds:
 
 - `.agent/orchestrate.md` with project rules;
 - Codex, Claude Code, or other project agent files for the chosen runtime;
@@ -45,9 +44,7 @@ You may also start from `templates/orchestrate.md`. Do not copy model names
 between runtimes.
 
 Setup happens once. Normal runs read `.agent/orchestrate.md` from the remote
-default branch and do not read the setup file or template. A full legacy
-`.claude/orchestrate.md` may supply rules until the user moves them to the main
-file.
+default branch and do not read the setup file or template.
 
 ## Repo rules
 

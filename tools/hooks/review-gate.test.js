@@ -37,46 +37,9 @@ test("main hook settings turn off a guard", () => {
 	assert.equal(result.status, 0)
 })
 
-test("main hook settings win over legacy settings", () => {
-	const result = runHook({
-		".agent/orchestrate.md": "## Hook settings\n\n- bot_identity: required\n",
-		".claude/orchestrate.md": "## Enforcement policy\n\n- bot_identity: off\n",
-	})
-	assert.equal(result.status, 2)
-})
-
-test("legacy settings work when the main file has none", () => {
-	const result = runHook({
-		".agent/orchestrate.md": "# Project rules\n",
-		".claude/orchestrate.md": "## Enforcement policy\n\n- bot_identity: off\n",
-	})
-	assert.equal(result.status, 0)
-})
-
-test("legacy heading in the main file does not turn off a guard", () => {
-	const result = runHook({
-		".agent/orchestrate.md": "## Enforcement policy\n\n- bot_identity: off\n",
-	})
-	assert.equal(result.status, 2)
-})
-
-test("main heading in the legacy file does not turn off a guard", () => {
-	const result = runHook({
-		".claude/orchestrate.md": "## Hook settings\n\n- bot_identity: off\n",
-	})
-	assert.equal(result.status, 2)
-})
-
 test("trailing text on the main heading does not turn off a guard", () => {
 	const result = runHook({
 		".agent/orchestrate.md": "## Hook settings that are not the exact heading\n\n- bot_identity: off\n",
-	})
-	assert.equal(result.status, 2)
-})
-
-test("trailing text on the legacy heading does not turn off a guard", () => {
-	const result = runHook({
-		".claude/orchestrate.md": "## Enforcement policy that is not the exact heading\n\n- bot_identity: off\n",
 	})
 	assert.equal(result.status, 2)
 })
@@ -90,23 +53,9 @@ test("main hook settings require one literal space after ##", () => {
 	}
 })
 
-test("legacy settings require one literal space after ##", () => {
-	for (const heading of ["##\tEnforcement policy", "##  Enforcement policy"]) {
-		const result = runHook({
-			".claude/orchestrate.md": `${heading}\n\n- bot_identity: off\n`,
-		})
-		assert.equal(result.status, 2, heading)
-	}
-})
-
-test("allowed headings permit trailing horizontal whitespace", () => {
-	for (const [file, heading] of [
-		[".agent/orchestrate.md", "## Hook settings \t"],
-		[".claude/orchestrate.md", "## Enforcement policy \t"],
-	]) {
-		const result = runHook({ [file]: `${heading}\n\n- bot_identity: off\n` })
-		assert.equal(result.status, 0, file)
-	}
+test("the heading permits trailing horizontal whitespace", () => {
+	const result = runHook({ ".agent/orchestrate.md": "## Hook settings \t\n\n- bot_identity: off\n" })
+	assert.equal(result.status, 0)
 })
 
 const draftFirstSettings =
@@ -325,17 +274,6 @@ test("level-one and level-two headings end hook settings", () => {
 		)
 		assert.equal(result.status, 0, heading)
 	}
-})
-
-test("legacy draft-first setting blocks a PR without --draft", () => {
-	const result = runHook(
-		{
-			".claude/orchestrate.md":
-				"## Enforcement policy\n\n- bot_identity: off\n- review_marker: off\n- verify_marker: off\n- draft_first: required\n",
-		},
-		"gh pr create --title test",
-	)
-	assert.equal(result.status, 2)
 })
 
 test("only literal required enables draft-first", () => {

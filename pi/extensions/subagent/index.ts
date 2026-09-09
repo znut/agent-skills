@@ -5,11 +5,8 @@
  * output, and enables parent↔subagent signalling (status pings and steer
  * messages).
  *
- * Also provides:
- * - a TUI widget listing live subagents (role, activity, elapsed, tokens);
- * - a non-blocking lane watcher (`arm_lane_watch` tool / `/lane-watch`
- *   command) that runs the repo's watch-lane script detached and injects the
- *   fire as a follow-up message instead of blocking a foreground bash call.
+ * Also provides a TUI widget listing live subagents (role, activity, elapsed,
+ * tokens).
  *
  * This is harness-only plumbing: the prompts and conventions that govern agent
  * behavior live in the project using the extension (e.g. `.pi/prompts/`).
@@ -99,14 +96,6 @@ interface LiveFile {
 }
 
 const agents = new Map<string, AgentState>();
-
-/** Armed lane watchers, keyed by role. */
-interface LaneWatcher {
-	proc: ChildProcess;
-	/** Set when we deliberately kill the process on re-arm or shutdown. */
-	killed?: boolean;
-}
-const laneWatchers = new Map<string, LaneWatcher>();
 
 /**
  * Normalise any path inside a clone (primary checkout or linked worktree) to
@@ -458,55 +447,6 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 }
 
 // ---------------------------------------------------------------------------
-// Lane watcher (non-blocking; injects the fire as a follow-up message)
-// ---------------------------------------------------------------------------
-
-function armLaneWatch(pi: ExtensionAPI, ctx: any, role: string, prs: string[]): string {
-	const existing = laneWatchers.get(role);
-	if (existing) {
-		existing.killed = true;
-		existing.proc.kill("SIGTERM");
-		laneWatchers.delete(role);
-	}
-	const script = path.join(ctx.cwd, "scripts", "watch-lane.sh");
-	if (!fs.existsSync(script)) {
-		return `watch-lane: no scripts/watch-lane.sh under ${ctx.cwd} — not armed`;
-	}
-	const proc = spawn("bash", [script, role, ...prs], {
-		cwd: ctx.cwd,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	const watcher: LaneWatcher = { proc, killed: false };
-	let out = "";
-	let err = "";
-	proc.stdout.on("data", (d: Buffer) => (out += d.toString("utf-8")));
-	proc.stderr.on("data", (d: Buffer) => (err += d.toString("utf-8")));
-	proc.on("close", (code) => {
-		// Only remove the record if it is still our own watcher; a re-arm may
-		// have replaced it with a new process by the time this fires.
-		if (laneWatchers.get(role) === watcher) laneWatchers.delete(role);
-		if (watcher.killed) return;
-		const stdout = out.trim();
-		const stderr = err.trim();
-		let text: string;
-		if (code === 0 && stdout) {
-			text = `[lane-watch:${role}] watcher fired:\n${stdout}\nSweep/archive the fire, then re-arm with arm_lane_watch.`;
-		} else if (code === 0) {
-			text = `[lane-watch:${role}] watcher exited 0 with no output — investigate before re-arming.`;
-		} else {
-			text = `[lane-watch:${role}] watcher exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ""} — fall back to gh polling if the service is down.`;
-		}
-		try {
-			pi.sendUserMessage(text, { deliverAs: "followUp" });
-		} catch {
-			/* session gone */
-		}
-	});
-	laneWatchers.set(role, watcher);
-	return `lane watcher armed for ${role}${prs.length ? ` (PRs: ${prs.join(", ")})` : ""} — runs detached; the fire arrives as a follow-up message`;
-}
-
-// ---------------------------------------------------------------------------
 // TUI widget
 // ---------------------------------------------------------------------------
 
@@ -598,17 +538,13 @@ function shortModelName(name?: string): string {
 function updateWidget(pi: ExtensionAPI, ctx: any): void {
 	if (ctx.mode !== "tui") return;
 	const rows = collectRows(ctx.cwd, ownerId(ctx));
-	const watchRoles = [...laneWatchers.keys()];
-	if (rows.length === 0 && watchRoles.length === 0) {
+	if (rows.length === 0) {
 		ctx.ui.setWidget("subagents", undefined);
 		return;
 	}
 	ctx.ui.setWidget("subagents", (_tui: any, theme: any) => ({
 		render: () => {
 			const lines: string[] = [];
-			for (const w of watchRoles) {
-				lines.push(theme.fg("dim", `◌ watch:${w} armed`));
-			}
 			const renderRow = (r: WidgetRow, indent: string) => {
 				const icon =
 					r.status === "running"
@@ -681,13 +617,6 @@ const SendMessageParams = Type.Object({
 	agent_id: Type.String({ description: "Subagent id to send a message to" }),
 	type: StringEnum(["steer", "stop", "context"] as const, { description: "Message type" }),
 	content: Type.String({ description: "Human-readable message content" }),
-});
-
-const LaneWatchParams = Type.Object({
-	role: StringEnum(["pm", "tl-product", "tl-platform"] as const, {
-		description: "Lane role whose inbox + PR events to watch",
-	}),
-	prs: Type.Optional(Type.Array(Type.String(), { description: "Optional PR numbers to scope the watch" })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -1074,50 +1003,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		name: "arm_lane_watch",
-		label: "Arm lane watch",
-		description:
-			"Arm the repo's lane watcher (scripts/watch-lane.sh) as a detached background process. NON-BLOCKING: when the watch fires (session-bus message, merge, PR activity), the fire arrives as an injected follow-up message. Re-arm only after sweeping/archiving the fire. One watcher per role; re-arming replaces the previous one.",
-		parameters: LaneWatchParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const text = armLaneWatch(pi, ctx, params.role, params.prs ?? []);
-			updateWidget(pi, ctx);
-			return {
-				content: [{ type: "text", text }],
-				details: { role: params.role, prs: params.prs ?? [] },
-			};
-		},
-	});
-
-	pi.registerCommand("lane-watch", {
-		description: "Arm a non-blocking lane watcher: /lane-watch <pm|tl-product|tl-platform> [pr#...]",
-		handler: async (args, ctx) => {
-			const parts = (args || "").trim().split(/\s+/).filter(Boolean);
-			const role = parts[0];
-			if (!role || !["pm", "tl-product", "tl-platform"].includes(role)) {
-				ctx.ui.notify("Usage: /lane-watch <pm|tl-product|tl-platform> [pr#...]", "error");
-				return;
-			}
-			const text = armLaneWatch(pi, ctx, role, parts.slice(1));
-			ctx.ui.notify(text, "info");
-		},
-	});
-
 	pi.on("session_shutdown", () => {
 		if (widgetTimer) {
 			clearInterval(widgetTimer);
 			widgetTimer = null;
 		}
-		for (const watcher of laneWatchers.values()) {
-			watcher.killed = true;
-			try {
-				watcher.proc.kill("SIGTERM");
-			} catch {
-				/* ignore */
-			}
-		}
-		laneWatchers.clear();
 		for (const [agentId, state] of agents) {
 			killAgent(state);
 			cleanup(agentId);

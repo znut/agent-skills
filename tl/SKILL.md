@@ -31,8 +31,8 @@ its register table. Then load `/orchestrate`. Follow its base, worktree, worker,
 approval rules.
 
 Read the repo rules and each file they name from the remote default branch tip
-as `/orchestrate` directs. If neither the main file nor a full legacy file
-supplies rules, use the `/orchestrate` setup process.
+as `/orchestrate` directs. If the repo has no rules, use the `/orchestrate`
+setup process.
 
 If the repo rules give the TL a session-start list, run it. Read saved notes,
 current progress, and local PR status from the sources they name. If the rules
