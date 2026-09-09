@@ -28,7 +28,7 @@ command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$cwd/.
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 role=""
 case "$sid" in ""|*/*|*..*) ;; *) role=$(cat "/tmp/cc-session-roles/$sid" 2>/dev/null || true) ;; esac
-# A registered generation must match its own watcher, even without a legacy marker.
+# A registered generation must match its own watcher, even without a role marker.
 script_dir=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
 if [ -n "$sid" ]; then
 	if named=$(cd "$cwd" && bun "$script_dir/../agent-session.mjs" current --session-id "$sid" --harness claude 2>&1); then

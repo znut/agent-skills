@@ -44,7 +44,7 @@ describe("plan quota parsing", () => {
 		]);
 	});
 
-	it("prefers OpenAI response rate-limit headers when available", () => {
+	it("uses OpenAI response rate-limit headers when available", () => {
 		const snapshot = parseOpenAIHeaders({
 			"X-Codex-Primary-Used-Percent": "81",
 			"X-Codex-Primary-Window-Minutes": "300",

@@ -8,7 +8,7 @@
  * Also provides a TUI widget listing live subagents (role, activity, elapsed,
  * tokens).
  *
- * This is harness-only plumbing: the prompts and conventions that govern agent
+ * This is harness-only plumbing: the prompts and rules that govern agent
  * behavior live in the project using the extension (e.g. `.pi/prompts/`).
  */
 
@@ -98,8 +98,8 @@ interface LiveFile {
 const agents = new Map<string, AgentState>();
 
 /**
- * Normalise any path inside a clone (primary checkout or linked worktree) to
- * the primary checkout, so every agent of the same repo shares one project id
+ * Normalise any path inside a clone (main checkout or linked worktree) to
+ * the main checkout, so every agent of the same repo shares one project id
  * regardless of which worktree spawned it.
  */
 function primaryCheckout(cwd: string): string {
@@ -278,10 +278,10 @@ function formatSteerMessage(message: AgentMessage): string {
 	const prefix = message.type ? `[${message.type.toUpperCase()}] ` : "[STEER] ";
 	const body = message.content ?? "";
 	if (message.type === "stop") {
-		return `${prefix}The orchestrator has cancelled this task. Stop working immediately, call agent_ping with status error, and exit.`;
+		return `${prefix}The parent session has cancelled this task. Stop working immediately, call agent_ping with status error, and exit.`;
 	}
 	if (message.type === "steer") {
-		return `${prefix}Direction change from the orchestrator — treat this as an override to your previous instructions:\n${body}`;
+		return `${prefix}Direction change from the parent session — treat this as an override to your previous instructions:\n${body}`;
 	}
 	return `${prefix}${body}`;
 }
@@ -312,7 +312,7 @@ function startSteerWatcher(pi: ExtensionAPI, ctx: any): void {
 		}
 	};
 
-	// Handle messages that arrived before the watcher started.
+	// Consume messages that arrived before the watcher started.
 	if (fs.existsSync(messagePath)) {
 		consume();
 	}
@@ -424,7 +424,7 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 
 	// Stop the status watcher before we write status.json ourselves; otherwise
 	// a genuine crash-without-ping would be notified both by this watcher and
-	// by the finalizeAgent notification below.
+	// by finalizeAgent's own notification.
 	state.watcher?.close();
 	state.watcher = undefined;
 
@@ -439,7 +439,7 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 	writeLive(agentId, state, reported?.status ?? status);
 	// The subagent already reported its final status via agent_ping; don't
 	// notify again when the process later exits. If empty output reclassifies a
-	// prior terminal ping (e.g. done -> error), still notify the new status.
+	// prior terminal ping (e.g. done -> error), notify the new status.
 	const overriddenTerminal = emptyReturn && state.terminalNotified;
 	if (!state.terminalNotified || overriddenTerminal) {
 		sendNotification(pi, state, agentId, reported!);
@@ -476,7 +476,7 @@ function collectRows(cwd: string, currentOwnerId: string): WidgetRow[] {
 				continue;
 			}
 			const live = readLive(dir);
-			// Older state files lack an owner and cannot be safely attributed.
+			// A state file without an owner cannot be attributed to a session.
 			if (!live || live.ownerId !== currentOwnerId) continue;
 			const done = live.status !== "running";
 			if (done && live.finishedAt && now - live.finishedAt > FINISHED_VISIBLE_MS) continue;
@@ -872,7 +872,7 @@ export default function (pi: ExtensionAPI) {
 		name: "agent_ping",
 		label: "Agent ping",
 		description:
-			"Signal the parent session. A subagent calls this to report done, needs_help, or error without exiting. The parent receives a follow-up ping in TUI mode; in print/json mode the parent should await_agent.",
+			"Signal the parent session. A subagent calls this to report done, needs_help, or error without exiting. The parent receives a follow-up ping in TUI mode; in print/json mode the parent calls await_agent.",
 		parameters: PingParams,
 		async execute(_toolCallId, params) {
 			const dir = agentDir(process.cwd(), params.agent_id);

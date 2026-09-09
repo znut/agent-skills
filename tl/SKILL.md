@@ -86,6 +86,6 @@ the system needs the user: state the options, costs, and your pick, and land
 the decision record before the related code. The PM may suggest such a
 record; the TL writes it after the user settles it.
 
-One session may run both `/pm` and `/tl`. It still settles requirements
+One session may run both `/pm` and `/tl`. It settles requirements
 before sending work, uses workers for all application code, and waits for the
 user's approval of each merge.

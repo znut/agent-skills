@@ -39,7 +39,7 @@ The worker owns a task from first edit through checks, review, push, and the
 open PR. It starts only the review's fresh reviewer. A reviewer starts no agent.
 
 The manager owns every wait on an external system. When a worker returns
-`awaiting_external`, watch the outcome with the runtime's watch mechanism,
+`awaiting_external`, watch the outcome with the harness's watch mechanism,
 then resume the same worker with the result while its transcript lives. Stop
 its stray background tasks first, and start a fresh worker from the saved
 state only when the resume fails.
@@ -65,11 +65,11 @@ tip, not from the default branch.
 - Settle choices that change scope or behavior. Never guess a product or
   business choice.
 - Run independent tasks in parallel when that saves time; run tasks that share
-  files in order. Stay within the repo and runtime worker limits.
+  files in order. Stay within the repo and harness worker limits.
 - For a change that could harm security, auth, stored data, schema, or money,
-  consider two workers on the same task in separate worktrees and keep the
+  run two workers on the same task in separate worktrees and keep the
   better result.
-- Send location questions to a read-only search agent when the runtime has one.
+- Send location questions to a read-only search agent when the harness has one.
 
 ## Worker prompt
 
@@ -91,7 +91,7 @@ fields from the claim. Then the contract:
   build) runs in the foreground under the foreground cap. If the harness
   backgrounds it, or you started it in the background, wait on its output
   file with a foreground until-loop, each wait under the cap, repeated until
-  it ends; never end your turn with your own task still running — nobody is
+  it ends; never end your turn while your own task runs — nobody is
   notified when it finishes. A wait on an EXTERNAL system (a CI run, a deploy,
   a remote queue) is a return point: run the checks for the work so far,
   commit, push, and return `awaiting_external` with the pushed tip, the
@@ -115,7 +115,7 @@ fields from the claim. Then the contract:
     the branch to the next worker type.
   - `ERROR`: start another reviewer. An error uses no attempt.
 - Remove your worktree with plain `git worktree remove <path>` from outside it
-  once the task is delivered; report `harness-locked` when the runtime holds
+  once the task is delivered; report `harness-locked` when the harness holds
   it.
 - Never merge.
 
@@ -172,7 +172,7 @@ report ends there.
 - One new worktree per worker. A reviewer may read the paused worker's
   worktree and writes nothing in it.
 - `git fetch origin` is the only git write allowed in the main checkout.
-- If an old runtime worktree still holds the branch, start detached at
+- If a harness worktree holds the branch, start detached at
   `origin/<branch>` and push with `git push origin HEAD:refs/heads/<branch>`.
 - Remove a stopped worker's worktree only after its useful work reached the
   remote.

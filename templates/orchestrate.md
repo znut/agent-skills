@@ -1,6 +1,6 @@
 # <Project> agent rules
 
-Copy this file to `.agent/orchestrate.md` only when you set up a repo. Fill in
+Copy this template to `.agent/orchestrate.md` only when you set up a repo. Fill in
 each required value and delete notes that do not apply. Normal agent runs read
 the copied repo file, not this template. Do not copy the worker or review
 process from the shared skills into the repo file.
@@ -34,7 +34,7 @@ it sends work.
 
 - The main checkout belongs to `<person>`. Agents may run `git fetch origin`
   there and make no other change.
-- Worktree folder or runtime setting: `<value>`.
+- Worktree folder or harness setting: `<value>`.
 
 ## Read before work
 
@@ -51,15 +51,15 @@ Read only the files that exist and that the changed paths need.
 
 ## Agents
 
-- Runtime: `<Codex | Claude Code | other>`.
+- Harness: `<Codex | Claude Code | other>`.
 - Project agent files: `<paths>`.
 - Worker types in order: `<one or more types, first to last>`.
 - Reviewer type: `<type>`.
 - At most `<number>` workers may run at once. The manager and reviewers do not
   count toward this project limit.
 
-Provider files choose models and effort. This file names logical agent types.
-Do not copy model names from another runtime.
+Provider files choose models and effort. The repo file names logical agent types.
+Do not copy model names from another harness.
 
 ## Checks
 
@@ -100,7 +100,7 @@ Delete this section when delivery stops after commit and push.
 
 - Title form: `<form>`.
 - Body sections: `<goal, reason, decisions, open questions, artifacts>`.
-- Use `Resolves #N` for each issue that the merge should close.
+- Use `Resolves #N` for each issue the merge closes.
 - Do not add file lists, diff counts, or check marks when the host already
   shows them.
 - Keep one change in each PR.

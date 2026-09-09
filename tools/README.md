@@ -1,13 +1,9 @@
 # tools/
 
 Local, config-driven background services for agents working across GitHub
-repos. The purpose: when several agents/workers are running in parallel on a
-local machine, each polling GitHub for PR status, board state, or merge
-events adds up fast — you exhaust the GitHub API quota and every check pays a
-network round trip. These services poll GitHub **once**, centrally, and
-materialize the result as local files. Agents then just read a file — faster
-than an API call, and it costs zero additional GitHub requests no matter how
-many agents are watching.
+repos. They poll GitHub once, centrally, and materialize the result as local
+files — many parallel agents each polling would exhaust the API quota. Agents
+read a file: no API call, no quota, however many agents watch.
 
 ## Layout
 
@@ -52,11 +48,11 @@ shows the shape (fill-me-in placeholders); copy it to
 | `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
-| `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see below |
-| `mainHealth` | main-health | yes, if using main-health | `repo` (primary checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
+| `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see `onMerge` step types |
+| `mainHealth` | main-health | yes, if using main-health | `repo` (main checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
-and covers all of them in one process (one 40s loop, one GraphQL request per
+and polls all of them in one process (one 40s loop, one GraphQL request per
 configured repo per cycle plus one repo-wide `issues/comments?since=` REST
 call feeding `events/issue-<n>.log|.comments.json` — same shapes as the PR
 comment events; configs with a `board` block add a 1-point
@@ -83,7 +79,7 @@ block the rest.
 - `status/pr-<n>.json` (current snapshot per PR), `status/state.json`
 - `events/pr-<n>.log` — the PR's timeline, append-only JSONL: merged, closed,
   checks-success, checks-failure, approved, changes-requested, commented,
-  ready-stale. One watcher per PR covers everything.
+  ready-stale. One watcher per PR sees every event.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue
@@ -114,7 +110,7 @@ every PM and TL boot.
 1. `bun install` isn't needed — everything here is dependency-free (bun/node
    builtins only). You do need `bun` and the GitHub CLI (`gh`) on `PATH`.
 2. Add a config file per target repo under `$AGENT_TOOLS_HOME/config/`
-   (default `~/.config/agent-tools/config/`) — see the contract above.
+   (default `~/.config/agent-tools/config/`) — see Config contract.
 3. Run `tools/install.sh <name>`. It resolves your `bun` and `gh`
    locations, renders both `tools/launchd/*.plist.template` files with those
    paths substituted in, lints them with `plutil -lint`, and writes the
@@ -127,8 +123,8 @@ every PM and TL boot.
 `<name>` here is only used for the on-merge watcher's `WatchPaths` argument
 (it watches one config's `gh-status/events/` dir and runs that config's
 `onMerge` steps). If you're tracking multiple repos with `gh-status` but only
-want on-merge behavior for one of them, that's exactly what this supports —
-`gh-status` itself always covers every config.
+want on-merge behavior for one of them, that is the intended use;
+`gh-status` polls every config regardless.
 
 ### Uninstall
 

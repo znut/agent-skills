@@ -28,7 +28,7 @@ that this session read the rules. Existing sessions that have not adopted named
 boot retain their role-only paths; never claim or drain their inboxes.
 
 State resolves from `--state-dir`, then `AGENT_STATE_DIR`, then the parent of
-`session_bus_dir` in the primary checkout's `.agent/orchestrate.local.md` found
+`session_bus_dir` in the main checkout's `.agent/orchestrate.local.md` found
 through Git's common directory. Every checkout on the same Mac must point to
 the same state directory for shared name and resource exclusion. No configured
 state returns exit 3; establish the shared directory before named boot.
@@ -75,8 +75,8 @@ At boot and each watcher fire, act on each pending message, then call
 the durable registry is authoritative and will restore pending mail. External
 gate events written directly into the resolved generation inbox are not peer
 registry messages: after acting, move them into that same generation archive.
-Do not register a daemon as PM/TL or give it a name. Legacy peer inboxes keep
-their existing file-move consumption until named adoption. `end` checks both
+Do not register a daemon as PM/TL or give it a name. Role-only inboxes keep
+file-move consumption until named adoption. `end` checks both
 registry-pending mail and actual inbox entries. Arm one
 single-shot watcher on the returned inbox and owner event paths; re-arm only
 after consuming and archiving the fired messages. Machine sleep may stop a
@@ -89,7 +89,7 @@ All commands return JSON. Success is `{ok:true,...}`; failures go to stderr as
 `{ok:false,code,error,...}`. Exit 2 = invalid arguments; 3 = absent registration,
 name, or ownership; 4 = malformed/incomplete state or I/O failure; 5 = conflict,
 stale generation, exhausted pool, or outstanding work; 6 = occupied registry mutex.
-Only exit 3 permits a legacy fallback. Never fail open on other errors.
+Only exit 3 permits the role-only fallback. Never fail open on other errors.
 
 A session is `{name,role,lane,session_id,harness,generation,status,paths,claims}` plus
 audit fields; PM `lane` is null. `paths` includes `inbox`, `archive`, `notes`, `rules_stamp`,

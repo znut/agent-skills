@@ -1,6 +1,6 @@
 # Writing rules overlay — <repo>
 
-The `comm` skill owns every prose rule and register. This file owns what is
+The `comm` skill owns every prose rule and register. The overlay owns what is
 repo-specific: canonical terms, glossary, repo-only registers, sweep lists.
 
 ## Canonical terms

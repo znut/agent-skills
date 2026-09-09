@@ -72,6 +72,6 @@ echo "Rendered:"
 echo "  $GH_STATUS_PLIST"
 echo "  $ON_MERGE_PLIST"
 echo
-echo "Not installed yet — review the plists above, then run:"
+echo "Not installed yet — review the rendered plists, then run:"
 echo "  launchctl bootstrap gui/\$UID $GH_STATUS_PLIST"
 echo "  launchctl bootstrap gui/\$UID $ON_MERGE_PLIST"

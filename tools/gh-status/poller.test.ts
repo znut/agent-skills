@@ -40,7 +40,7 @@ describe("pruneOld", () => {
 		expect(existsSync(join(eventsDir, "pr-10.log"))).toBe(true)
 	})
 
-	it("keeps open PRs, PRs still in the window, and unreadable snapshots", async () => {
+	it("keeps open PRs, PRs in the window, and unreadable snapshots", async () => {
 		const { statusDir, eventsDir } = dirs()
 		pr(statusDir, eventsDir, 3, { state: "OPEN", mergedAt: null, updatedAt: OLD })
 		pr(statusDir, eventsDir, 4, { state: "MERGED", mergedAt: OLD, updatedAt: OLD })

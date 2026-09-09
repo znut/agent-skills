@@ -13,7 +13,7 @@ description: >
 # Tech debt revisit
 
 One session a week, in spare capacity, after the product queue. The output is
-tickets and decision records, never code: every change still goes through
+tickets and decision records, never code: every change goes through
 `/tl` and `/orchestrate`.
 
 Load `/comm` first. Read the repo rules as `/orchestrate` directs. Read

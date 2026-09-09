@@ -12,8 +12,8 @@
  *   events/pr-<n>.log       — the PR's timeline, append-only JSONL
  *     {at, type, id?, actor?, body?, kind?, path?, line?, sha?}: merged,
  *     closed, checks-success, checks-failure, approved, changes-requested,
- *     commented, ready-stale. One watcher per PR plus a line cursor covers
- *     everything; transitions are detected against the previous snapshot.
+ *     commented, ready-stale. One watcher per PR plus a line cursor sees
+ *     every event; transitions are detected against the previous snapshot.
  *   events/pr-<n>.merged    — marker, touched once, for watchers that key
  *                             on a path
  *   events/pr-<n>.comments.json — the new comments/reviews since the last
@@ -304,7 +304,7 @@ export async function pruneOld(statusDir: string, eventsDir: string, window: Set
  * (`issues/comments?since=<cursor>`), mirroring the PR comment pattern:
  * `events/issue-<n>.comments.json` payload plus append-only
  * `events/issue-<n>.log` JSONL. First run records the cursor and never fires.
- * Comments whose issue is actually a PR are skipped — the PR flow owns those
+ * Comments whose issue is a PR are skipped — the PR flow owns those
  * (in-window PRs matched by number; out-of-window checked via a per-cycle
  * `issues/{n}` lookup, only on new-comment transitions). All authors are
  * emitted (bot included) — consumers filter by `actor`, same contract as the
@@ -432,7 +432,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		const lastCommentAt = [commentsLatest, reviewsLatest].filter((d): d is string => !!d).sort().pop() ?? null
 
 		// The previous snapshot is the transition detector for every event
-		// below — read it BEFORE overwriting.
+		// that follows — read it BEFORE overwriting.
 		let prev: Snapshot | null = null
 		try {
 			prev = JSON.parse(await Bun.file(`${statusDir}/pr-${pr.number}.json`).text())
@@ -450,7 +450,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			title: pr.title,
 			checks: rollup, // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | null
 			reviewDecision: pr.reviewDecision, // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
-			commentCount, // issue comments + reviews combined (see Pr.reviews note above)
+			commentCount, // issue comments + reviews combined
 			lastCommentAt,
 			updatedAt: pr.updatedAt,
 			headOid: sha,

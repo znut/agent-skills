@@ -5,7 +5,7 @@ subagents. Workers use separate git worktrees and own each task through checks,
 review, and push. Repos that use PRs get one small PR per task.
 
 The skills contain no project facts or model choices. Each repo keeps its rules
-in `.agent/orchestrate.md` and its agent definitions in the active runtime's
+in `.agent/orchestrate.md` and its agent definitions in the active harness's
 project files. Claude Code and Codex can read the same repo rules while each
 uses its own agent file format.
 
@@ -35,7 +35,7 @@ Loaded by a fresh reviewer that a worker starts, not typed by the user:
 
 ## Install
 
-Clone this repo. Link each skill folder into the skill folder for the runtime
+Clone this repo. Link each skill folder into the skill folder for the harness
 you use:
 
 - Claude Code: `~/.claude/skills/`
@@ -48,7 +48,7 @@ A link lets a pull in this repo update the installed skill at once.
 Run `/orchestrate` when a repo has no `.agent/orchestrate.md`. It reads
 `orchestrate/bootstrap.md`, checks what the repo already uses, asks the user
 for each missing choice, and adds `.agent/orchestrate.md` plus the project
-agent files for the chosen runtime. `templates/orchestrate.md` lists every
+agent files for the chosen harness. `templates/orchestrate.md` lists every
 value a repo file states; `templates/writing-rules.md` seeds the repo's
 writing overlay. Do not copy model names between runtimes.
 

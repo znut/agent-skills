@@ -6,11 +6,11 @@
  * array in order. Meant to be triggered by a launchd WatchPaths agent
  * watching that config's gh-status events dir (see tools/launchd/), so it
  * fires shortly after the poller touches a `.merged` marker — not tied to
- * any single PR number, just "something changed".
+ * any single PR number: it means only that something changed.
  *
  * Step types:
  *   { type: "board-snapshot" }                     — runs board-snapshot for this config
- *   { type: "command", cmd: "...", cwd: "..." }     — runs a shell command (cwd supports ~)
+ *   { type: "command", cmd: "...", cwd: "..." }     — runs a shell command (cwd accepts ~)
  *
  * Debounced as a whole run (skip all steps if the last run for this config
  * started < 60s ago) — WatchPaths can fire multiple times for one burst of

@@ -3,7 +3,7 @@
 #
 # Usage: main-health.sh <configName>
 #   Reads the "mainHealth" block of $AGENT_TOOLS_HOME/config/<configName>.json:
-#     repo         primary checkout; only `git fetch` runs there
+#     repo         main checkout; only `git fetch` runs there
 #     worktree     optional; default <repo>-worktrees/main-health
 #     steps        [{ "name": "test", "cmd": "bun run test" }, ...], in order
 #     env          optional map exported to every step
@@ -129,7 +129,7 @@ run_pass() {
 }
 
 run_pass
-# The tip moved during the run: one rerun covers the mid-run merge.
+# The tip moved during the run: one rerun catches the mid-run merge.
 NEW=$(git -C "$REPO" fetch origin -q && git -C "$REPO" rev-parse "$(default_branch)")
 if [ -f "$VAR/state.json" ] && ! grep -q "\"sha\": \"$NEW\"" "$VAR/state.json"; then
 	run_pass

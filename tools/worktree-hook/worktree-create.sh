@@ -33,13 +33,13 @@ else
 fi
 
 common=$(git rev-parse --git-common-dir)
-primary=$(cd "$(dirname "$common")" && pwd) # primary checkout, even when run from inside a worktree
+primary=$(cd "$(dirname "$common")" && pwd) # main checkout, even when run from inside a worktree
 target_root="$(dirname "$primary")/$(basename "$primary")-worktrees"
 mkdir -p "$target_root"
 wt="$target_root/$name"
 
 # Base on the FETCHED default-branch tip, never the invoking checkout's HEAD —
-# the primary tree is fetch-only under agent conventions and may sit stale (or
+# the main checkout is fetch-only under the repo rules and may sit stale (or
 # on another branch entirely).
 base=$(git -C "$primary" symbolic-ref -q --short refs/remotes/origin/HEAD || true)
 if [ -z "$base" ] && git -C "$primary" show-ref -q refs/remotes/origin/main; then
