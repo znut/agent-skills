@@ -29,7 +29,7 @@ boot retain their role-only paths; never claim or drain their inboxes.
 
 State resolves from `--state-dir`, then `AGENT_STATE_DIR`, then the parent of
 `session_bus_dir` in the main checkout's `.agent/orchestrate.local.md` found
-through Git's common directory. Every checkout on the same Mac must point to
+through Git's common directory. Every checkout on the same machine must point to
 the same state directory for shared name and resource exclusion. No configured
 state returns exit 3; establish the shared directory before named boot.
 
