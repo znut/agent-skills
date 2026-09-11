@@ -239,8 +239,8 @@ if [ -f "$mh" ]; then
 	if [ "$mh_green" = true ]; then
 		printf 'green at %s (%s)\n' "$mh_sha" "$mh_at"
 	else
-		printf 'RED at %s (%s): failed %s — see %s/run.log and step-<name>.log\n' "$mh_sha" "$mh_at" \
-			"$(jq -r '.steps | to_entries[] | select(.value == "FAIL") | .key' "$mh" 2>/dev/null | paste -sd, -)" "$(dirname "$mh")"
+		printf 'RED at %s (%s): failed %s — see %s/run.log (FAIL lines) and runs/%s-*/step-<name>.log\n' "$mh_sha" "$mh_at" \
+			"$(jq -r '.steps | to_entries[] | select(.value == "FAIL") | .key' "$mh" 2>/dev/null | paste -sd, -)" "$(dirname "$mh")" "$mh_sha"
 	fi
 	[ "$mh_sha" = "$remote_short" ] || printf 'note: verdict is for %s; origin/%s tip is %s\n' "$mh_sha" "$default_branch" "${remote_short:-?}"
 else
