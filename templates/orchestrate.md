@@ -55,6 +55,7 @@ Read only the files that exist and that the changed paths need.
 - Project agent files: `<paths>`.
 - Worker types in order: `<one or more types, first to last>`.
 - Reviewer type: `<type>`.
+- Worker rules: `<this file | path of a separate worker file>`.
 - At most `<number>` workers may run at once. The manager and reviewers do not
   count toward this project limit.
 
@@ -81,6 +82,7 @@ Known command limits: `<facts or none>`.
 - Reviewer verdict goes to: `<PR review | return block>`.
 - Proof of checks: `<CI | local gate and its result path>`.
 - Ready check: `<command the gh wrapper runs before pr ready | none>`.
+- Security bar: ASVS level `<1 | 2 | 3>`.
 - Blocking findings: `<severities or rules that prevent PASS>`.
 - Nonblocking findings: `<severities, required action, or none>`.
 
@@ -129,7 +131,7 @@ send work. Read each new ticket number from the create command output.
 
 ## Worker code rules
 
-Copy these lines without changing their words into every worker prompt:
+The worker reads these from `origin/<default>`; the prompt links, never pastes:
 
 - `<banned API or required shared library>`
 - `<style rule>`

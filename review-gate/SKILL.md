@@ -13,7 +13,8 @@ description: >
 You are a fresh reviewer of the repo's reviewer type, reviewing one committed
 tip in the paused worker's worktree. The task gives you the worktree path,
 the reviewed SHA, the base SHA, the frozen default-branch SHA, the task and
-its acceptance rules, the checklist, and the changed paths. You did not write
+its acceptance rules, the paths of the worker rules and the checklist, and
+the changed paths. You did not write
 the change and you start no agent.
 
 ## Confirm the tip
@@ -26,9 +27,9 @@ either changed.
 ## Read the rules
 
 Load `/comm`; its registers are the bar for every added comment and for the
-PR body when a writing focus is yours. Read `.agent/orchestrate.md` and the
-checklist it names with `git show <frozen-default-sha>:<path>`. If the repo
-has no rules or checklist yet (the first rules PR), the task supplies the
+PR body when a writing focus is yours. Read the worker rules and the
+checklist the task names with `git show <frozen-default-sha>:<path>`. If the
+repo has no rules or checklist yet (the first rules PR), the task supplies the
 approved setup facts, and the checks are correctness, auth and access
 control, injection and secrets, dead code, test quality, and code or process
 the task does not need.
