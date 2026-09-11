@@ -55,6 +55,7 @@ Read only the files that exist and that the changed paths need.
 - Project agent files: `<paths>`.
 - Worker types in order: `<one or more types, first to last>`.
 - Reviewer type: `<type>`.
+- Worker rules: `<this file | path of a separate worker file>`.
 - At most `<number>` workers may run at once. The manager and reviewers do not
   count toward this project limit.
 

@@ -7,9 +7,9 @@ instructions win over the repo rules, and the repo rules win over this file.
 
 ## Work
 
-- Read `.agent/orchestrate.md` and each file it names from `origin/<default>`
-  with `git show origin/<default>:<path>`, then the repo docs in the stated
-  order.
+- Read the worker rules the prompt names from `origin/<default>` with
+  `git show origin/<default>:<path>`, and each file they name, then the repo
+  docs in the order they state.
 - Work only in the named worktree and paths. Never touch the main checkout,
   another worktree, or agent settings. A tool call the harness denies is not
   retried in another form; report it in the return.
@@ -45,8 +45,9 @@ closes and each required artifact; a repo that opens ready PRs opens after
 type on your worktree, or the panel the repo derives from the diff, started
 concurrently. Each follows `/review-gate` with the reviewed SHA, the base
 SHA, the frozen default-branch SHA (the `origin/<default>` tip you last
-fetched), the task, its acceptance rules, the checklist, and the changed
-paths. Do not name the model that wrote the change.
+fetched), the task, its acceptance rules, the paths of the worker rules and
+the checklist, and the changed paths. Do not name the model that wrote the
+change.
 
 - `PASS` from every reviewer: stop editing and report.
 - `BLOCK`: fix every finding, rerun the checks, commit, push, and start a
