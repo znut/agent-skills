@@ -11,14 +11,17 @@
 #                  (default '^docs/|\.md$')
 #     stepTimeout  optional seconds per step (default 1800)
 #
-# The verdict is state.json (`green` true or false, one entry per step);
-# boot-report prints it at every PM and TL boot. Runs in a dedicated locked
-# worktree at the fetched
+# The verdict is state.json (`green` true or false, one entry per step, plus
+# `failing`: the last run's failing test names); boot-report prints it at
+# every PM and TL boot. Runs in a dedicated locked worktree at the fetched
 # default tip; skips when state.json already records that sha, or when every
 # change since the last green run matches skipPattern; reruns once when the
 # tip moved during the run. Steps run under nice -n 19 (not taskpolicy -b:
 # DARWIN_BG starves test-runner pools under sustained load) with a watchdog
 # that kills the step's process tree, and a failed step is retried once.
+# Each run's step logs live under var/runs/<UTC ts>-<sha8>/, the last 20
+# kept (a dashboard and a global retry policy were considered and rejected —
+# out of scope for this ticket).
 set -u
 
 CONFIG_NAME="${1:?usage: main-health.sh <configName>}"
@@ -37,7 +40,7 @@ WT=${WT:-"$(dirname "$REPO")/$(basename "$REPO")-worktrees/main-health"}
 STEP_TIMEOUT=$(cfg '.mainHealth.stepTimeout // 1800')
 SKIP_PATTERN=$(cfg '.mainHealth.skipPattern // "^docs/|\\.md$"')
 VAR="$HOME_DIR/var/$CONFIG_NAME/main-health"
-mkdir -p "$VAR"
+mkdir -p "$VAR/runs"
 while IFS='=' read -r key value; do
 	[ -n "$key" ] && export "$key=$value"
 done < <(jq -r '.mainHealth.env // {} | to_entries[] | "\(.key)=\(.value)"' "$CONFIG")
@@ -50,6 +53,26 @@ printf '%s' $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$VAR/run.log"; }
+
+# Failing test names from one step's log: vitest prints
+# ` FAIL  <file> > <describe> > <test>`; ANSI-stripped and `>` swapped for
+# `›`. Unparseable lines (no FAIL prefix, e.g. `× <test>` summaries) skip.
+parse_fails() {
+	sed -E 's/\x1b\[[0-9;]*m//g' "$1" \
+		| grep -E '^[[:space:]]*FAIL[[:space:]]+\S' \
+		| sed -E 's/^[[:space:]]*FAIL[[:space:]]+//; s/ > / › /g'
+}
+
+# Log each failing test name found in $2's log; also collect into FAILING[]
+# when $3 is "keep" (the final, post-retry attempt).
+record_fails() {
+	local step="$1" out="$2" m
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		log "$step: FAIL $m"
+		[ "${3:-}" = keep ] && FAILING+=("$step: $m")
+	done < <(parse_fails "$out")
+}
 
 default_branch() {
 	local ref
@@ -88,7 +111,7 @@ run_pass() {
 		PREV=$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$VAR/state.json" | head -1)
 		if [ -n "$PREV" ] && git -C "$REPO" rev-parse -q --verify "$PREV^{commit}" >/dev/null 2>&1 \
 			&& ! git -C "$REPO" diff --name-only "$PREV..$SHA" | grep -qvE "$SKIP_PATTERN"; then
-			printf '{ "sha": "%s", "finishedAt": "%s", "green": true, "steps": { "skipped": "skip-pattern-only since %s", "_": "end" } }\n' \
+			printf '{ "sha": "%s", "finishedAt": "%s", "green": true, "failing": [], "steps": { "skipped": "skip-pattern-only since %s", "_": "end" } }\n' \
 				"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PREV:0:8}" > "$VAR/state.json"
 			log "run skipped sha=$SHA (skip-pattern-only since ${PREV:0:8})"
 			return 0
@@ -105,25 +128,48 @@ run_pass() {
 	git -C "$WT" reset --hard "$base" -q
 	git -C "$WT" clean -fd -e node_modules -q 2>/dev/null
 
+	local run_dir="$VAR/runs/$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:8}"
+	mkdir -p "$run_dir"
+
 	GREEN=true
 	STEPS=""
+	FAILING=()
 	while IFS=$'\t' read -r name cmd; do
 		[ -n "$name" ] || continue
-		if run_bounded "$VAR/step-$name.log" "$cmd"; then
+		local step_log="$run_dir/step-$name.log"
+		if run_bounded "$step_log" "$cmd"; then
 			STEPS="$STEPS\"$name\": \"ok\", "
 			log "$name: ok"
-		elif log "$name: fail — retrying once" && run_bounded "$VAR/step-$name.log" "$cmd"; then
+			continue
+		fi
+		record_fails "$name" "$step_log"
+		log "$name: fail — retrying once"
+		if run_bounded "$step_log" "$cmd"; then
 			STEPS="$STEPS\"$name\": \"ok(retry)\", "
 			log "$name: ok on retry"
-		else
-			STEPS="$STEPS\"$name\": \"FAIL\", "
-			GREEN=false
-			log "$name: FAIL (retried)"
+			continue
 		fi
+		record_fails "$name" "$step_log" keep
+		STEPS="$STEPS\"$name\": \"FAIL\", "
+		GREEN=false
+		log "$name: FAIL (retried)"
 	done < <(jq -r '.mainHealth.steps[] | "\(.name)\t\(.cmd)"' "$CONFIG")
 
-	printf '{ "sha": "%s", "finishedAt": "%s", "green": %s, "steps": { %s"_": "end" } }\n' \
-		"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GREEN" "$STEPS" > "$VAR/state.json"
+	local failing_json='[]'
+	[ "${#FAILING[@]}" -gt 0 ] && failing_json=$(printf '%s\n' "${FAILING[@]}" | jq -R . | jq -sc .)
+
+	printf '{ "sha": "%s", "finishedAt": "%s", "green": %s, "failing": %s, "steps": { %s"_": "end" } }\n' \
+		"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GREEN" "$failing_json" "$STEPS" > "$VAR/state.json"
+
+	# Prune to the last 20 run dirs, oldest by name — the UTC-ts prefix
+	# sorts chronologically, sha8 only breaks same-second ties.
+	local n
+	n=$(ls -1 "$VAR/runs" | wc -l | tr -d ' ')
+	if [ "$n" -gt 20 ]; then
+		ls -1 "$VAR/runs" | sort | head -n "$((n - 20))" | while IFS= read -r old; do
+			rm -rf "${VAR:?}/runs/$old"
+		done
+	fi
 
 	if [ "$GREEN" = false ]; then log "run RED sha=$SHA"; else log "run green sha=$SHA"; fi
 }

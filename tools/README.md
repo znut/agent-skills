@@ -103,9 +103,13 @@ that config started < 60s ago). Appends one line per step to
 
 `main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
 the config's `mainHealth.steps` on the fetched default tip in a locked
-worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`
-plus one `step-<name>.log` per step. boot-report prints the last verdict at
-every PM and TL boot.
+worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`.
+Each run's step logs land under `var/<name>/main-health/runs/<UTC
+timestamp>-<sha8>/step-<name>.log`, oldest pruned beyond the last 20 run dirs.
+`run.log` gets one `<step>: FAIL <file> › <test name>` line per failing test
+per attempt, parsed from the step's vitest output. `state.json`'s `failing`
+array holds the last run's failing test names (`"<step>: <file> › <test>"`),
+empty on green. boot-report prints the last verdict at every PM and TL boot.
 
 ## Install
 
