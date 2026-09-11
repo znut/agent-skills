@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
+import { PRUNE_AFTER_MS, pruneOld, writeHeadMarker } from "./poller.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const OLD = new Date(Date.now() - PRUNE_AFTER_MS - DAY_MS).toISOString()
@@ -66,5 +66,32 @@ describe("pruneOld", () => {
 		expect(existsSync(join(eventsDir, "issue-7.comments.json"))).toBe(false)
 		expect(existsSync(join(eventsDir, "issue-8.log"))).toBe(true)
 		expect(existsSync(join(eventsDir, "issue-8.comments.json"))).toBe(true)
+	})
+})
+
+describe("writeHeadMarker", () => {
+	it("touches a marker named after the 8-char lowercase sha prefix", async () => {
+		const { eventsDir } = dirs()
+		await writeHeadMarker(eventsDir, 42, "ABCDEF1234567890")
+		expect(existsSync(join(eventsDir, "pr-42.head-abcdef12"))).toBe(true)
+	})
+
+	it("removes that PR's older head-* markers, leaving other PRs alone", async () => {
+		const { eventsDir } = dirs()
+		writeFileSync(join(eventsDir, "pr-42.head-11111111"), "x")
+		writeFileSync(join(eventsDir, "pr-9.head-22222222"), "x")
+		await writeHeadMarker(eventsDir, 42, "33333333cccc")
+		expect(existsSync(join(eventsDir, "pr-42.head-11111111"))).toBe(false)
+		expect(existsSync(join(eventsDir, "pr-42.head-33333333"))).toBe(true)
+		expect(existsSync(join(eventsDir, "pr-9.head-22222222"))).toBe(true)
+	})
+
+	it("appends no events/pr-<n>.log line for a push", async () => {
+		const { eventsDir } = dirs()
+		writeFileSync(join(eventsDir, "pr-42.log"), "{}\n")
+		const before = readFileSync(join(eventsDir, "pr-42.log"), "utf8")
+		await writeHeadMarker(eventsDir, 42, "44444444dddd")
+		expect(readFileSync(join(eventsDir, "pr-42.log"), "utf8")).toBe(before)
+		expect(readdirSync(eventsDir).filter((f) => f.startsWith("pr-42.log"))).toHaveLength(1)
 	})
 })

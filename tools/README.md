@@ -82,6 +82,7 @@ block the rest.
   checks-success, checks-failure, approved, changes-requested, commented,
   ready-stale. One watcher per PR sees every event.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
+- `events/pr-<n>.head-<sha8>` — marker touched on a push to an OPEN PR (older head-* for that PR removed), no log line
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue
   timeline
