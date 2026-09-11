@@ -19,7 +19,7 @@
 # tip moved during the run. Steps run under nice -n 19 (not taskpolicy -b:
 # DARWIN_BG starves test-runner pools under sustained load) with a watchdog
 # that kills the step's process tree, and a failed step is retried once.
-# Each run's step logs live under var/runs/<sha8>-<UTC ts>/, the last 20
+# Each run's step logs live under var/runs/<UTC ts>-<sha8>/, the last 20
 # kept (a dashboard and a global retry policy were considered and rejected —
 # out of scope for this ticket).
 set -u
@@ -56,8 +56,7 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$VAR/run.log"
 
 # Failing test names from one step's log: vitest prints
 # ` FAIL  <file> > <describe> > <test>`; ANSI-stripped and `>` swapped for
-# `›`. Lines without a FAIL prefix (e.g. vitest's `× <test>` summary lines)
-# carry no file and are not parseable, so they're skipped.
+# `›`. Unparseable lines (no FAIL prefix, e.g. `× <test>` summaries) skip.
 parse_fails() {
 	sed -E 's/\x1b\[[0-9;]*m//g' "$1" \
 		| grep -E '^[[:space:]]*FAIL[[:space:]]+\S' \
@@ -129,7 +128,7 @@ run_pass() {
 	git -C "$WT" reset --hard "$base" -q
 	git -C "$WT" clean -fd -e node_modules -q 2>/dev/null
 
-	local run_dir="$VAR/runs/${SHA:0:8}-$(date -u +%Y%m%dT%H%M%SZ)"
+	local run_dir="$VAR/runs/$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:8}"
 	mkdir -p "$run_dir"
 
 	GREEN=true
@@ -162,8 +161,8 @@ run_pass() {
 	printf '{ "sha": "%s", "finishedAt": "%s", "green": %s, "failing": %s, "steps": { %s"_": "end" } }\n' \
 		"$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GREEN" "$failing_json" "$STEPS" > "$VAR/state.json"
 
-	# Prune to the last 20 run dirs, oldest by name (sha8-UTC ts: mostly but
-	# not strictly chronological, since sha8 sorts before timestamp).
+	# Prune to the last 20 run dirs, oldest by name — the UTC-ts prefix
+	# sorts chronologically, sha8 only breaks same-second ties.
 	local n
 	n=$(ls -1 "$VAR/runs" | wc -l | tr -d ' ')
 	if [ "$n" -gt 20 ]; then
