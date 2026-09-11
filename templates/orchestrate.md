@@ -81,6 +81,7 @@ Known command limits: `<facts or none>`.
 - Reviewer verdict goes to: `<PR review | return block>`.
 - Proof of checks: `<CI | local gate and its result path>`.
 - Ready check: `<command the gh wrapper runs before pr ready | none>`.
+- Security bar: ASVS level `<1 | 2 | 3>`.
 - Blocking findings: `<severities or rules that prevent PASS>`.
 - Nonblocking findings: `<severities, required action, or none>`.
 

@@ -39,12 +39,14 @@ a ticket, in the worker prompt, in the PR check, and in decision records:
   user data, or a cache, put the data size and the budget in the acceptance
   rules. A query per row, an unbounded list, or a blocking call on a request
   path is a finding.
-- **Security.** Follow OWASP: the Top 10 and the Application Security
-  Verification Standard (ASVS). When a change touches a trust boundary
-  (input, auth, session, access control, secrets, data exposure, injection,
-  SSRF, deserialization, logging), name the boundary in the acceptance rules
-  so the reviewer judges it. Not every ticket is an audit; every ticket on a
-  boundary is.
+- **Security.** The bar is the OWASP Application Security Verification
+  Standard (ASVS) at the level the repo rules name. The OWASP Top 10 and API
+  Security Top 10 name the boundaries to look at: input, auth, session,
+  access control, secrets, data exposure, injection, SSRF, deserialization,
+  logging. When a change touches one, name the boundary in the acceptance
+  rules so the reviewer judges it, and put the matching OWASP Cheat Sheet in
+  the worker prompt. Use the current edition of each, never a year you
+  remember. Not every ticket is an audit; every ticket on a boundary is.
 - **Evidence.** Judge a delivery on its checks and its review, not on its
   report. A failed check returns to the worker with the exact findings.
 

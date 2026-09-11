@@ -99,10 +99,10 @@ from `origin/<default>` and the contract from its file.
 
 The repo rules name logical worker types in order and a reviewer type.
 Provider agent files choose their models and effort; this skill never names a
-model. Start with the first type. After a third `BLOCK`, a new worker of the
-next type continues from the pushed branch with every finding. If the last
-type also gets a third `BLOCK`, stop and report the commits, checks, and
-findings.
+model. Start with the first type. A worker gets one fold: after its second
+`BLOCK`, a new worker of the next type continues from the pushed branch with
+every finding. If the last type also gets a second `BLOCK`, stop and report
+the commits, checks, and findings.
 
 ## Check the PR before it is ready
 

@@ -51,9 +51,9 @@ paths. Do not name the model that wrote the change.
 - `PASS` from every reviewer: stop editing and report.
 - `BLOCK`: fix every finding, rerun the checks, commit, push, and start a
   fresh reviewer with the last reviewed SHA and the open findings; it reviews
-  the delta since that SHA. After the third `BLOCK`, push what you have, open
-  no further PR, and return every finding; the manager sends the branch to
-  the next worker type.
+  the delta since that SHA. One fold only: after a second `BLOCK`, push what
+  you have, open no further PR, and return every finding; the manager sends
+  the branch to the next worker type.
 - `ERROR`: start another reviewer. An error uses no attempt.
 
 Remove your worktree with plain `git worktree remove <path>` from outside it
