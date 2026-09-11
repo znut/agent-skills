@@ -4,16 +4,15 @@ description: >
   Run repo work through subagents so the manager stays free for the user.
   Split work into small tasks, give each worker an isolated git worktree, and
   require the worker to commit, pass a fresh review, and deliver through the
-  repo's delivery mode. Read project rules from the repo. Pair this skill with
-  /tl for engineering work or /pm for product work. Trigger: "orchestrate",
-  "fan out agents", "dispatch subagents", "parallel agents", "multi-agent", or
-  "/orchestrate".
+  repo's delivery mode. Read project rules from the repo. Trigger:
+  "orchestrate", "fan out agents", "dispatch subagents", "parallel agents",
+  "multi-agent", or "/orchestrate".
 ---
 
 # Orchestrate
 
 This skill is the delivery engine: how a task becomes a reviewed, pushed
-branch or a ready PR. `/tl` and `/pm` decide which work and hold the bar for
+branch or a ready PR. The manager decides which work and holds the bar for
 it; [worker.md](worker.md) is the worker's contract; `/review-gate` is the
 reviewer's procedure. The user's instructions win over the repo rules, and the
 repo rules win over these skills.
@@ -32,25 +31,26 @@ available, so it hands work off instead of doing it:
 - Never block your own turn. A wait longer than one command goes to a
   background watcher, and a worker reports back through the harness. After
   dispatch, return to the user; do not poll a worker or ask it for progress.
-- Delegation keeps the bar. Every change, including one the manager makes
-  itself, goes through a worktree, the checks, a fresh review, and the repo's
-  delivery mode.
+- Delegation keeps the bar. Every change goes through a worktree, the
+  checks, a fresh review, and the repo's delivery mode. The manager edits a
+  file itself only when the work is too small to brief, such as a few words
+  in a decision record, and then follows [worker.md](worker.md) for that
+  change.
 
 ## Read the repo rules
 
 Run `git fetch origin -q`. Read `.agent/orchestrate.md` and each file it names
-from the remote default branch with `git show origin/<default>:<path>`, then
-write the stamp the boot report prints. Skip the read only when the report
-says the rules tree (`.agent/`) is UNCHANGED and the rules are still in this
-context; after a compaction, read again. If the file does not exist, run setup
-from [bootstrap.md](bootstrap.md) once.
+from the remote default branch with `git show origin/<default>:<path>`. Skip
+the read only when a boot report says the rules tree (`.agent/`) is UNCHANGED
+and the rules are still in this context; after a compaction, read again. If
+the file does not exist, run setup from [bootstrap.md](bootstrap.md) once.
 
 Load `/comm` for anything you write to a person.
 
 ## Roles
 
-The manager (the `/tl` or `/pm` session) settles open choices, splits work,
-sends tasks, and checks each delivery. It never edits a worker's change: a
+The manager is the session the user talks to. It settles open choices,
+splits work, sends tasks, and checks each delivery. It never edits a worker's change: a
 failed check goes back to a worker with the exact findings.
 
 The worker owns a task from first edit through checks, review, push, and the
@@ -73,9 +73,9 @@ tip, not from the default branch.
 
 ## Before dispatch
 
-- Named PM/TL sessions follow [claims and handoffs](session-bus.md#claims-and-handoffs).
-  One confirmation covers every task the user named; do not ask again per
-  claim.
+- A named session claims the ticket first, as [claims and handoffs](session-bus.md#claims-and-handoffs)
+  states. One confirmation covers every task the user named; do not ask again
+  per claim.
 - Search open PRs and remote branches for the ticket and feature terms. Stop
   and ask if the work already exists.
 - Settle choices that change scope or behavior. Never guess a product or
@@ -88,8 +88,8 @@ tip, not from the default branch.
 ## Worker prompt
 
 Give each worker: the ticket, the absolute worktree path, the base SHA, the
-paths it owns, the delivery mode, the owner session fields from the claim,
-and the absolute path of [worker.md](worker.md). Add what this task needs and
+paths it owns, the delivery mode, the owner session fields from the claim
+when a named session runs, and the absolute path of [worker.md](worker.md). Add what this task needs and
 the rules do not say: the sibling file or idiom to mirror, the trust boundary
 or performance budget the reviewer must judge, and each settled choice. Do
 not paste the repo rules or the worker contract; the worker reads the rules
