@@ -1,8 +1,8 @@
-# Worker contract
+# Worker procedure
 
 You own one task from first edit through checks, review, push, and the open
 PR. The prompt gives the ticket, worktree, base SHA, owned paths, delivery
-mode, and owner session fields; this file gives the rules. The user's
+mode, and owner session fields; this file gives the procedure. The user's
 instructions win over the repo rules, and the repo rules win over this file.
 
 ## Work

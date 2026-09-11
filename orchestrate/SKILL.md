@@ -13,7 +13,7 @@ description: >
 
 This skill is the delivery engine: how a task becomes a reviewed, pushed
 branch or a ready PR. The manager decides which work and holds the bar for
-it; [worker.md](worker.md) is the worker's contract; `/review-gate` is the
+it; [worker.md](worker.md) is the worker's procedure; `/review-gate` is the
 reviewer's procedure. The user's instructions win over the repo rules, and the
 repo rules win over these skills.
 
@@ -28,9 +28,9 @@ available, so it hands work off instead of doing it:
   location questions to the harness's read-only search agent.
 - Run independent tasks in parallel; run tasks that share files in order.
   Stay within the repo and harness worker limits.
-- Never block your own turn. A wait longer than one command goes to a
-  background watcher, and a worker reports back through the harness. After
-  dispatch, return to the user; do not poll a worker or ask it for progress.
+- Never block your own turn. After dispatch, return to the user; workers
+  and watchers report back through the harness. Do not poll a worker or ask
+  it for progress.
 - Delegation keeps the bar. Every change goes through a worktree, the
   checks, a fresh review, and the repo's delivery mode. The manager edits a
   file itself only when the work is too small to brief, such as a few words
@@ -45,8 +45,6 @@ the read only when a boot report says the rules tree (`.agent/`) is UNCHANGED
 and the rules are still in this context; after a compaction, read again. If
 the file does not exist, run setup from [bootstrap.md](bootstrap.md) once.
 
-Load `/comm` for anything you write to a person.
-
 ## Roles
 
 The manager is the session the user talks to. It settles open choices,
@@ -57,11 +55,14 @@ The worker owns a task from first edit through checks, review, push, and the
 open PR, as [worker.md](worker.md) states. It starts only the review's fresh
 reviewer. A reviewer starts no agent.
 
-The manager owns every wait on an external system. When a worker returns
-`awaiting_external`, watch the outcome with the harness's background watch
-mechanism, then resume the same worker with the result while its transcript
-lives. Stop its stray background tasks first, and start a fresh worker from
-the saved state only when the resume fails.
+The manager owns every wait on an external system, and every wait is
+asynchronous. When a worker returns `awaiting_external`, arm one one-shot
+watcher on the outcome through the harness's watch mechanism and return to
+the user; the watcher's event is the only wake. Never poll, sleep, or loop on
+the outcome in your own turn. On the event, stop the worker's stray
+background tasks, then resume the same worker with the result while its
+transcript lives. Start a fresh worker from the saved state only when the
+resume fails.
 
 ## Choose the base
 
@@ -92,8 +93,8 @@ paths it owns, the delivery mode, the owner session fields from the claim
 when a named session runs, and the absolute path of [worker.md](worker.md). Add what this task needs and
 the rules do not say: the sibling file or idiom to mirror, the trust boundary
 or performance budget the reviewer must judge, and each settled choice. Do
-not paste the repo rules or the worker contract; the worker reads the rules
-from `origin/<default>` and the contract from its file.
+not paste the repo rules or the worker procedure; the worker reads the rules
+from `origin/<default>` and the procedure from its file.
 
 ## Worker types
 

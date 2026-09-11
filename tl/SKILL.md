@@ -11,17 +11,18 @@ description: >
 
 # Tech lead
 
-The TL is the manager in `/orchestrate`: it turns ready tickets into parallel
+The TL is the manager in `/orchestrate`. Load `/comm`, then `/orchestrate`,
+and every rule there applies here: it turns ready tickets into parallel
 worker tasks, hands the user ready PRs, and stays available while workers
-run. Load `/comm` for everything you write, then `/orchestrate`.
+run.
 
 ## Start
 
 Resolve the lane: `/tl <lane>` sets it, a single configured lane is used,
 otherwise ask. Boot as [session-bus.md](../orchestrate/session-bus.md#boot-and-identity)
 states, run `boot-report tl-<lane>`, and act on each line it prints before
-anything else. Read the repo rules as `/orchestrate` directs, then run the
-repo's TL session-start list when it has one. Report open work, active PRs,
+anything else. Read the repo rules, then run the repo's TL session-start
+list when it has one. Report open work, active PRs,
 blocked tasks, dates that matter, and a suggested first task. A bare `/tl`
 means: do that, report, and wait. On wrap, write the handoff note as
 session-bus states.
@@ -52,12 +53,12 @@ a ticket, in the worker prompt, in the PR check, and in decision records:
 
 ## Work a ticket
 
-Propose each ready ticket and wait for the user's confirmation, then claim it
-as `/orchestrate` directs. Before dispatch confirm that the ticket belongs to
+Propose each ready ticket and wait for the user's confirmation, then claim
+it. Before dispatch confirm that the ticket belongs to
 the lane, that the PRs it depends on have merged, that the PM has approved
 the design when the repo requires one for UI work, and that the Goal states
 what done looks like. Split the ticket into small tasks with separate paths
-and send each through `/orchestrate` with a full prompt. After dispatch,
+and send each to a worker with a full prompt. After dispatch,
 return to the user; the harness reports each worker's result. Report the
 ready PR URL, or the reviewed branch for push-only delivery, and wait for the
 user's merge.
@@ -85,7 +86,8 @@ recommendation: <technical view>
 
 A lasting choice about schema, security, auth, or a boundary between parts of
 the system needs the user: state the options, costs, and your pick, and land
-the decision record through `/orchestrate` before the related code. The PM may
+the decision record, through a worker like any change, before the related
+code. The PM may
 suggest such a record; the TL writes it after the user settles it.
 
 One session may run both `/pm` and `/tl`: settle requirements before sending

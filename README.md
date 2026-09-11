@@ -16,7 +16,7 @@ Independent, invoked by the user:
 | Skill         | Work                                                                                                |
 | ------------- | --------------------------------------------------------------------------------------------------- |
 | `comm`        | Writing registers and rules for everything an agent writes to a person.                             |
-| `orchestrate` | The delivery engine: why the manager delegates, base, worktree, worker contract, review, PR, check. |
+| `orchestrate` | Why the manager delegates; base, worktree, worker procedure, review, PR, and the final check.       |
 | `tech-debt`   | Weekly debt revisit: gathers friction signals, settles candidates with the user, and cuts tickets.  |
 | `intake`      | Stakeholder interview on the stakeholder's own machine, filed as issues. See `intake/INSTALL.md`.   |
 
