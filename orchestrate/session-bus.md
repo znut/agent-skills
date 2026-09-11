@@ -56,9 +56,19 @@ Before a normal handoff, stop the old workers and watchers, save their branch,
 record quiescence evidence, and `release` the ticket. The next owner claims only
 after the user's confirmation. Never infer quiescence from idle time or a dead shell.
 
-Wrap writes the returned notes path (state only, at most 40 lines). Explicit
-`end` refuses outstanding claims and pending inbox work. No extra branch evidence is required after ownership has been released. History and inbox archives remain in
+Wrap follows [Wrap](#wrap). No extra branch evidence is required after ownership has been released. History and inbox archives remain in
 the old generation directory, so a reused name receives no old mail.
+
+## Wrap
+
+When the user says wrap, run these in order and report each result:
+
+1. Stop every worker and watcher this session started; name a worker still running and wait for it.
+2. `release` each claim with `--quiescence` (the merged SHA or the pushed tip, and that no worker or watcher remains) and `--branch`.
+3. Sweep the inbox: act on or forward each pending message, then `archive-message`; `end` refuses while one is pending.
+4. Overwrite the returned notes path with the state the next boot needs: at most 40 lines, no history.
+5. Save the day's lessons to memory, one index line each.
+6. `end` with `--generation`. It refuses on a live claim or pending inbox: fix, retry. The harness Stop guard stands down once no active registration exists for the session; a later `boot` mints a new generation and may return a different name.
 
 ## Routing and consumption
 

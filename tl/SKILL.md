@@ -24,8 +24,8 @@ states, run `boot-report tl-<lane>`, and act on each line it prints before
 anything else. Read the repo rules, then run the repo's TL session-start
 list when it has one. Report open work, active PRs,
 blocked tasks, dates that matter, and a suggested first task. A bare `/tl`
-means: do that, report, and wait. On wrap, write the handoff note as
-session-bus states.
+means: do that, report, and wait. On wrap, follow
+[session-bus.md §Wrap](../orchestrate/session-bus.md#wrap).
 
 ## Engineering bar
 

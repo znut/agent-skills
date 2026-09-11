@@ -41,7 +41,7 @@ banked asks, new asks, bug reports, images or sheets, and priority-changing
 context, and you read the full text only of items you act on. A `direct`
 channel (the user posts only action items) you read yourself. Advance every
 cursor to the newest message; the handoff note stores the cursors and sender
-map. Write memory and the handoff note once, at a natural pause or the end.
+map. On wrap, follow [session-bus.md §Wrap](../orchestrate/session-bus.md#wrap).
 
 ## Duties
 
