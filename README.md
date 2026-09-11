@@ -16,7 +16,7 @@ Independent, invoked by the user:
 | Skill         | Work                                                                                                |
 | ------------- | --------------------------------------------------------------------------------------------------- |
 | `comm`        | Writing registers and rules for everything an agent writes to a person.                             |
-| `orchestrate` | The delivery engine: base, worktree, worker, fresh review, push, PR, and the final check.           |
+| `orchestrate` | The delivery engine: why the manager delegates, base, worktree, worker contract, review, PR, check. |
 | `tech-debt`   | Weekly debt revisit: gathers friction signals, settles candidates with the user, and cuts tickets.  |
 | `intake`      | Stakeholder interview on the stakeholder's own machine, filed as issues. See `intake/INSTALL.md`.   |
 
@@ -25,7 +25,7 @@ Composed on top of `comm` and `orchestrate`:
 | Skill | Work                                                                                              |
 | ----- | ------------------------------------------------------------------------------------------------- |
 | `pm`  | Settles product choices, updates product docs, creates tickets, and gives ready work to the TL.   |
-| `tl`  | Checks ready tickets, sends engineering tasks, checks PRs, and owns engineering decision records. |
+| `tl`  | Holds the engineering bar (YAGNI, DRY, performance, OWASP), sends tasks, checks PRs, owns ADRs.  |
 
 Loaded by a fresh reviewer that a worker starts, not typed by the user:
 

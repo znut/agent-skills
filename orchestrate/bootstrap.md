@@ -55,7 +55,7 @@ branch, so the setup agent delivers the first rules itself:
 4. Commit, then start the declared reviewer type on that worktree with the
    reviewed SHA, the approved answers, the changed paths, and generic checks,
    because the remote default branch has no rules yet. The review ladder is
-   `/orchestrate`'s.
+   the one in [worker.md](worker.md#review-and-delivery).
 5. After `PASS`, push and deliver through the chosen mode. Never merge.
 
 Once the user merges the rules, normal runs read `.agent/orchestrate.md`.

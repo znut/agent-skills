@@ -129,7 +129,7 @@ send work. Read each new ticket number from the create command output.
 
 ## Worker code rules
 
-Copy these lines without changing their words into every worker prompt:
+The worker reads these from `origin/<default>`; the prompt links, never pastes:
 
 - `<banned API or required shared library>`
 - `<style rule>`
