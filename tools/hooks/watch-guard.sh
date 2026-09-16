@@ -5,8 +5,9 @@
 # Self-scoping: the gate keys on scripts/watch-lane.sh existing in the
 # session's cwd; every other repo exits 0 immediately. Role-scoping: only
 # sessions with a /tmp/cc-session-roles marker are gated, each against ITS
-# OWN role's watcher. Fail-open: missing cwd, unreadable input, or
-# stop_hook_active -> allow.
+# OWN role's watcher. In a repo that declares `named_sessions: required`,
+# only the registry decides; the marker fallback serves repos without that
+# line. Fail-open: missing cwd, unreadable input, or stop_hook_active -> allow.
 # Repo opt-out: `- watch_guard: off` under `## Hook settings` in
 # .agent/orchestrate.md.
 
@@ -44,6 +45,8 @@ if [ -n "$sid" ]; then
 	else
 		code=$?
 		if [ "$code" -ne 3 ]; then printf '%s\n' "$named" >&2; exit 2; fi
+		# named_sessions: required → the registry alone decides; no active registration (ended, worker, ad-hoc) = nothing to guard.
+		command grep -qE '^[[:space:]]*-[[:space:]]*named_sessions:[[:space:]]*required([[:space:]]|$)' "$cwd/.agent/orchestrate.md" 2>/dev/null && exit 0
 	fi
 fi
 [ -n "$role" ] || exit 0
