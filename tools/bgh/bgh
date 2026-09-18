@@ -95,6 +95,10 @@ fi
 # stranger's comment id and the watcher would swallow that real event. The
 # role comes from the marker boot-report writes for the session, the dir from
 # `git config agent.self-events-dir`. An explicit BGH_SELF_LOG always wins.
+#
+# A named session's watcher reads its OWN per-generation self-events dir, not
+# the shared role dir, so a matching `agent-session current` registration
+# wins over the role-based dir; any lookup trouble falls back to it instead.
 if [ -z "${BGH_SELF_LOG:-}" ]; then
 	posting=""
 	case " $* " in
@@ -126,7 +130,37 @@ if [ -z "${BGH_SELF_LOG:-}" ]; then
 					role=$(cat "${role_marker_dir}/${derive_session_id}" 2>/dev/null || true)
 					if [ -n "$sev_dir" ] && [ -n "$role" ]; then
 						case $sev_dir in "~/"*) sev_dir=$HOME/${sev_dir#"~/"} ;; esac
-						mkdir -p "$sev_dir" 2>/dev/null && BGH_SELF_LOG="$sev_dir/$role.ids"
+						# Ask the registry for THIS session's named registration; a
+						# match wins with its own self-events dir, bounded and
+						# stdin-safe so a stuck lookup never blocks the gh call.
+						named_dir=""
+						tool=${AGENT_SESSION_TOOL:-}
+						[ -n "$tool" ] || tool=$(command -v agent-session 2>/dev/null || true)
+						if [ -z "$tool" ]; then
+							sib=$(dirname "$self")/../agent-session
+							[ -x "$sib" ] && tool=$sib || true
+						fi
+						if [ -n "$tool" ]; then
+							# A pipe (command substitution) blocks on any grandchild
+							# the timed-out tool leaves holding stdout open; a plain
+							# temp file has no such reader-side wait.
+							named_out=$(mktemp 2>/dev/null) || named_out="/tmp/bgh-self-log.$$"
+							perl -e 'alarm($ARGV[0]); exec(@ARGV[1..$#ARGV]) or exit 1;' -- 3 "$tool" current </dev/null >"$named_out" 2>/dev/null || true
+							named_json=$(cat "$named_out" 2>/dev/null || true)
+							rm -f "$named_out"
+							if [ -n "$named_json" ]; then
+								named_dir=$(printf '%s' "$named_json" | jq -r --arg role "$role" '
+									(if .session.role == "pm" then "pm" else "tl-" + (.session.lane // "") end) as $expected
+									| if $expected == $role then (.session.paths.self_events // "") else "" end
+								' 2>/dev/null || true)
+								case $named_dir in /*) ;; *) named_dir="" ;; esac
+							fi
+						fi
+						if [ -n "$named_dir" ]; then
+							mkdir -p "$named_dir" 2>/dev/null && BGH_SELF_LOG="$named_dir/$role.ids"
+						else
+							mkdir -p "$sev_dir" 2>/dev/null && BGH_SELF_LOG="$sev_dir/$role.ids"
+						fi
 					fi ;;
 			esac
 		fi

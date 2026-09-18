@@ -150,6 +150,107 @@ printf '%s' "tl-lane" > "/tmp/codex-session-roles/test-codex-session"
 )
 assert_id_logged "$sev_dir/tl-lane.ids"
 
+# (n) named registration match: log to ITS self-events dir, not the role dir --
+echo "--- case (n): named registration match logs to its own dir ---"
+reset_sev
+named_dir="$tmp/named-self-events"
+mkdir -p "$named_dir"
+mkdir -p /tmp/pi-session-roles
+printf '%s\n' "tl-lane" > "/tmp/pi-session-roles/test-pi-session"
+cat > "$tmp/bin/agent-session-stub-match" <<EOF
+#!/bin/sh
+printf '%s\n' '{"ok":true,"session":{"role":"tl","lane":"lane","paths":{"self_events":"$named_dir"}}}'
+EOF
+chmod +x "$tmp/bin/agent-session-stub-match"
+(
+	unset CLAUDE_CODE_SESSION_ID || true
+	export PI_SESSION_ID="test-pi-session"
+	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-match"
+	run_bgh pr comment 1 --body "hello"
+)
+assert_id_logged "$named_dir/tl-lane.ids"
+assert_id_not_logged "$sev_dir/tl-lane.ids"
+
+# (o) named lookup: no active registration (exit 3) falls back --------------
+echo "--- case (o): stub exits 3, falls back to role-based path ---"
+reset_sev
+cat > "$tmp/bin/agent-session-stub-noreg" <<'EOF'
+#!/bin/sh
+echo '{"ok":false,"code":3,"error":"No active named registration"}' >&2
+exit 3
+EOF
+chmod +x "$tmp/bin/agent-session-stub-noreg"
+(
+	unset CLAUDE_CODE_SESSION_ID || true
+	export PI_SESSION_ID="test-pi-session"
+	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-noreg"
+	run_bgh pr comment 1 --body "hello"
+)
+assert_id_logged "$sev_dir/tl-lane.ids"
+
+# (p) named lookup: stub hangs -- bounded, falls back, gh call still succeeds -
+echo "--- case (p): stub hangs, falls back and gh call still succeeds ---"
+reset_sev
+cat > "$tmp/bin/agent-session-stub-hang" <<'EOF'
+#!/bin/sh
+sleep 60
+EOF
+chmod +x "$tmp/bin/agent-session-stub-hang"
+start=$(date +%s)
+(
+	unset CLAUDE_CODE_SESSION_ID || true
+	export PI_SESSION_ID="test-pi-session"
+	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-hang"
+	out=$(run_bgh pr comment 1 --body "hello")
+	case $out in *issuecomment*) ;; *) echo "FAIL: gh call did not succeed while stub hung" >&2 ;; esac
+)
+elapsed=$(( $(date +%s) - start ))
+assert_id_logged "$sev_dir/tl-lane.ids"
+if [ "$elapsed" -le 10 ]; then
+	echo "PASS: bounded wait (${elapsed}s)"
+else
+	echo "FAIL: hang was not bounded (${elapsed}s)"; ((failures++)) || true
+fi
+
+# (p2) named lookup: stub prints garbage, falls back ------------------------
+echo "--- case (p2): stub prints garbage, falls back to role-based path ---"
+reset_sev
+cat > "$tmp/bin/agent-session-stub-garbage" <<'EOF'
+#!/bin/sh
+printf 'not json at all\n'
+EOF
+chmod +x "$tmp/bin/agent-session-stub-garbage"
+(
+	unset CLAUDE_CODE_SESSION_ID || true
+	export PI_SESSION_ID="test-pi-session"
+	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-garbage"
+	run_bgh pr comment 1 --body "hello"
+)
+assert_id_logged "$sev_dir/tl-lane.ids"
+
+# (q) a read-shaped call never invokes the named-session lookup -------------
+echo "--- case (q): read-shaped call never invokes agent-session ---"
+reset_sev
+called_flag="$tmp/stub-called"
+rm -f "$called_flag"
+cat > "$tmp/bin/agent-session-stub-recorder" <<EOF
+#!/bin/sh
+touch "$called_flag"
+printf '%s\n' '{"ok":true,"session":{"role":"tl","lane":"lane","paths":{"self_events":"$named_dir"}}}'
+EOF
+chmod +x "$tmp/bin/agent-session-stub-recorder"
+(
+	unset CLAUDE_CODE_SESSION_ID || true
+	export PI_SESSION_ID="test-pi-session"
+	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-recorder"
+	run_bgh api "repos/x/y/issues"
+)
+if [ -f "$called_flag" ]; then
+	echo "FAIL: agent-session invoked on a read-shaped call"; ((failures++)) || true
+else
+	echo "PASS: agent-session not invoked on a read-shaped call"
+fi
+
 # (g) ready check declared and failing: refuse, gh not called ----------------
 echo "--- case (g): ready check fails ---"
 cat > "$tmp/check-fail" <<'EOF'

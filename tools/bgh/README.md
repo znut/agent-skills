@@ -52,8 +52,16 @@ failure the agent reads and acts on.
 watcher can skip its own echoes. Set `BGH_SELF_LOG=<file>` explicitly, or let
 `bgh` derive it: for posting-shaped calls it reads the role from the session's
 marker, `/tmp/<cc|pi|codex>-session-roles/<session id>`, which `boot-report`
-writes at every PM and TL boot, and appends to
-`<agent.self-events-dir>/<role>.ids`.
+writes at every PM and TL boot.
+
+A named session's watcher reads its own per-generation self-events dir, not
+the shared role dir, so `bgh` asks `agent-session current` (`AGENT_SESSION_TOOL`
+env, else `agent-session` on PATH, else the sibling `tools/agent-session`)
+whether this session has a live registration whose role/lane matches the
+marker; a match logs to `<paths.self_events>/<role>.ids` instead. The lookup
+runs with stdin from `/dev/null` and a bounded wait (a few seconds); a
+timeout, non-zero exit, malformed JSON, non-absolute path, or a mismatched
+role/lane falls back to `<agent.self-events-dir>/<role>.ids` as before.
 
 Posting-shaped calls are `pr comment`, `issue comment`, `pr review`, and `api`
 calls to comments/reviews endpoints using `POST` or `PATCH`. Path-unsafe
