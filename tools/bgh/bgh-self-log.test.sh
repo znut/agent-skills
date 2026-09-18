@@ -196,12 +196,13 @@ cat > "$tmp/bin/agent-session-stub-hang" <<'EOF'
 sleep 60
 EOF
 chmod +x "$tmp/bin/agent-session-stub-hang"
+hang_err="$tmp/hang.stderr"
 start=$(date +%s)
 (
 	unset CLAUDE_CODE_SESSION_ID || true
 	export PI_SESSION_ID="test-pi-session"
 	export AGENT_SESSION_TOOL="$tmp/bin/agent-session-stub-hang"
-	out=$(run_bgh pr comment 1 --body "hello")
+	out=$(run_bgh pr comment 1 --body "hello" 2>"$hang_err")
 	case $out in *issuecomment*) ;; *) echo "FAIL: gh call did not succeed while stub hung" >&2 ;; esac
 )
 elapsed=$(( $(date +%s) - start ))
@@ -210,6 +211,11 @@ if [ "$elapsed" -le 10 ]; then
 	echo "PASS: bounded wait (${elapsed}s)"
 else
 	echo "FAIL: hang was not bounded (${elapsed}s)"; ((failures++)) || true
+fi
+if [ -s "$hang_err" ]; then
+	echo "FAIL: unexpected stderr on a bounded timeout: $(cat "$hang_err")"; ((failures++)) || true
+else
+	echo "PASS: no stderr leaked on a bounded timeout"
 fi
 
 # (p2) named lookup: stub prints garbage, falls back ------------------------
