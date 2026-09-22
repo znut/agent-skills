@@ -57,7 +57,9 @@ Propose each ready ticket and wait for the user's confirmation, then claim
 it. Before dispatch confirm that the ticket belongs to
 the lane, that the PRs it depends on have merged, that the PM has approved
 the design when the repo requires one for UI work, and that the Goal states
-what done looks like. Split the ticket into small tasks with separate paths
+what done looks like. Read the PRD and ADR sections the Goal cites and check
+the Problem and the Done line still follow from them; a ticket they no longer
+support returns to the PM as outdated, never to a worker. Split the ticket into small tasks with separate paths
 and send each to a worker with a full prompt. After dispatch,
 return to the user; the harness reports each worker's result. Report the
 ready PR URL, or the reviewed branch for push-only delivery, and wait for the

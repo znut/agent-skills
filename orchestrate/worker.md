@@ -13,6 +13,9 @@ instructions win over the repo rules, and the repo rules win over this file.
 - Work only in the named worktree and paths. Never touch the main checkout,
   another worktree, or agent settings. A tool call the harness denies is not
   retried in another form; report it in the return.
+- Read the PRD and ADR sections the ticket cites before the first edit. A
+  Problem or Done line those sections no longer support means the ticket is
+  outdated: return `blocked` naming the section, build nothing.
 - Make one small change that satisfies the ticket. Test project logic, edge
   cases, and known bugs; do not test the framework. Comment only where the
   code cannot state the reason itself.
