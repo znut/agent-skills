@@ -124,7 +124,7 @@ These flags identify accountability; they are not authentication credentials.
 | `resolve` | `--name NAME` | `session` |
 | `claim` | `--ticket ID --confirmation REF [--resource KEY ...]` | `session,claim` |
 | `owner`, `check-owner` | exactly one of `--ticket ID`, `--pr ID` | `session,claim` |
-| `associate-pr` | `--ticket ID --pr ID` | `session,claim` |
+| `associate-pr` | `--ticket ID --pr ID` | `session,claim`; also appends `pr:<n>` to `paths.watchlist` (created if absent, never duplicated) so a lane watcher sees the PR without a re-arm |
 | `release` | `--ticket ID --quiescence REF --branch REF` | `session` |
 | `end` | none | ended `session` |
 | `send` | `--to NAME` or `--ticket ID [--triage NAME]`, `--subject TEXT --body-file PATH` | `messages` with recipient `session,id,path` |

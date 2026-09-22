@@ -161,7 +161,15 @@ try {
       const other = db.claims.find(c => c.prs.includes(pr));
       if (other && other !== c) fail(5, 'PR already associated', { owner: view(sessionByGeneration(other.generation)) });
       if (!c.prs.includes(pr)) c.prs.push(pr);
-      changed = true; result = { session: view(s), claim: c }; break;
+      changed = true; result = { session: view(s), claim: c };
+      const watchlist = paths(s).watchlist;
+      const line = `pr:${pr}`;
+      const existingLines = fs.existsSync(watchlist) ? fs.readFileSync(watchlist, 'utf8').split('\n') : [];
+      if (!existingLines.includes(line)) {
+        fs.mkdirSync(path.dirname(watchlist), { recursive: true, mode: 0o700 });
+        fs.appendFileSync(watchlist, line + '\n', { mode: 0o600 });
+      }
+      break;
     }
     case 'release': {
       const s = actor(); const c = db.claims.find(c => c.ticket === need('ticket')); owns(s, c);
