@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Renders the two launchd templates in tools/launchd/ into concrete plists
-# and installs them into ~/Library/LaunchAgents (or $LAUNCH_AGENTS_DIR, for
-# testing). Never runs `launchctl bootstrap` itself — it only prints the
+# Renders the launchd templates in tools/launchd/ into concrete plists
+# (gh-status, on-merge, and on-merge-gate — the last one runs a config's
+# optional `onMergeGate` list as its own job) and installs them into
+# ~/Library/LaunchAgents (or $LAUNCH_AGENTS_DIR, for testing). Never runs
+# `launchctl bootstrap` itself — it only prints the
 # commands, so nothing gets registered with launchd without a separate,
 # explicit step from you.
 #
@@ -60,18 +62,23 @@ render() {
 
 GH_STATUS_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.gh-status.plist"
 ON_MERGE_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.on-merge.plist"
+ON_MERGE_GATE_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.on-merge-gate.plist"
 
 render "$TOOLS_DIR/launchd/com.agent-tools.gh-status.plist.template" "$GH_STATUS_PLIST"
 render "$TOOLS_DIR/launchd/com.agent-tools.on-merge.plist.template" "$ON_MERGE_PLIST"
+render "$TOOLS_DIR/launchd/com.agent-tools.on-merge-gate.plist.template" "$ON_MERGE_GATE_PLIST"
 
 plutil -lint "$GH_STATUS_PLIST"
 plutil -lint "$ON_MERGE_PLIST"
+plutil -lint "$ON_MERGE_GATE_PLIST"
 
 echo
 echo "Rendered:"
 echo "  $GH_STATUS_PLIST"
 echo "  $ON_MERGE_PLIST"
+echo "  $ON_MERGE_GATE_PLIST"
 echo
 echo "Not installed yet — review the rendered plists, then run:"
 echo "  launchctl bootstrap gui/\$UID $GH_STATUS_PLIST"
 echo "  launchctl bootstrap gui/\$UID $ON_MERGE_PLIST"
+echo "  launchctl bootstrap gui/\$UID $ON_MERGE_GATE_PLIST   # only if this config uses onMergeGate"
