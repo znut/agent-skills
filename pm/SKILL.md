@@ -111,12 +111,19 @@ branches for its main terms. One ticket per part that can ship alone, in the
 repo's title form, with a body of exactly three sections:
 
 - `## Problem`: what is wrong or missing, with the date, incident, or user
-  need, in one to three sentences.
-- `## Goal`: the state after the change, stated so it is the acceptance a
-  reviewer checks; "Done = …" may be its last sentence. A schema change is
-  named here.
+  need, in one to three sentences. This is the one section the ticket owns.
+- `## Goal`: the PRD section that states how the user works after the change,
+  cited by file and section, plus one "Done = …" line naming what the user
+  sees on the demo. Engineering rules come from the ADR the Goal cites, never
+  restated: a ticket that names a column, a field, or a push payload goes
+  stale the day the rule moves (#3653 carried a share the price rule had
+  dropped). A ticket with no PRD or ADR states its Goal in one line.
 - `## Out of scope`: what this ticket does not change, with the reason or
   pointer.
+
+When a PRD or ADR section changes, grep the open tickets and the other
+decision records that cite it the same day and re-cut each one; the section
+is the source, the citations must follow it.
 
 An open question with an owner goes in `Out of scope` or becomes its own
 ticket. Milestone, labels, and board state are fields, not body text. Read
