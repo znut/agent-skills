@@ -1,24 +1,27 @@
 /**
  * on-merge — generic post-merge step runner.
  *
- * CLI: `bun tools/on-merge/run.mjs <configName>` — loads
- * $AGENT_TOOLS_HOME/config/<configName>.json and executes its `onMerge`
- * array in order. Meant to be triggered by a launchd WatchPaths agent
- * watching that config's gh-status events dir (see tools/launchd/), so it
- * fires shortly after the poller touches a `.merged` marker — not tied to
- * any single PR number: it means only that something changed.
+ * CLI: `bun tools/on-merge/run.mjs <configName> [listKey]` — loads
+ * $AGENT_TOOLS_HOME/config/<configName>.json and executes the named step
+ * array (default `onMerge`) in order. A second list runs as its own
+ * launchd job via the third ProgramArguments entry (tools/launchd/).
+ * Meant to be triggered by a launchd WatchPaths agent watching that
+ * config's gh-status events dir (see tools/launchd/), so it fires shortly
+ * after the poller touches a `.merged` marker — not tied to any single PR
+ * number: it means only that something changed.
  *
  * Step types:
  *   { type: "board-snapshot" }                     — runs board-snapshot for this config
  *   { type: "command", cmd: "...", cwd: "..." }     — runs a shell command (cwd accepts ~)
  *
- * Debounced as a whole run (skip all steps if the last run for this config
- * started < 60s ago) — WatchPaths can fire multiple times for one burst of
- * marker writes. Every step outcome is appended to
- * $AGENT_TOOLS_HOME/var/<name>/on-merge.log.
+ * Debounced as a whole run per list (skip all steps if the last run for
+ * this config's list started < 60s ago) — WatchPaths can fire multiple
+ * times for one burst of marker writes. Every step outcome is appended to
+ * $AGENT_TOOLS_HOME/var/<name>/on-merge.log (default list) or
+ * on-merge-<kebab-list-key>.log (any other list).
  */
 import { execSync } from "node:child_process"
-import { appendFileSync, existsSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { loadConfig, varDir } from "../lib/config.mjs"
 import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
@@ -61,29 +64,42 @@ async function runStep(config, step, logFile) {
 	appendLog(logFile, `${at} unknown-step-type(${step.type}) exit=1`)
 }
 
-export async function runOnMerge(config) {
+function kebabCase(key) {
+	return key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+}
+
+export async function runOnMerge(config, listKey = "onMerge") {
 	const dir = varDir(config.name)
-	const stateFile = join(dir, ".on-merge-last-run")
-	const logFile = join(dir, "on-merge.log")
+	const isDefault = listKey === "onMerge"
+	const stateFile = join(dir, isDefault ? ".on-merge-last-run" : `.on-merge-last-run-${listKey}`)
+	const logFile = join(dir, isDefault ? "on-merge.log" : `${kebabCase(listKey)}.log`)
+
+	const steps = config[listKey]
+	if (!Array.isArray(steps) || steps.length === 0) {
+		mkdirSync(dir, { recursive: true })
+		appendLog(logFile, `${new Date().toISOString()} no-steps(${listKey}) exit=0`)
+		return
+	}
 
 	if (isDebounced(stateFile)) {
-		console.log(`on-merge[${config.name}]: debounced (last run < 60s ago), skipping`)
+		console.log(`on-merge[${config.name}/${listKey}]: debounced (last run < 60s ago), skipping`)
 		return
 	}
 	writeAtomic(stateFile, `${Date.now()}\n`)
 
-	for (const step of config.onMerge ?? []) {
+	for (const step of steps) {
 		await runStep(config, step, logFile)
 	}
 }
 
 function main() {
 	const name = process.argv[2]
+	const listKey = process.argv[3] || "onMerge"
 	if (!name) {
-		console.error("usage: bun tools/on-merge/run.mjs <configName>")
+		console.error("usage: bun tools/on-merge/run.mjs <configName> [listKey]")
 		process.exit(1)
 	}
-	runOnMerge(loadConfig(name))
+	runOnMerge(loadConfig(name), listKey)
 }
 
 main()

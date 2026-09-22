@@ -100,6 +100,8 @@ local file — it never clones/commits/pushes.
 invocation, debounced as a whole run (skips all steps if the last run for
 that config started < 60s ago). Appends one line per step to
 `$AGENT_TOOLS_HOME/var/<name>/on-merge.log`: `<ISO time> <step> exit=<code>`.
+A second step-list key, passed as the third CLI argument (e.g. `onMergeGate`),
+runs in its own debounced job with its own log file.
 
 `main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
 the config's `mainHealth.steps` on the fetched default tip in a locked
