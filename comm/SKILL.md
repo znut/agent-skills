@@ -19,7 +19,7 @@ machine-read sweep lists.
 | --- | --- |
 | Chat reply | Result first, then what the reader must act on; 1–3 sentences unless asked for detail; tables only for real structure |
 | Decision record (ADR) | Declarative present; numbered sections; trade-offs stated; amend inline, history to archive | 
-| Product doc (PRD) | Focus on What, Why and goals without dictating the technical "how". |
+| Product doc (PRD) | Focus on What, Why and goals without dictating the technical "how". Cite other product docs and decision records only, never a ticket: tickets and code cite the PRD, not the reverse. |
 | Agent rules (`.agent/*.md`, skills, agent definitions) | Dense, imperative, rule + why inline, MUST/NEVER; a checklist is one-line bullets, each a BLOCK condition |
 
 ## Rules
@@ -28,7 +28,7 @@ machine-read sweep lists.
 2. **Rationale = one clause + pointer.** "X — Y breaks otherwise (#N)". A bare `(#N)` is not a reason; a paragraph is not a clause.
 3. **Bind it or delete it.** should / consider / prefer / might become a rule with a severity, or nothing. handle / manage / support / robust / covers become the specific verb. The overlay lists the sweep terms; the repo's checks enforce them.
 4. **One term, one meaning.** The overlay's canonical term, never a synonym — a synonym reads as a different concept. A new house term ships with its one-line glossary entry in the same change.
-5. **Owner on every open item.** An open question names who settles it and by when, or becomes a ticket with a link.
+5. **Owner on every open item.** An open question names who settles it and by when, or becomes a ticket with a link. In a product doc it is a row in the doc's `## Open questions` section (question · owner · by when), never a ticket link.
 6. **Limits are limits.** `## Not verified` holds only what was not tested; a known gap is a decision or an open question with an owner.
 7. **State once, link elsewhere.** A rule lives in one file; every other surface links to it by file and section — never "above", "below", "this file".
 8. **A style pass keeps every constraint.** Every SHA, path, flag, term and `#N` survives an edit. A doc read every session states only what IS: a dead fact goes, a tempting dead-end becomes a ban with its why.
