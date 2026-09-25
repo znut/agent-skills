@@ -54,21 +54,23 @@ trap 'rm -f "$LOCK"' EXIT
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$VAR/run.log"; }
 
-# Failing test names from one step's log: vitest prints
-# ` FAIL  <file> > <describe> > <test>`; ANSI-stripped and `>` swapped for
-# `›`. Unparseable lines (no FAIL prefix, e.g. `× <test>` summaries) skip.
+# `bunx turbo run <task>` prefixes every line with `<pkg>:<task>: `; strip
+# it and capture pkg. msg comes first: a leading tab (empty pkg) is IFS
+# whitespace and `read` would strip it, merging the fields.
 parse_fails() {
 	sed -E 's/\x1b\[[0-9;]*m//g' "$1" \
-		| grep -E '^[[:space:]]*FAIL[[:space:]]+\S' \
-		| sed -E 's/^[[:space:]]*FAIL[[:space:]]+//; s/ > / › /g'
+		| sed -nE 's/^(([[:alnum:]@\/_.-]+):[[:alnum:]_-]+: )?[[:space:]]*FAIL[[:space:]]+([^[:space:]].*)$/\3\t\2/p' \
+		| sed -E 's/ > / › /g'
 }
 
-# Log each failing test name found in $2's log; also collect into FAILING[]
-# when $3 is "keep" (the final, post-retry attempt).
+# Log each failing test name found in $2's log ("<ts> <step>: FAIL [<pkg>]
+# <test>"); also collect into FAILING[] when $3 is "keep" (the final,
+# post-retry attempt).
 record_fails() {
-	local step="$1" out="$2" m
-	while IFS= read -r m; do
-		[ -n "$m" ] || continue
+	local step="$1" out="$2" msg pkg
+	while IFS=$'\t' read -r msg pkg; do
+		[ -n "$msg" ] || continue
+		local m="${pkg:+$pkg }$msg"
 		log "$step: FAIL $m"
 		[ "${3:-}" = keep ] && FAILING+=("$step: $m")
 	done < <(parse_fails "$out")
@@ -144,6 +146,7 @@ run_pass() {
 		fi
 		record_fails "$name" "$step_log"
 		log "$name: fail — retrying once"
+		cp "$step_log" "$run_dir/step-$name.attempt1.log" 2>/dev/null
 		if run_bounded "$step_log" "$cmd"; then
 			STEPS="$STEPS\"$name\": \"ok(retry)\", "
 			log "$name: ok on retry"
