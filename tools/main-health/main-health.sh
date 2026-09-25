@@ -59,7 +59,7 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$VAR/run.log"
 # whitespace and `read` would strip it, merging the fields.
 parse_fails() {
 	sed -E 's/\x1b\[[0-9;]*m//g' "$1" \
-		| sed -nE 's/^(([[:alnum:]@\/_.-]+):[[:alnum:]_-]+: )?[[:space:]]*FAIL[[:space:]]+(.*)$/\3\t\2/p' \
+		| sed -nE 's/^(([[:alnum:]@\/_.-]+):[[:alnum:]_-]+: )?[[:space:]]*FAIL[[:space:]]+([^[:space:]].*)$/\3\t\2/p' \
 		| sed -E 's/ > / › /g'
 }
 
