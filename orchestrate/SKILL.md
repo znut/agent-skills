@@ -64,6 +64,18 @@ background tasks, then resume the same worker with the result while its
 transcript lives. Start a fresh worker from the saved state only when the
 resume fails.
 
+## Pinned asks
+
+Every question or decision the manager puts to the user also goes to the
+harness's pinned-asks surface as one line (`#N short ask?`, ≤~100 chars) —
+chat scrolls out of view while the user works elsewhere, and the pin keeps
+the ask visible next to the prompt. Delete the line the moment the user
+answers; on wrap, empty the file
+([session-bus.md §Wrap](session-bus.md#wrap)). Claude Code: write to
+`~/.claude/session-asks/<CLAUDE_CODE_SESSION_ID>`; the user's status line
+renders up to 5 lines. A harness with no pinned-asks surface: skip the file,
+the rule is a no-op there.
+
 ## Choose the base
 
 Fetch, then start from whichever of local `<default>` and `origin/<default>`
