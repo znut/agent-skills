@@ -64,6 +64,17 @@ background tasks, then resume the same worker with the result while its
 transcript lives. Start a fresh worker from the saved state only when the
 resume fails.
 
+## Pinned asks
+
+Every question or decision the manager puts to the user also goes as one
+line (`#N short ask?`, ≤~100 chars) to `<state>/asks/<session-id>` — `<state>`
+per [session-bus.md §Boot and identity](session-bus.md#boot-and-identity),
+`<session-id>` the same stable ID `agent-session` uses there. Chat scrolls
+out of view while the user works elsewhere; the file lets each harness pin
+the ask near the prompt where its own UI allows. Delete the line the moment
+the user answers; on wrap, empty the file
+([session-bus.md §Wrap](session-bus.md#wrap)).
+
 ## Choose the base
 
 Fetch, then start from whichever of local `<default>` and `origin/<default>`
