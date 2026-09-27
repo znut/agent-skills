@@ -67,7 +67,7 @@ When the user says wrap, run these in order and report each result:
 2. `release` each claim with `--quiescence` (the merged SHA or the pushed tip, and that no worker or watcher remains) and `--branch`.
 3. Sweep the inbox: act on or forward each pending message, then `archive-message`; `end` refuses while one is pending.
 4. Overwrite the returned notes path with the state the next boot needs: at most 40 lines, no history.
-5. Empty the [pinned-asks](SKILL.md#pinned-asks) file, if the harness has one.
+5. Empty the [pinned-asks](SKILL.md#pinned-asks) file.
 6. Save the day's lessons to memory, one index line each.
 7. `end` with `--generation`. It refuses on a live claim or pending inbox: fix, retry. The harness Stop guard stands down once no active registration exists for the session; a later `boot` mints a new generation and may return a different name.
 
