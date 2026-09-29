@@ -5,9 +5,8 @@
 # Self-scoping: the gate keys on scripts/watch-lane.sh existing in the
 # session's cwd; every other repo exits 0 immediately. Role-scoping: only
 # sessions with a /tmp/cc-session-roles marker are gated, each against ITS
-# OWN role's watcher. In a repo that declares `named_sessions: required`,
-# only the registry decides; the marker fallback serves repos without that
-# line. Fail-open: missing cwd, unreadable input, or stop_hook_active -> allow.
+# OWN role's watcher. Fail-open: missing cwd, unreadable input, or
+# stop_hook_active -> allow.
 # Repo opt-out: `- watch_guard: off` under `## Hook settings` in
 # .agent/orchestrate.md.
 
@@ -29,26 +28,6 @@ command grep -qE '^[[:space:]]*-[[:space:]]*watch_guard:[[:space:]]*off' "$cwd/.
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 role=""
 case "$sid" in ""|*/*|*..*) ;; *) role=$(cat "/tmp/cc-session-roles/$sid" 2>/dev/null || true) ;; esac
-# A registered generation must match its own watcher, even without a role marker.
-script_dir=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
-if [ -n "$sid" ]; then
-	if named=$(cd "$cwd" && bun "$script_dir/../agent-session.mjs" current --session-id "$sid" --harness claude 2>&1); then
-		generation=$(printf '%s' "$named" | jq -r .session.generation)
-		name=$(printf '%s' "$named" | jq -r .session.name)
-		if ps -axo command= | awk -v generation="$generation" '
-			{ watch=0; owner=0; for(i=1;i<=NF;i++) {
-				if($i ~ /(^|\/)watch-lane\.sh$/) watch=1;
-				if($i == "--generation" && $(i+1) == generation) owner=1;
-			} if(watch && owner) found=1 } END {exit !found}'; then exit 0; fi
-		echo "watch-guard: no watcher armed for $name generation $generation; re-arm with --generation $generation after consuming its inbox" >&2
-		exit 2
-	else
-		code=$?
-		if [ "$code" -ne 3 ]; then printf '%s\n' "$named" >&2; exit 2; fi
-		# named_sessions: required → the registry alone decides; no active registration (ended, worker, ad-hoc) = nothing to guard.
-		command grep -qE '^[[:space:]]*-[[:space:]]*named_sessions:[[:space:]]*required([[:space:]]|$)' "$cwd/.agent/orchestrate.md" 2>/dev/null && exit 0
-	fi
-fi
 [ -n "$role" ] || exit 0
 
 if pgrep -f "watch-lane.sh $role" > /dev/null 2>&1; then

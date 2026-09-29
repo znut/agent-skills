@@ -19,12 +19,11 @@ run.
 ## Start
 
 Resolve the lane: `/tl <lane>` sets it, a single configured lane is used,
-otherwise ask. Boot as [session-bus.md](../orchestrate/session-bus.md#boot-and-identity)
-states, run `boot-report tl-<lane>`, and act on each line it prints before
-anything else. Read the repo rules, then run the repo's TL session-start
-list when it has one. Report open work, active PRs,
-blocked tasks, dates that matter, and a suggested first task. A bare `/tl`
-means: do that, report, and wait. On wrap, follow
+otherwise ask. One TL runs each lane at a time. Run `boot-report tl-<lane>`
+and act on each line it prints before anything else. Read the repo rules, then
+run the repo's TL session-start list when it has one. Report open work, active
+PRs, blocked tasks, dates that matter, and a suggested first task. A bare
+`/tl` means: do that, report, and wait. On wrap, follow
 [session-bus.md §Wrap](../orchestrate/session-bus.md#wrap).
 
 ## Engineering bar
@@ -53,8 +52,8 @@ a ticket, in the worker prompt, in the PR check, and in decision records:
 
 ## Work a ticket
 
-Propose each ready ticket and wait for the user's confirmation, then claim
-it. Before dispatch confirm that the ticket belongs to
+Propose each ready ticket and wait for the user's confirmation. Before
+dispatch confirm that the ticket belongs to
 the lane, that the PRs it depends on have merged, that the PM has approved
 the design when the repo requires one for UI work, and that the Goal states
 what done looks like. Read the PRD and ADR sections the Goal cites and check
