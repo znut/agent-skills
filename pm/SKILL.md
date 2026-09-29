@@ -17,10 +17,7 @@ the repo rules, and the repo rules win over these skills.
 
 ## Start
 
-Follow the [named-session boot](../orchestrate/session-bus.md#boot-and-identity):
-run `agent-session boot --role pm`, announce the returned name and PM role,
-keep the session ID, harness, generation, and paths through compaction until
-an explicit end, and run `boot-report pm`.
+Run `boot-report pm`.
 
 Act on the report before anything else: `Rules freshness` UNCHANGED means no
 rules read; fold the `Handoff note` into the ready report; on `Memory index`

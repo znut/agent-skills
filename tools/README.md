@@ -26,8 +26,6 @@ tools/
   main-health/                post-merge suite runner on the default tip;
                               steps come from the config's mainHealth block
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
-  agent-session(.mjs)         named PM/TL sessions: boot, claims, inbox
-                              (contract in orchestrate/session-bus.md)
   hooks/                      Claude Code Stop hook: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```

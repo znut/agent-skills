@@ -68,8 +68,9 @@ resume fails.
 
 Every question or decision the manager puts to the user also goes as one
 line (`#N short ask?`, ≤~100 chars) to `<state>/asks/<session-id>` — `<state>`
-per [session-bus.md §Boot and identity](session-bus.md#boot-and-identity),
-`<session-id>` the same stable ID `agent-session` uses there. Chat scrolls
+per [session-bus.md §State directory](session-bus.md#state-directory),
+`<session-id>` the harness's own session ID (`CLAUDE_CODE_SESSION_ID`,
+`CODEX_THREAD_ID`, or `PI_SESSION_ID`). Chat scrolls
 out of view while the user works elsewhere; the file lets each harness pin
 the ask near the prompt where its own UI allows. Delete the line the moment
 the user answers; on wrap, empty the file
@@ -85,9 +86,6 @@ tip, not from the default branch.
 
 ## Before dispatch
 
-- A named session claims the ticket first, as [claims and handoffs](session-bus.md#claims-and-handoffs)
-  states. One confirmation covers every task the user named; do not ask again
-  per claim.
 - Search open PRs and remote branches for the ticket and feature terms. Stop
   and ask if the work already exists.
 - Settle choices that change scope or behavior. Never guess a product or
@@ -101,9 +99,8 @@ tip, not from the default branch.
 
 Give each worker: the ticket, the absolute worktree path, the base SHA, the
 paths it owns, the delivery mode, the path of the repo's worker rules
-(`.agent/orchestrate.md` unless the repo rules name a worker file), the owner
-session fields from the claim when a named session runs, and the absolute
-path of [worker.md](worker.md). Add what this task needs and
+(`.agent/orchestrate.md` unless the repo rules name a worker file), and the
+absolute path of [worker.md](worker.md). Add what this task needs and
 the rules do not say: the sibling file or idiom to mirror, the trust boundary
 or performance budget the reviewer must judge, and each settled choice. Do
 not paste the repo rules or the worker procedure; the worker reads the rules

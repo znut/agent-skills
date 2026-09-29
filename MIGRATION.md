@@ -73,8 +73,7 @@ Edit `.agent/orchestrate.md` against `templates/orchestrate.md`:
    `gh pr create` is no longer required by anything.
 7. Scripts that read a poller file the poller no longer writes switch to the
    timeline `events/pr-<n>.log`. Scripts that gate on a marker read the gate
-   result or verdict file instead. watch-lane must accept `--generation` for
-   named sessions.
+   result or verdict file instead.
 8. Writing overlay: the canonical term for the person the agents serve is
    your repo's word; the skills say "the user".
 
