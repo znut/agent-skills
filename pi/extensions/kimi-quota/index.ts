@@ -1,12 +1,12 @@
 /**
  * pi plan-quota extension
  *
- * Polls the Kimi Code and OpenAI Codex plan-usage endpoints and shows one
- * persistent footer segment:
+ * Polls the OpenAI Codex plan-usage endpoint and shows one persistent footer
+ * segment:
  *
- *   kimi 5h:54%(10:03am) wk:41%(sat 9:03pm) | oai 5h:78%(1:32am) wk:19%(tue 12:04am)
+ *   oai 5h:78%(1:32am) wk:19%(tue 12:04am)
  *
- * % = used, reset times in local tz. A provider turns warning-colored when a
+ * % = used, reset times in local tz. The segment turns warning-colored when a
  * window has <=15% left. Polls every QUOTA_POLL_SECONDS (default 60) plus a
  * throttled refresh after each agent turn.
  */
@@ -17,7 +17,6 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const STATUS_KEY = "plan-quota";
-const KIMI_USAGES_URL = "https://api.kimi.com/coding/v1/usages";
 const OPENAI_USAGES_URL = "https://chatgpt.com/backend-api/wham/usage";
 const FETCH_TIMEOUT_MS = 10_000;
 const TURN_REFRESH_MIN_MS = 20_000;
@@ -56,17 +55,6 @@ function readAuth(): Record<string, unknown> | null {
 	}
 }
 
-export function readKimiCredential(): string | null {
-	const auth = readAuth();
-	const entry = auth?.["kimi-coding"] as Record<string, unknown> | undefined;
-	if (!entry) return null;
-	if (typeof entry.key === "string" && entry.key.trim())
-		return entry.key.trim();
-	if (typeof entry.access === "string" && entry.access.trim())
-		return entry.access.trim();
-	return null;
-}
-
 export function readOpenAICredential(): OpenAICredential | null {
 	const auth = readAuth();
 	const entry = auth?.["openai-codex"] as Record<string, unknown> | undefined;
@@ -82,60 +70,12 @@ function toNum(v: unknown): number | null {
 	return Number.isFinite(n) ? n : null;
 }
 
-function windowMinutes(w: unknown): number | null {
-	if (typeof w !== "object" || w === null) return null;
-	const r = w as Record<string, unknown>;
-	const duration = toNum(r.duration);
-	const unit = String(r.timeUnit ?? r.time_unit ?? "").toUpperCase();
-	if (!duration) return null;
-	if (unit.includes("MINUTE")) return duration;
-	if (unit.includes("HOUR")) return duration * 60;
-	if (unit.includes("DAY")) return duration * 60 * 24;
-	if (unit.includes("WEEK")) return duration * 60 * 24 * 7;
-	return null;
-}
-
 function windowLabel(minutes: number): string {
 	if (minutes === 60 * 24 * 7) return "wk";
 	if (minutes % (60 * 24 * 7) === 0) return `${minutes / (60 * 24 * 7)}wk`;
 	if (minutes % (60 * 24) === 0) return `${minutes / (60 * 24)}d`;
 	if (minutes % 60 === 0) return `${minutes / 60}h`;
 	return `${minutes}m`;
-}
-
-function parseRow(v: unknown): QuotaWindow | null {
-	if (typeof v !== "object" || v === null) return null;
-	const r = v as Record<string, unknown>;
-	const limit = toNum(r.limit);
-	const usedRaw = toNum(r.used);
-	const remaining = toNum(r.remaining);
-	const used =
-		usedRaw ??
-		(limit !== null && remaining !== null ? limit - remaining : null);
-	if (limit === null || used === null) return null;
-	const reset = typeof r.resetTime === "string" ? r.resetTime : undefined;
-	return { used, limit, ...(reset ? { resetTime: reset } : {}) };
-}
-
-export function parseUsages(payload: unknown): QuotaSnapshot | null {
-	if (typeof payload !== "object" || payload === null) return null;
-	const r = payload as Record<string, unknown>;
-	const windows: { label: string; w: QuotaWindow }[] = [];
-
-	if (Array.isArray(r.limits)) {
-		for (const item of r.limits) {
-			if (typeof item !== "object" || item === null) continue;
-			const rec = item as Record<string, unknown>;
-			const mins = windowMinutes(rec.window);
-			const row = parseRow(rec.detail ?? rec);
-			if (!mins || !row) continue;
-			windows.push({ label: windowLabel(mins), w: row });
-		}
-	}
-	const weekly = parseRow(r.usage);
-	if (weekly) windows.push({ label: "wk", w: weekly });
-	if (windows.length === 0) return null;
-	return { windows, fetchedAt: Date.now() };
 }
 
 function parseOpenAIWindow(
@@ -277,7 +217,6 @@ export default function (pi: ExtensionAPI) {
 		setStatus: (key: string, text?: string) => void;
 		theme: any;
 	} | null = null;
-	const kimi: ProviderState = { lastGood: null, failures: 0 };
 	const openai: ProviderState = { lastGood: null, failures: 0 };
 
 	const renderProvider = (label: string, state: ProviderState) => {
@@ -293,7 +232,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ui) return;
 		ui.setStatus(
 			STATUS_KEY,
-			`${renderProvider("kimi", kimi)} ${ui.theme.fg("dim", "|")} ${renderProvider("oai", openai)}`,
+			renderProvider("oai", openai),
 		);
 	};
 
@@ -326,15 +265,7 @@ export default function (pi: ExtensionAPI) {
 		if (refreshInFlight) return refreshInFlight;
 		lastFetch = Date.now();
 		refreshInFlight = (async () => {
-			const kimiToken = readKimiCredential();
-			const refreshes = [
-				refreshProvider(
-					kimi,
-					KIMI_USAGES_URL,
-					kimiToken ? { Authorization: `Bearer ${kimiToken}` } : null,
-					parseUsages,
-				),
-			];
+			const refreshes: Promise<void>[] = [];
 			if (!openaiFromHeaders) {
 				const openaiCredential = readOpenAICredential();
 				refreshes.push(

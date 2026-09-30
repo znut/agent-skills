@@ -90,6 +90,3 @@ the system needs the user: state the options, costs, and your pick, and land
 the decision record, through a worker like any change, before the related
 code. The PM may
 suggest such a record; the TL writes it after the user settles it.
-
-One session may run both `/pm` and `/tl`: settle requirements before sending
-work, and wait for the user's approval of each merge.

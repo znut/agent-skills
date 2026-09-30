@@ -240,9 +240,7 @@ results directory.
 ## Install
 
 `tools/install.sh <name>` renders `com.agent-tools.main-ci.plist` with the
-gh-status plist. It boots out and removes the retired
-`com.agent-tools.on-merge` and `com.agent-tools.on-merge-gate` jobs when
-their plists are present, since main-ci replaces both.
+gh-status plist.
 
 ## Manual runs
 
