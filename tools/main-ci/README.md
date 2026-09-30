@@ -161,7 +161,7 @@ exported, so a config does not hard-code those paths. Steps run in the
 worktree. The preview commands add `MAIN_CI_PR`, `MAIN_CI_HEAD`,
 `MAIN_CI_BRANCH`, and `MAIN_CI_PREVIEW` (the preview worktree);
 `unaffected` adds `MAIN_CI_PRIOR` (the tip of the green it would carry) and
-`notify` adds `MAIN_CI_RESULT` (the result file), `MAIN_CI_LOG_ARCHIVE` (where that log survives the PR, below), and `MAIN_CI_SPEC` (the first
+`notify` adds `MAIN_CI_RESULT` (the result file), `MAIN_CI_LOG_ARCHIVE` (the directory that keeps that log under its attempt name once the PR retires, below), and `MAIN_CI_SPEC` (the first
 failing spec of that attempt's log, empty when it has none). `preview.cmd` runs in the
 preview worktree; `eligible`, `unaffected`, and `notify` run in the
 `origin-main` worktree, so they are the tip's code, not the PR's.

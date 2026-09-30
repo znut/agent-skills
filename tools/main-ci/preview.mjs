@@ -140,7 +140,7 @@ export function startPreviews(s, sha, env, runDir) {
 		// A failed notice waits for the next tip: an unroutable PR would cost a gh call every poll.
 		const marker = join(dir, `${pairOf(pr.head)}.notified`)
 		if (!p.notify || existsSync(marker)) return true
-		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`), MAIN_CI_SPEC: firstFailingSpec(result.log), MAIN_CI_LOG_ARCHIVE: result.log ? join(archiveDir(pr.number), basename(result.log)) : "" })
+		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`), MAIN_CI_SPEC: firstFailingSpec(result.log), MAIN_CI_LOG_ARCHIVE: archiveDir(pr.number) })
 		if (r.code === 0) writeFileSync(marker, "")
 		else s.log(`preview #${pr.number}: notify FAIL exit=${r.code} — ${lastLine(r.file)}`)
 		return true
