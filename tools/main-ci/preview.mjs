@@ -28,6 +28,17 @@ function lastLine(file) {
 	return readFileSync(file, "utf8").trim().split("\n").pop() || "no output"
 }
 
+// The first vitest/playwright "FAIL <file> > <test>" line of an attempt's log, ANSI stripped.
+function firstFailingSpec(file) {
+	if (!file) return ""
+	try {
+		const plain = readFileSync(file, "utf8").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+		return plain.match(/\bFAIL\s+(\S+ > .+)$/m)?.[1].trim() ?? ""
+	} catch {
+		return ""
+	}
+}
+
 /** Starts the preview gate for the run on `sha`; nothing runs before start(). */
 export function startPreviews(s, sha, env, runDir) {
 	const p = s.mc.preview
@@ -126,7 +137,7 @@ export function startPreviews(s, sha, env, runDir) {
 		// A failed notice waits for the next tip: an unroutable PR would cost a gh call every poll.
 		const marker = join(dir, `${pairOf(pr.head)}.notified`)
 		if (!p.notify || existsSync(marker)) return true
-		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`) })
+		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`), MAIN_CI_SPEC: firstFailingSpec(result.log) })
 		if (r.code === 0) writeFileSync(marker, "")
 		else s.log(`preview #${pr.number}: notify FAIL exit=${r.code} — ${lastLine(r.file)}`)
 		return true
@@ -181,7 +192,9 @@ export function startPreviews(s, sha, env, runDir) {
 		let log = ""
 		if (carried) green = true
 		else if (!conflict) {
-			log = join(dir, `${pair}.log`)
+			// Every attempt keeps its own log; a rerun after a deleted result is the next attempt.
+			const taken = readdirSync(dir).map((f) => f.match(new RegExp(`^${pair}\\.(\\d+)\\.log$`))?.[1])
+			log = join(dir, `${pair}.${Math.max(0, ...taken.filter(Boolean).map(Number)) + 1}.log`)
 			s.log(`preview #${n} ${pair}: start`)
 			green = (await jobs.exec(`preview #${n}`, p.cmd, { cwd: tree, env: prEnv(pr), file: log })) === 0
 		}

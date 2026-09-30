@@ -161,7 +161,8 @@ exported, so a config does not hard-code those paths. Steps run in the
 worktree. The preview commands add `MAIN_CI_PR`, `MAIN_CI_HEAD`,
 `MAIN_CI_BRANCH`, and `MAIN_CI_PREVIEW` (the preview worktree);
 `unaffected` adds `MAIN_CI_PRIOR` (the tip of the green it would carry) and
-`notify` adds `MAIN_CI_RESULT` (the result file). `preview.cmd` runs in the
+`notify` adds `MAIN_CI_RESULT` (the result file) and `MAIN_CI_SPEC` (the first
+failing spec of that attempt's log, empty when it has none). `preview.cmd` runs in the
 preview worktree; `eligible`, `unaffected`, and `notify` run in the
 `origin-main` worktree, so they are the tip's code, not the PR's.
 
@@ -219,12 +220,16 @@ without a run, and a ready PR stays ready. Otherwise `vouched.json` records
 the head and then a ready PR is moved to draft (`gh pr ready --undo`); a
 cancel between the two leaves the vouch, so a later tip still restores the
 PR. The check
-then runs with its output in `<head8>-<tip8>.log`.
+then runs with its output in `<head8>-<tip8>.<attempt>.log`.
 
 **Result files.** Each verdict is written atomically to
 `<resultsDir>/pr-<n>/<head8>-<tip8>.json`:
 `{ pr, head, main, green, conflict, log, finishedAt }`, plus `inherited`
-(the carried result's name) when a green carried. After a green result, a
+(the carried result's name) when a green carried. `log` is the attempt's
+`<head8>-<tip8>.<attempt>.log`: attempts count 1, 2, … per pairing, a rerun
+after a deleted result file is the next one, and no attempt's log is deleted
+or overwritten. `MAIN_CI_SPEC` is the first `FAIL <file> > <test>` line
+(ANSI stripped) of that log. After a green result, a
 PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the
 `origin-main` worktree. A failed `gh pr ready` is retried on the next poll, at
