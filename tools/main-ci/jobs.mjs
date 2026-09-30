@@ -15,7 +15,7 @@ export function signal(pgid, sig) {
 	} catch {}
 }
 
-export function alive(pgid) {
+function alive(pgid) {
 	try {
 		process.kill(-pgid, 0)
 		return true
@@ -31,16 +31,13 @@ export function jobSet(s) {
 	// `nice -n 19 bash -c <cmd>` with stdout and stderr in `file`; resolves
 	// the exit code. The group is recorded in the same synchronous turn as
 	// the spawn, so no cancel can run between the two.
-	function exec(label, cmd, { cwd, env, file, timeoutMs = s.stepTimeoutMs, onStart }) {
+	function exec(label, cmd, { cwd, env, file, timeoutMs = s.stepTimeoutMs }) {
 		if (cancelled) return Promise.reject(CANCELLED)
 		return new Promise((resolve, reject) => {
 			const fd = openSync(file, "w")
 			const child = spawn("nice", ["-n", "19", "bash", "-c", cmd], { cwd, env, detached: true, stdio: ["ignore", fd, fd] })
 			closeSync(fd)
-			if (child.pid) {
-				groups.add(child.pid)
-				onStart?.(child.pid)
-			}
+			if (child.pid) groups.add(child.pid)
 			let timedOut = false
 			let over = false
 			const timer = setTimeout(() => {

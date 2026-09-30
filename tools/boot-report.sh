@@ -5,9 +5,9 @@
 #
 # Read-only: prints bounded, labeled sections from the current checkout and
 # writes no state. The pm role reads only its own lane (issue logs plus PRs
-# labeled `pm`, bot-only logs dropped, worktree hygiene as a count); TL roles
-# get every section. Paths come from .agent/orchestrate.local.md, else the
-# current harness's orchestrate.local.md, one `- `key`: `value`` per line.
+# labeled `pm`, bot-only logs dropped); TL roles get every section. The
+# worktree section is the newest main-ci cleanup.log summary line. Paths come
+# from the shared .agent/orchestrate.local.md, one `- `key`: `value`` per line.
 set -euo pipefail
 
 role="${1:-}"

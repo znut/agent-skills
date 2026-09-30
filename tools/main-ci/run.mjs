@@ -7,10 +7,10 @@
  * own process group, held in memory so a cancel reaches it.
  */
 import { spawnSync } from "node:child_process"
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { writeAtomic } from "../lib/fs-util.mjs"
-import { alive, CANCELLED, jobSet } from "./jobs.mjs"
+import { CANCELLED, jobSet } from "./jobs.mjs"
 import { startPreviews } from "./preview.mjs"
 
 const KEEP_RUNS = 20
@@ -99,23 +99,6 @@ export function startRun(s, sha) {
 		s.log(`${label}: ${code === 0 ? "ok" : `FAIL exit=${code} — ${lastLine(file)}`}`)
 	}
 
-	// One cleanup at a time: its group id is on disk, so a cleanup a killed
-	// driver left behind also holds off the next one.
-	async function runCleanup() {
-		const pidFile = join(s.dir, "cleanup.pid")
-		let held = 0
-		try {
-			held = Number(readFileSync(pidFile, "utf8"))
-		} catch {}
-		if (held > 0 && alive(held)) {
-			s.log(`cleanup: skipped, previous cleanup still running (group ${held})`)
-			return
-		}
-		const file = join(runDir, "cleanup.log")
-		const code = await jobs.exec("cleanup", s.mc.cleanup, { cwd: s.worktree, env, file, onStart: (pid) => writeFileSync(pidFile, String(pid)) })
-		s.log(`cleanup: ${code === 0 ? "ok" : `FAIL exit=${code} — ${lastLine(file)}`}`)
-	}
-
 	// A lane's steps run in order; one failure skips the rest of that lane.
 	async function runLane(lane) {
 		for (const [i, step] of lane.entries()) {
@@ -139,7 +122,7 @@ export function startRun(s, sha) {
 
 	async function main() {
 		prune(s)
-		if (s.mc.cleanup) await runCleanup()
+		if (s.mc.cleanup) await runCommand("cleanup", s.mc.cleanup)
 		const prev = skippedSince()
 		if (prev) {
 			steps.skipped = `skip-pattern-only since ${prev.slice(0, 8)}`
