@@ -494,8 +494,9 @@ else
 	fi
 fi
 
-# 8. Worktree hygiene — the repo's own dry-run summary line.
+# 8. Worktree hygiene — the last main-ci cleanup summary, read from disk.
 section "Worktree hygiene"
-if [ -f "$repo_root/scripts/cleanup-worktrees.sh" ]; then
-	bash "$repo_root/scripts/cleanup-worktrees.sh" < /dev/null 2>&1 | grep '^summary:' || true
+last_run=$(ls -1t "$var_dir/main-ci/runs" 2>/dev/null | head -1 || true)
+if [ -n "$last_run" ]; then
+	grep '^summary:' "$var_dir/main-ci/runs/$last_run/cleanup.log" 2>/dev/null | tail -1 || true
 fi
