@@ -213,11 +213,9 @@ else
 	fi
 fi
 
-# 2b2. Main health — the last post-merge suite verdict on the default tip.
+# 2b2. Main health — main-ci's last verdict on the default tip.
 section "Main health"
-# main-ci replaces main-health; whichever exists is the verdict, main-ci first.
 mh="$var_dir/main-ci/state.json"
-[ -f "$mh" ] || mh="$var_dir/main-health/state.json"
 if [ -f "$mh" ]; then
 	mh_phase=$(jq -r '.phase // "done"' "$mh" 2>/dev/null || printf 'done')
 	mh_green=$(jq -r '.green' "$mh" 2>/dev/null || printf '?')
@@ -231,7 +229,7 @@ if [ -f "$mh" ]; then
 	fi
 	[ "$mh_sha" = "$remote_short" ] || printf 'note: verdict is for %s; origin/%s tip is %s\n' "$mh_sha" "$default_branch" "${remote_short:-?}"
 else
-	printf '(no main-ci or main-health state under %s)\n' "$var_dir"
+	printf '(no main-ci state under %s)\n' "$var_dir"
 fi
 
 # 2c. Handoff note — the previous same-role session's note, printed bounded;

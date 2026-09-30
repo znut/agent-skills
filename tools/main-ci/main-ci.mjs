@@ -10,7 +10,8 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { basename, dirname, join } from "node:path"
 import { loadConfig, varDir } from "../lib/config.mjs"
 import { expandHome } from "../lib/fs-util.mjs"
-import { signal, startRun } from "./run.mjs"
+import { signal } from "./jobs.mjs"
+import { startRun } from "./run.mjs"
 
 const POLL_MS = 45_000
 const GIT_TIMEOUT_MS = 120_000
@@ -23,6 +24,9 @@ function settings(config) {
 	}
 	const repo = expandHome(mc.repo)
 	const worktree = mc.worktree ? expandHome(mc.worktree) : join(dirname(repo), `${basename(repo)}-worktrees`, "origin-main")
+	if (mc.preview && !(mc.preview.cmd && mc.preview.resultsDir && config.org && config.repo)) {
+		throw new Error(`config ${config.name} needs org, repo, mainCi.preview.cmd and mainCi.preview.resultsDir for the preview gate`)
+	}
 	const dir = join(varDir(config.name), "main-ci")
 	const logFile = join(dir, "run.log")
 	mkdirSync(join(dir, "runs"), { recursive: true })
@@ -32,8 +36,9 @@ function settings(config) {
 		worktree,
 		dir,
 		stateFile: join(dir, "state.json"),
+		statusDir: join(varDir(config.name), "gh-status", "status"),
 		stepTimeoutMs: (mc.stepTimeout ?? 1800) * 1000,
-		env: { ...process.env, ...(mc.env ?? {}), MAIN_CI_VAR: dir, MAIN_CI_WORKTREE: worktree },
+		env: { ...process.env, ...(mc.env ?? {}), MAIN_CI_VAR: dir, MAIN_CI_WORKTREE: worktree, MAIN_CI_REPO: `${config.org}/${config.repo}` },
 		log: (line) => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`),
 	}
 }
@@ -147,7 +152,7 @@ async function drive(config) {
 				}
 				await moveWorktree(s, tip)
 				current = startRun(s, tip)
-			}
+			} else current.scan()
 			if (lastError) s.log("poll ok again")
 			lastError = ""
 		} catch (e) {

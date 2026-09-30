@@ -3,18 +3,6 @@
 	"org": "YOUR_ORG", "repo": "YOUR_REPO",
 	"tokenFile": "~/.config/YOUR_TOKEN_FILE",
 	"board": { "projectNumber": 1, "owner": "YOUR_ORG" },
-	"mainHealth": {
-		"repo": "~/src/your-repo",
-		"steps": [
-			{ "name": "install", "cmd": "bun install --frozen-lockfile" },
-			{ "name": "check", "cmd": "bun run check" },
-			{ "name": "lint", "cmd": "bun run lint" },
-			{ "name": "test", "cmd": "bun run test" }
-		],
-		"env": { "CI": "1" },
-		"skipPattern": "^docs/|\\.md$",
-		"stepTimeout": 1800
-	},
 	"mainCi": {
 		"repo": "~/src/your-repo",
 		"core": [
@@ -27,11 +15,14 @@
 		],
 		"buildConcurrency": 2,
 		"cleanup": "bash scripts/cleanup-worktrees.sh --apply",
+		"preview": {
+			"cmd": "bash scripts/gate.sh",
+			"eligible": "bash scripts/preview-eligible.sh",
+			"unaffected": "bash scripts/pr-unaffected.sh",
+			"notify": "bash scripts/preview-notify.sh",
+			"resultsDir": "~/.config/agent-tools/var/my-project/gate",
+			"concurrency": 1
+		},
 		"env": { "CI": "1" }
-	},
-	"onMerge": [
-		{ "type": "board-snapshot" },
-		{ "type": "command", "cmd": "bash scripts/cleanup-worktrees.sh --apply", "cwd": "~/src/your-repo" },
-		{ "type": "command", "cmd": "bash ~/src/agent-skills/tools/main-health/main-health.sh my-project", "cwd": "~/src/your-repo" }
-	]
+	}
 }

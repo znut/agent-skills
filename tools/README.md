@@ -15,7 +15,6 @@ tools/
   lib/                        shared config-loading + atomic-write helpers
   gh-status/poller.ts         multi-repo PR status poller (bun)
   board-snapshot/             board -> $AGENT_TOOLS_HOME/var/<name>/board-snapshot.md
-  on-merge/run.mjs            generic post-merge step runner
   bgh/                        per-clone-identity gh wrapper; install as gh too
                               (bgh/README.md)
   boot-report.sh              session-boot state collector for TL/PM roles; also
@@ -24,11 +23,9 @@ tools/
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
   main-ci/                    post-merge CI driver: follows the default tip,
-                              cancels and restarts on a tip move; steps come
-                              from the config's mainCi block (main-ci/README.md)
-  main-health/                post-merge suite runner on the default tip;
-                              steps come from the config's mainHealth block;
-                              main-ci replaces it
+                              cancels and restarts on a tip move, and gates
+                              open PRs' merge previews; steps come from the
+                              config's mainCi block (main-ci/README.md)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   hooks/                      Claude Code Stop hook: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
@@ -51,9 +48,7 @@ shows the shape (fill-me-in placeholders); copy it to
 | `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
-| `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see `onMerge` step types |
-| `mainCi` | main-ci | yes, if using main-ci | `repo`, `core` steps, optional `builds` lanes, `buildConcurrency`, `warmCache`, `cleanup` — see `main-ci/README.md` |
-| `mainHealth` | main-health | yes, if using main-health | `repo` (main checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
+| `mainCi` | main-ci | yes, if using main-ci | `repo`, `core` steps, optional `builds` lanes, `buildConcurrency`, `warmCache`, `cleanup`, `preview` — see `main-ci/README.md` |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and polls all of them in one process (one 40s loop, one GraphQL request per
@@ -61,19 +56,8 @@ configured repo per cycle plus one repo-wide `issues/comments?since=` REST
 call feeding `events/issue-<n>.log|.comments.json` — same shapes as the PR
 comment events; configs with a `board` block add a 1-point
 `projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
-when that stamp moves — agents read the board file with zero API calls). `board-snapshot` and `on-merge` are invoked
+when that stamp moves — agents read the board file with zero API calls). `board-snapshot` is invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
-
-### `onMerge` step types
-
-```jsonc
-{ "type": "board-snapshot" }
-{ "type": "command", "cmd": "bash scripts/foo.sh", "cwd": "~/src/YOUR_REPO" }
-```
-
-No other step types exist. `command` runs via `execSync` in `cwd` (`~`
-expanded); non-zero exit is logged, not thrown — one failing step doesn't
-block the rest.
 
 ## What each tool writes
 
@@ -99,27 +83,11 @@ thirty days are removed, as are issue files idle that long.
 more than 7 days ago; keeps everything else. This version only ever writes a
 local file — it never clones/commits/pushes.
 
-`on-merge/run.mjs` — runs a config's `onMerge` steps in order, once per
-invocation, debounced as a whole run (skips all steps if the last run for
-that config started < 60s ago). Appends one line per step to
-`$AGENT_TOOLS_HOME/var/<name>/on-merge.log`: `<ISO time> <step> exit=<code>`.
-A second step-list key, passed as the third CLI argument (e.g. `onMergeGate`),
-runs in its own debounced job with its own log file.
-
 `main-ci/main-ci.mjs <name>` — a long-lived driver, its own launchd job;
-writes `$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json` in
-main-health's shape plus `phase`, `run.log`, `runs/`). boot-report reads its
-`state.json` first and falls back to main-health's. See `main-ci/README.md`.
-
-`main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
-the config's `mainHealth.steps` on the fetched default tip in a locked
-worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`.
-Each run's step logs land under `var/<name>/main-health/runs/<UTC
-timestamp>-<sha8>/step-<name>.log`, oldest pruned beyond the last 20 run dirs.
-`run.log` gets one `<step>: FAIL <file> › <test name>` line per failing test
-per attempt, parsed from the step's vitest output. `state.json`'s `failing`
-array holds the last run's failing test names (`"<step>: <file> › <test>"`),
-empty on green. boot-report prints the last verdict at every PM and TL boot.
+writes `$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json`, `run.log`,
+`runs/`, `previews/`) and one result file per PR preview under
+`mainCi.preview.resultsDir`. boot-report prints `state.json`'s verdict at
+every PM and TL boot. See `main-ci/README.md`.
 
 ## Install
 
@@ -138,20 +106,19 @@ empty on green. boot-report prints the last verdict at every PM and TL boot.
    plists first.
 4. Run the printed `launchctl bootstrap gui/$UID ...` commands.
 
-`<name>` here is only used for the main-ci driver's config argument and
-the on-merge watcher's `WatchPaths` argument (it watches one config's
-`gh-status/events/` dir and runs that config's `onMerge` steps). If you're
-tracking multiple repos with `gh-status` but only want on-merge behavior for
+`<name>` here is only used for the main-ci driver's config argument. If
+you're tracking multiple repos with `gh-status` but only want main-ci for
 one of them, that is the intended use; `gh-status` polls every config
-regardless.
+regardless. The run also boots out and removes the retired
+`com.agent-tools.on-merge` and `com.agent-tools.on-merge-gate` jobs when
+their plists are present; `--dry-run` prints that instead.
 
 ### Uninstall
 
 ```bash
 launchctl bootout gui/$UID/com.agent-tools.gh-status
 launchctl bootout gui/$UID/com.agent-tools.main-ci
-launchctl bootout gui/$UID/com.agent-tools.on-merge
-rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist ~/Library/LaunchAgents/com.agent-tools.main-ci.plist ~/Library/LaunchAgents/com.agent-tools.on-merge.plist
+rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist ~/Library/LaunchAgents/com.agent-tools.main-ci.plist
 ```
 
 ### Manual runs
@@ -161,7 +128,6 @@ testing a config before installing the services:
 
 ```bash
 bun tools/board-snapshot/board-snapshot.mjs <name>
-bun tools/on-merge/run.mjs <name>
 timeout 15 bun tools/gh-status/poller.ts || true   # poller loops forever by default
 ```
 

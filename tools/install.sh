@@ -2,19 +2,19 @@
 set -euo pipefail
 
 # Renders the launchd templates in tools/launchd/ into concrete plists
-# (gh-status, main-ci, on-merge, and on-merge-gate — the last one runs a
-# config's optional `onMergeGate` list as its own job) and installs them into
-# ~/Library/LaunchAgents (or $LAUNCH_AGENTS_DIR, for testing). Never runs
-# `launchctl bootstrap` itself — it only prints the
-# commands, so nothing gets registered with launchd without a separate,
-# explicit step from you.
+# (gh-status and main-ci) and installs them into ~/Library/LaunchAgents (or
+# $LAUNCH_AGENTS_DIR, for testing). Never runs `launchctl bootstrap` itself —
+# it only prints the commands, so nothing gets registered with launchd
+# without a separate, explicit step from you. It does boot out and remove the
+# retired on-merge and on-merge-gate jobs when their plists are present:
+# main-ci replaces both, and either would run beside it.
 #
 # Usage: tools/install.sh [--dry-run] <configName>
 #   <configName> must match the "name" field of a config you've placed at
 #   $AGENT_TOOLS_HOME/config/<configName>.json — see tools/config/example.json
 #   and tools/README.md for the config contract.
-#   --dry-run renders and lints into a temp dir, prints the launchd PATH,
-#   and writes nothing under LaunchAgents.
+#   --dry-run renders and lints into a temp dir, prints the launchd PATH and
+#   what a real run would remove, and changes nothing under LaunchAgents.
 
 usage() {
 	echo "usage: tools/install.sh [--dry-run] <configName>" >&2
@@ -66,6 +66,7 @@ NODE_PATH_BIN="$(command -v node || true)"
 NODE_DIR="${NODE_PATH_BIN:+$(dirname "$NODE_PATH_BIN")}"
 RENDERED_PATH="$BUN_DIR:${NODE_DIR:+$NODE_DIR:}$HOME/.local/bin:$GH_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
 
+TARGET_DIR="$LAUNCH_AGENTS_DIR"
 if [ "$DRY_RUN" = true ]; then
 	LAUNCH_AGENTS_DIR="$(mktemp -d)"
 	trap 'rm -rf "$LAUNCH_AGENTS_DIR"' EXIT
@@ -86,36 +87,37 @@ render() {
 
 GH_STATUS_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.gh-status.plist"
 MAIN_CI_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.main-ci.plist"
-ON_MERGE_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.on-merge.plist"
-ON_MERGE_GATE_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.on-merge-gate.plist"
 
 render "$TOOLS_DIR/launchd/com.agent-tools.gh-status.plist.template" "$GH_STATUS_PLIST"
 render "$TOOLS_DIR/launchd/com.agent-tools.main-ci.plist.template" "$MAIN_CI_PLIST"
-render "$TOOLS_DIR/launchd/com.agent-tools.on-merge.plist.template" "$ON_MERGE_PLIST"
-render "$TOOLS_DIR/launchd/com.agent-tools.on-merge-gate.plist.template" "$ON_MERGE_GATE_PLIST"
 
 plutil -lint "$GH_STATUS_PLIST"
 plutil -lint "$MAIN_CI_PLIST"
-plutil -lint "$ON_MERGE_PLIST"
-plutil -lint "$ON_MERGE_GATE_PLIST"
+
+echo
+for label in com.agent-tools.on-merge com.agent-tools.on-merge-gate; do
+	retired="$TARGET_DIR/$label.plist"
+	[ -f "$retired" ] || continue
+	if [ "$DRY_RUN" = true ]; then
+		echo "Would retire: launchctl bootout gui/$UID/$label; rm $retired"
+	else
+		launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+		rm "$retired"
+		echo "Retired: $label (booted out, $retired removed)"
+	fi
+done
 
 if [ "$DRY_RUN" = true ]; then
-	echo
-	echo "Dry run: nothing written under LaunchAgents."
+	echo "Dry run: nothing changed under $TARGET_DIR."
 	echo "launchd PATH: $RENDERED_PATH"
 	echo "real gh:      $GH_PATH"
-	exit 0
+	echo "A real run renders these plists there and prints:"
+else
+	echo "Rendered:"
+	echo "  $GH_STATUS_PLIST"
+	echo "  $MAIN_CI_PLIST"
+	echo
+	echo "Not installed yet — review the rendered plists, then run:"
 fi
-
-echo
-echo "Rendered:"
-echo "  $GH_STATUS_PLIST"
-echo "  $MAIN_CI_PLIST"
-echo "  $ON_MERGE_PLIST"
-echo "  $ON_MERGE_GATE_PLIST"
-echo
-echo "Not installed yet — review the rendered plists, then run:"
-echo "  launchctl bootstrap gui/\$UID $GH_STATUS_PLIST"
-echo "  launchctl bootstrap gui/\$UID $MAIN_CI_PLIST   # only if this config has a mainCi block; drop main-health from onMerge first"
-echo "  launchctl bootstrap gui/\$UID $ON_MERGE_PLIST"
-echo "  launchctl bootstrap gui/\$UID $ON_MERGE_GATE_PLIST   # only if this config uses onMergeGate"
+echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.gh-status.plist"
+echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.main-ci.plist   # only if this config has a mainCi block"

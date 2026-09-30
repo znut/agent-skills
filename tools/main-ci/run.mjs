@@ -2,34 +2,19 @@
  * main-ci run — one run on one sha, inside the driver process (main-ci.mjs).
  *
  * Runs the cleanup command, then mainCi.core in order; on green, the
- * warmCache command, then the mainCi.builds lanes, at most buildConcurrency
- * at once. Every command is its own process group, held in memory so a
- * cancel reaches it.
+ * warmCache command, then the mainCi.builds lanes (at most buildConcurrency
+ * at once) alongside the preview gate (preview.mjs). Every command is its
+ * own process group, held in memory so a cancel reaches it.
  */
-import { spawn, spawnSync } from "node:child_process"
-import { closeSync, copyFileSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { writeAtomic } from "../lib/fs-util.mjs"
+import { CANCELLED, jobSet } from "./jobs.mjs"
+import { startPreviews } from "./preview.mjs"
 
 const KEEP_RUNS = 20
-const KILL_GRACE_MS = 10_000
 const DEFAULT_SKIP = "^docs/|\\.md$"
-const CANCELLED = Symbol("cancelled")
-
-export function signal(pgid, sig) {
-	try {
-		process.kill(-pgid, sig)
-	} catch {}
-}
-
-function alive(pgid) {
-	try {
-		process.kill(-pgid, 0)
-		return true
-	} catch (e) {
-		return e.code === "EPERM"
-	}
-}
 
 function readState(s) {
 	try {
@@ -60,53 +45,24 @@ function prune(s) {
 	for (const old of dirs.slice(0, Math.max(0, dirs.length - KEEP_RUNS))) rmSync(join(s.dir, "runs", old), { recursive: true, force: true })
 }
 
-/** Starts a run on `sha` in s.worktree; returns { sha, done, cancel, kill }. */
+/** Starts a run on `sha` in s.worktree; returns { sha, done, cancel, kill, scan }. */
 export function startRun(s, sha) {
 	const runDir = join(s.dir, "runs", `${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}-${sha.slice(0, 8)}`)
 	mkdirSync(runDir, { recursive: true })
 	const env = { ...s.env, MAIN_CI_SHA: sha }
-	const groups = new Set()
+	const jobs = jobSet(s)
+	const previews = s.mc.preview ? startPreviews(s, sha, env, runDir) : null
 	const steps = {}
 	const failing = []
 	let green = true
-	let cancelled = false
 
 	function writeState(phase) {
-		if (cancelled) return
+		if (jobs.isCancelled()) return
 		const finishedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z")
 		writeAtomic(s.stateFile, `${JSON.stringify({ sha, finishedAt, green, failing, phase, steps: { ...steps, _: "end" } })}\n`)
 	}
 
-	// The group is recorded in the same synchronous turn as the spawn, so no
-	// cancel can run between the two.
-	function attempt(step, file) {
-		if (cancelled) return Promise.reject(CANCELLED)
-		return new Promise((resolve, reject) => {
-			const fd = openSync(file, "w")
-			const child = spawn("nice", ["-n", "19", "bash", "-c", step.cmd], { cwd: s.worktree, env, detached: true, stdio: ["ignore", fd, fd] })
-			closeSync(fd)
-			if (child.pid) groups.add(child.pid)
-			let timedOut = false
-			let over = false
-			const timer = setTimeout(() => {
-				timedOut = true
-				signal(child.pid, "SIGKILL")
-			}, s.stepTimeoutMs)
-			const done = (code, why) => {
-				if (over) return
-				over = true
-				clearTimeout(timer)
-				// The leader exited; whatever it left in its group goes with it.
-				if (child.pid) signal(child.pid, "SIGKILL")
-				groups.delete(child.pid)
-				if (cancelled) return reject(CANCELLED)
-				if (why) s.log(`${step.name}: ${why}`)
-				resolve(code)
-			}
-			child.on("error", (e) => done(127, `cannot start: ${e.message}`))
-			child.on("exit", (code, sig) => done(code ?? 128, timedOut ? `killed after ${s.stepTimeoutMs / 1000}s timeout` : sig ? `ended by ${sig}` : ""))
-		})
-	}
+	const attempt = (step, file) => jobs.exec(step.name, step.cmd, { cwd: s.worktree, env, file })
 
 	// A failed step is retried once; only the final attempt's failing tests count.
 	async function runStep(step) {
@@ -172,6 +128,7 @@ export function startRun(s, sha) {
 			steps.skipped = `skip-pattern-only since ${prev.slice(0, 8)}`
 			writeState("done")
 			s.log(`run skipped sha=${sha} (skip-pattern-only since ${prev.slice(0, 8)})`)
+			previews?.start()
 			return
 		}
 		s.log(`core start sha=${sha}`)
@@ -180,6 +137,7 @@ export function startRun(s, sha) {
 		for (const lane of green ? lanes : []) for (const step of lane) steps[step.name] = "pending"
 		writeState(green && lanes.length > 0 ? "builds" : "done")
 		if (green && s.mc.warmCache) await runCommand("warm-cache", s.mc.warmCache)
+		if (green) previews?.start()
 		if (green && lanes.length > 0) {
 			const queue = [...lanes]
 			const cap = Math.max(1, s.mc.buildConcurrency ?? 1)
@@ -203,28 +161,21 @@ export function startRun(s, sha) {
 		s.log(`run FAILED sha=${sha}: ${e instanceof Error ? e.message : e}`)
 	})
 
-	// SIGTERM every live group, SIGKILL whatever outlives the grace period,
-	// then wait for the run to unwind.
+	// End every group, the previews' included, then wait for the run to unwind.
 	async function cancel() {
-		cancelled = true
-		const live = [...groups]
-		for (const g of live) signal(g, "SIGTERM")
-		const until = Date.now() + KILL_GRACE_MS
-		while (Date.now() < until && live.some(alive)) await Bun.sleep(200)
-		const stubborn = live.filter(alive)
-		for (const g of stubborn) signal(g, "SIGKILL")
+		const ends = await Promise.all([jobs.cancel(), previews?.cancel() ?? { live: [], stubborn: [] }])
 		await done
 		const state = readState(s)
 		if (state?.sha === sha && state.phase !== "done") writeAtomic(s.stateFile, `${JSON.stringify({ ...state, phase: "cancelled" })}\n`)
-		return { live, stubborn }
+		return { live: ends.flatMap((e) => e.live), stubborn: ends.flatMap((e) => e.stubborn) }
 	}
 
 	// Synchronous, for the driver's exit handler.
 	function kill() {
-		cancelled = true
-		for (const g of groups) signal(g, "SIGKILL")
+		jobs.kill()
+		previews?.kill()
 	}
 
 	s.log(`run start sha=${sha} dir=${runDir}`)
-	return { sha, done, cancel, kill }
+	return { sha, done, cancel, kill, scan: () => previews?.scan() }
 }
