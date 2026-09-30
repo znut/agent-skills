@@ -1,23 +1,25 @@
 /**
  * main-ci runner — one run on one sha, started detached by main-ci.mjs.
  *
- * CLI (internal): `bun tools/main-ci/run.mjs <configName> <sha> <runDir>`.
- * Runs mainCi.core in order; on green, the warmCache command, then the
- * mainCi.builds lanes, at most buildConcurrency at once. Each step runs in
- * its own process group, listed in run.json so the tick can cancel it.
+ * CLI (internal): `bun tools/main-ci/run.mjs <configName> <sha> <runDir> [--rerun]`.
+ * Runs the cleanup command, then mainCi.core in order; on green, the
+ * warmCache command, then the mainCi.builds lanes, at most buildConcurrency
+ * at once. Each command runs in its own process group, listed in run.json
+ * so the tick can cancel it.
  */
-import { spawn } from "node:child_process"
-import { copyFileSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { spawn, spawnSync } from "node:child_process"
+import { closeSync, copyFileSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { loadConfig } from "../lib/config.mjs"
 import { writeAtomic } from "../lib/fs-util.mjs"
-import { log, readJson, runCommand, settings } from "./main-ci.mjs"
+import { log, readJson, settings } from "./main-ci.mjs"
 
 const KEEP_RUNS = 20
+const DEFAULT_SKIP = "^docs/|\\.md$"
 
 const [name, sha, runDir] = process.argv.slice(2)
 if (!name || !sha || !runDir) {
-	console.error("usage: bun tools/main-ci/run.mjs <configName> <sha> <runDir>")
+	console.error("usage: bun tools/main-ci/run.mjs <configName> <sha> <runDir> [--rerun]")
 	process.exit(1)
 }
 const s = settings(loadConfig(name))
@@ -33,9 +35,12 @@ function updateRun(fn) {
 	writeAtomic(s.runFile, `${JSON.stringify(run)}\n`)
 }
 
+function now() {
+	return new Date().toISOString().replace(/\.\d+Z$/, "Z")
+}
+
 function writeState(phase) {
-	const finishedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z")
-	writeAtomic(s.stateFile, `${JSON.stringify({ sha, finishedAt, green, failing, phase, steps: { ...steps, _: "end" } })}\n`)
+	writeAtomic(s.stateFile, `${JSON.stringify({ sha, finishedAt: now(), green, failing, phase, steps: { ...steps, _: "end" } })}\n`)
 }
 
 // `bunx turbo run <task>` prefixes each line with `<pkg>:<task>: `; keep pkg
@@ -54,6 +59,7 @@ function attempt(step, file) {
 	return new Promise((resolve) => {
 		const fd = openSync(file, "w")
 		const child = spawn("nice", ["-n", "19", "bash", "-c", step.cmd], { cwd: s.worktree, env: s.env, detached: true, stdio: ["ignore", fd, fd] })
+		closeSync(fd)
 		let timedOut = false
 		const timer = setTimeout(() => {
 			timedOut = true
@@ -64,6 +70,10 @@ function attempt(step, file) {
 		if (child.pid) updateRun((run) => run.jobs.push(child.pid))
 		const done = (code, why) => {
 			clearTimeout(timer)
+			// The leader exited; whatever it left in its group goes with it.
+			try {
+				process.kill(-child.pid, "SIGKILL")
+			} catch {}
 			if (child.pid) updateRun((run) => (run.jobs = run.jobs.filter((p) => p !== child.pid)))
 			if (why) log(s, `${step.name}: ${why}`)
 			resolve(code)
@@ -97,9 +107,30 @@ async function runStep(step) {
 	}
 	steps[step.name] = "FAIL"
 	green = false
-	const last = readFileSync(file, "utf8").trim().split("\n").pop()
-	log(s, `${step.name}: FAIL exit=${code} (retried)${last ? ` — ${last}` : ""}`)
+	log(s, `${step.name}: FAIL exit=${code} (retried) — ${lastLine(file)}`)
 	return false
+}
+
+function lastLine(file) {
+	return readFileSync(file, "utf8").trim().split("\n").pop() || "no output"
+}
+
+// A repo command outside the verdict (cleanup, warm cache): run once, logged.
+async function runCommand(label, cmd) {
+	const file = join(runDir, `${label}.log`)
+	const code = await attempt({ name: label, cmd }, file)
+	log(s, `${label}: ${code === 0 ? "ok" : `FAIL exit=${code} — ${lastLine(file)}`}`)
+}
+
+// Every path changed since the last green, finished run matches skipPattern:
+// nothing the checks could newly prove.
+function skippedSince() {
+	const state = readJson(s.stateFile)
+	if (!state?.green || state.phase !== "done" || !state.sha || state.sha === sha) return null
+	const r = spawnSync("git", ["-C", s.worktree, "diff", "--name-only", `${state.sha}..${sha}`], { encoding: "utf8" })
+	if (r.status !== 0) return null
+	const skip = new RegExp(s.mc.skipPattern ?? DEFAULT_SKIP)
+	return r.stdout.split("\n").every((f) => f === "" || skip.test(f)) ? state.sha : null
 }
 
 // A lane's steps run in order; one failure skips the rest of that lane.
@@ -121,13 +152,22 @@ function prune() {
 }
 
 async function main() {
+	updateRun((run) => (run.runnerPid = process.pid))
 	prune()
+	if (s.mc.cleanup) await runCommand("cleanup", s.mc.cleanup)
+	const prev = process.argv.includes("--rerun") ? null : skippedSince()
+	if (prev) {
+		steps.skipped = `skip-pattern-only since ${prev.slice(0, 8)}`
+		writeState("done")
+		log(s, `run skipped sha=${sha} (skip-pattern-only since ${prev.slice(0, 8)})`)
+		return
+	}
 	log(s, `core start sha=${sha}`)
 	for (const step of s.mc.core) await runStep(step)
 	const lanes = s.mc.builds ?? []
 	for (const lane of green ? lanes : []) for (const step of lane) steps[step.name] = "pending"
 	writeState(green && lanes.length > 0 ? "builds" : "done")
-	if (green && s.mc.warmCache) runCommand(s, "warm-cache", s.mc.warmCache, s.stepTimeoutMs)
+	if (green && s.mc.warmCache) await runCommand("warm-cache", s.mc.warmCache)
 	if (green && lanes.length > 0) {
 		const queue = [...lanes]
 		const cap = Math.max(1, s.mc.buildConcurrency ?? 1)
@@ -138,13 +178,17 @@ async function main() {
 		)
 		writeState("done")
 	}
-	updateRun((run) => (run.finishedAt = new Date().toISOString()))
 	log(s, `run ${green ? "green" : "RED"} sha=${sha}`)
 }
 
 try {
 	await main()
 } catch (e) {
+	green = false
+	steps.runner = "FAIL"
+	writeState("done")
 	log(s, `runner FAILED sha=${sha}: ${e instanceof Error ? e.message : e}`)
-	process.exit(1)
+	process.exitCode = 1
+} finally {
+	updateRun((run) => (run.finishedAt = new Date().toISOString()))
 }

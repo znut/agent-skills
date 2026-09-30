@@ -6,13 +6,12 @@
  * --rerun starts a fresh run on the current tip even when it has not moved.
  */
 import { spawn, spawnSync } from "node:child_process"
-import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { loadConfig, varDir } from "../lib/config.mjs"
 import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
 
 const KILL_GRACE_MS = 10_000
-const DEFAULT_SKIP = "^docs/|\\.md$"
 
 export function settings(config) {
 	const mc = config.mainCi
@@ -75,25 +74,34 @@ function alive(pgid) {
 	}
 }
 
-function signalAll(pgids, sig) {
-	for (const pgid of pgids) {
-		try {
-			process.kill(-pgid, sig)
-		} catch {}
-	}
+function signal(pgid, sig) {
+	try {
+		process.kill(-pgid, sig)
+	} catch {}
 }
 
-// Every job the runner started is its own process group, listed in run.json;
-// the runner's group is listed first. Group kills reach grandchildren too.
-async function cancel(s, run) {
-	const pgids = [run.runnerPid, ...(run.jobs ?? [])].filter((p) => Number.isInteger(p) && p > 1 && alive(p))
-	if (pgids.length === 0) return
-	signalAll(pgids, "SIGTERM")
+// SIGTERM, then SIGKILL whatever outlives the grace period.
+async function stop(pgids) {
+	const live = pgids.filter((p) => Number.isInteger(p) && p > 1 && alive(p))
+	for (const p of live) signal(p, "SIGTERM")
 	const until = Date.now() + KILL_GRACE_MS
-	while (Date.now() < until && pgids.some(alive)) await Bun.sleep(200)
-	const stubborn = pgids.filter(alive)
-	signalAll(stubborn, "SIGKILL")
-	log(s, `cancel run sha=${run.sha} groups=${pgids.join(",")}${stubborn.length ? ` sigkill=${stubborn.join(",")}` : ""}`)
+	while (Date.now() < until && live.some(alive)) await Bun.sleep(200)
+	const stubborn = live.filter(alive)
+	for (const p of stubborn) signal(p, "SIGKILL")
+	return { live, stubborn }
+}
+
+// The runner goes first so it starts no new job; then run.json, re-read,
+// lists every job group it left. A finished run's pids may be reused.
+async function cancel(s, run) {
+	if (run.finishedAt) return
+	const runner = await stop([run.runnerPid])
+	const after = readJson(s.runFile) ?? run
+	const jobs = await stop(after.jobs ?? [])
+	writeAtomic(s.runFile, `${JSON.stringify({ ...after, jobs: [], finishedAt: new Date().toISOString() })}\n`)
+	const live = [...runner.live, ...jobs.live]
+	const stubborn = [...runner.stubborn, ...jobs.stubborn]
+	if (live.length > 0) log(s, `cancel run sha=${run.sha} groups=${live.join(",")}${stubborn.length ? ` sigkill=${stubborn.join(",")}` : ""}`)
 	const state = readJson(s.stateFile)
 	if (state?.sha === run.sha && state.phase !== "done") writeAtomic(s.stateFile, `${JSON.stringify({ ...state, phase: "cancelled" })}\n`)
 }
@@ -104,32 +112,12 @@ function moveWorktree(s, sha) {
 		mustGit(s, s.repo, ["worktree", "add", "--detach", "--lock", "--reason", "main-ci", s.worktree, sha])
 	}
 	mustGit(s, s.worktree, ["checkout", "-q", "--detach", "-f", sha])
-	mustGit(s, s.worktree, ["reset", "-q", "--hard", sha])
 	mustGit(s, s.worktree, ["clean", "-q", "-fd", "-e", "node_modules"])
 }
 
 // A failed child's first stderr line names the cause; the stack follows it.
 function reason(r) {
 	return r.error?.message ?? (r.stderr ?? "").split("\n").find((l) => l.trim()) ?? "no stderr"
-}
-
-// Bounded repo-supplied command in the worktree; its outcome is logged.
-export function runCommand(s, label, cmd, timeoutMs) {
-	const r = spawnSync("bash", ["-c", cmd], { cwd: s.worktree, env: s.env, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] })
-	const code = r.error ? 127 : (r.status ?? 128)
-	log(s, `${label}: ${code === 0 ? "ok" : `FAIL exit=${code} — ${reason(r)}`}`)
-	return code === 0
-}
-
-// Every change since the last green run matches skipPattern: nothing the
-// suite could newly prove.
-function skippable(s, sha) {
-	const state = readJson(s.stateFile)
-	if (!state?.green || state.phase !== "done" || !state.sha || state.sha === sha) return null
-	const diff = git(s, s.repo, ["diff", "--name-only", `${state.sha}..${sha}`])
-	if (!diff.ok) return null
-	const skip = new RegExp(s.mc.skipPattern ?? DEFAULT_SKIP)
-	return diff.out.split("\n").every((f) => f === "" || skip.test(f)) ? state.sha : null
 }
 
 function eventsStamp(config) {
@@ -157,24 +145,44 @@ function boardSnapshot(config, s) {
 	if (r.status !== 0) log(s, `board-snapshot: FAIL exit=${r.status ?? 128} — ${reason(r)}`)
 }
 
-function startRunner(config, s, sha) {
+// run.json exists before the runner starts; from then on the runner is its
+// only writer until the next cancel.
+function startRunner(config, s, sha, rerun) {
 	const runDir = join(s.dir, "runs", `${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}-${sha.slice(0, 8)}`)
 	mkdirSync(runDir, { recursive: true })
+	writeAtomic(s.runFile, `${JSON.stringify({ sha, runDir, jobs: [], startedAt: new Date().toISOString() })}\n`)
 	const out = openSync(join(runDir, "runner.log"), "a")
 	const script = new URL("./run.mjs", import.meta.url).pathname
-	const child = spawn(process.execPath, [script, config.name, sha, runDir], { detached: true, stdio: ["ignore", out, out], env: s.env })
+	const args = [script, config.name, sha, runDir, ...(rerun ? ["--rerun"] : [])]
+	const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", out, out], env: s.env })
+	closeSync(out)
 	child.unref()
-	writeAtomic(s.runFile, `${JSON.stringify({ sha, runDir, runnerPid: child.pid, jobs: [], startedAt: new Date().toISOString() })}\n`)
 	log(s, `run start sha=${sha} runner=${child.pid} dir=${runDir}`)
+}
+
+// O_EXCL create; a lock whose holder pid is gone is stale.
+function takeLock(lock) {
+	for (let i = 0; i < 2; i++) {
+		try {
+			writeFileSync(lock, String(process.pid), { flag: "wx" })
+			return true
+		} catch {
+			try {
+				process.kill(Number(readFileSync(lock, "utf8")), 0)
+				return false
+			} catch {
+				rmSync(lock, { force: true })
+			}
+		}
+	}
+	return false
 }
 
 async function tick(config, rerun) {
 	const s = settings(config)
 	mkdirSync(s.dir, { recursive: true })
 	const lock = join(s.dir, ".tick.lock")
-	const holder = Number(existsSync(lock) ? readFileSync(lock, "utf8") : 0)
-	if (holder > 1 && holder !== process.pid && alive(holder)) return
-	writeFileSync(lock, String(process.pid))
+	if (!takeLock(lock)) return
 	try {
 		boardSnapshot(config, s)
 
@@ -187,18 +195,7 @@ async function tick(config, rerun) {
 		log(s, `${rerun ? "rerun" : "tip moved"} ${run?.sha?.slice(0, 8) ?? "none"} -> ${tip.slice(0, 8)} (origin/${branch})`)
 		if (run) await cancel(s, run)
 		moveWorktree(s, tip)
-		if (s.mc.cleanup) runCommand(s, "cleanup", s.mc.cleanup, s.stepTimeoutMs)
-
-		const prev = rerun ? null : skippable(s, tip)
-		if (prev) {
-			const at = new Date().toISOString().replace(/\.\d+Z$/, "Z")
-			const steps = { skipped: `skip-pattern-only since ${prev.slice(0, 8)}`, _: "end" }
-			writeAtomic(s.stateFile, `${JSON.stringify({ sha: tip, finishedAt: at, green: true, failing: [], phase: "done", steps })}\n`)
-			writeAtomic(s.runFile, `${JSON.stringify({ sha: tip, jobs: [], skipped: prev })}\n`)
-			log(s, `run skipped sha=${tip} (skip-pattern-only since ${prev.slice(0, 8)})`)
-			return
-		}
-		startRunner(config, s, tip)
+		startRunner(config, s, tip, rerun)
 	} finally {
 		rmSync(lock, { force: true })
 	}

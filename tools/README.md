@@ -130,9 +130,10 @@ empty on green. boot-report prints the last verdict at every PM and TL boot.
 3. Run `tools/install.sh <name>` (`--dry-run` first to see the rendered
    launchd PATH). It resolves your `bun` and the real `gh` (the first `gh`
    on PATH that is not a bgh symlink), renders every
-   `tools/launchd/*.plist.template` file with those paths substituted in, lints them with `plutil -lint`, and writes the
-   result to `~/Library/LaunchAgents/` (override with `$LAUNCH_AGENTS_DIR`,
-   mainly useful for testing). It does **not** run `launchctl bootstrap`
+   `tools/launchd/*.plist.template` file with those paths substituted in,
+   lints them with `plutil -lint`, and writes the result to
+   `~/Library/LaunchAgents/` (override with `$LAUNCH_AGENTS_DIR`, mainly
+   useful for testing). It does **not** run `launchctl bootstrap`
    itself — it prints the exact commands so you can review the rendered
    plists first.
 4. Run the printed `launchctl bootstrap gui/$UID ...` commands.

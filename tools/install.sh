@@ -16,16 +16,20 @@ set -euo pipefail
 #   --dry-run renders and lints into a temp dir, prints the launchd PATH,
 #   and writes nothing under LaunchAgents.
 
-DRY_RUN=false
-if [ "${1:-}" = --dry-run ]; then
-	DRY_RUN=true
-	shift
-fi
-CONFIG_NAME="${1:-}"
-if [ -z "$CONFIG_NAME" ]; then
+usage() {
 	echo "usage: tools/install.sh [--dry-run] <configName>" >&2
 	exit 1
-fi
+}
+DRY_RUN=false
+CONFIG_NAME=""
+for arg in "$@"; do
+	case "$arg" in
+		--dry-run) DRY_RUN=true ;;
+		-*) usage ;;
+		*) [ -z "$CONFIG_NAME" ] || usage; CONFIG_NAME="$arg" ;;
+	esac
+done
+[ -n "$CONFIG_NAME" ] || usage
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_TOOLS_HOME="${AGENT_TOOLS_HOME:-$HOME/.config/agent-tools}"
@@ -55,10 +59,8 @@ fi
 
 BUN_DIR="$(dirname "$BUN_PATH")"
 GH_DIR="$(dirname "$GH_PATH")"
-# launchd gets no user PATH: render bun, node, ~/.local/bin (bgh and other
-# wrappers), then the real gh from this shell. node is optional for the
-# poller, but a test runner that spawns a real node must not land on bun's
-# shim.
+# launchd gets no user PATH: bun, node (a test runner that spawns node must
+# not land on bun's shim), ~/.local/bin (bgh and other wrappers), real gh.
 NODE_PATH_BIN="$(command -v node || true)"
 NODE_DIR="${NODE_PATH_BIN:+$(dirname "$NODE_PATH_BIN")}"
 RENDERED_PATH="$BUN_DIR:${NODE_DIR:+$NODE_DIR:}$HOME/.local/bin:$GH_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
