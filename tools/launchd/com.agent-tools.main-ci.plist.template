@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
 	<!-- PATH is rendered by tools/install.sh; never hardcode a prefix here.
-	     The tick exits at once and leaves the detached run going, so launchd
-	     must not reap the run's process groups. -->
+	     One long-lived driver; launchd restarts it after any exit, and a
+	     restarted driver starts a fresh run on the current tip. -->
 	<key>Label</key><string>com.agent-tools.main-ci</string>
 	<key>ProgramArguments</key>
 	<array>
@@ -19,8 +19,7 @@
 	</dict>
 	<key>WorkingDirectory</key><string>__TOOLS_DIR__/main-ci</string>
 	<key>RunAtLoad</key><true/>
-	<key>StartInterval</key><integer>45</integer>
-	<key>AbandonProcessGroup</key><true/>
+	<key>KeepAlive</key><true/>
 	<!-- No ProcessType=Background: DARWIN_BG starves the child tree under
 	     sustained interactive load; each step runs under nice -n 19. -->
 	<key>StandardOutPath</key><string>__VAR_DIR__/main-ci-launchd.log</string>

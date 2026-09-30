@@ -106,9 +106,9 @@ that config started < 60s ago). Appends one line per step to
 A second step-list key, passed as the third CLI argument (e.g. `onMergeGate`),
 runs in its own debounced job with its own log file.
 
-`main-ci/main-ci.mjs <name>` — one tick of its own launchd job; writes
-`$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json` in main-health's shape
-plus `phase`, `run.json`, `run.log`, `runs/`). boot-report reads its
+`main-ci/main-ci.mjs <name>` — a long-lived driver, its own launchd job;
+writes `$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json` in
+main-health's shape plus `phase`, `run.log`, `runs/`). boot-report reads its
 `state.json` first and falls back to main-health's. See `main-ci/README.md`.
 
 `main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
@@ -138,11 +138,12 @@ empty on green. boot-report prints the last verdict at every PM and TL boot.
    plists first.
 4. Run the printed `launchctl bootstrap gui/$UID ...` commands.
 
-`<name>` here is only used for the main-ci tick's config argument and the
-on-merge watcher's `WatchPaths` argument (it watches one config's
-`gh-status/events/` dir and runs that config's `onMerge` steps). If you're tracking multiple repos with `gh-status` but only
-want on-merge behavior for one of them, that is the intended use;
-`gh-status` polls every config regardless.
+`<name>` here is only used for the main-ci driver's config argument and
+the on-merge watcher's `WatchPaths` argument (it watches one config's
+`gh-status/events/` dir and runs that config's `onMerge` steps). If you're
+tracking multiple repos with `gh-status` but only want on-merge behavior for
+one of them, that is the intended use; `gh-status` polls every config
+regardless.
 
 ### Uninstall
 

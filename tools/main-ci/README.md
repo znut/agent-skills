@@ -3,65 +3,65 @@
 A post-merge CI driver. It follows one repo's default-branch tip and runs the
 config's checks on it. This README is the design doc.
 
-## Tip tracking
+## One process
 
-One launchd job (`com.agent-tools.main-ci`, `StartInterval` 45 s) runs one
-tick: `bun tools/main-ci/main-ci.mjs <configName>`. A tick:
+The driver is one long-lived process: `bun tools/main-ci/main-ci.mjs
+<configName>`, run by the launchd job `com.agent-tools.main-ci` with
+`KeepAlive`. Every 45 s it polls:
 
-1. Runs board-snapshot when the config has a `board` block and the newest
-   mtime under `var/<name>/gh-status/events/` changed since the last tick.
-2. Runs `git fetch origin` in `mainCi.repo` and resolves
-   `origin/<branch>`.
-3. Returns when that sha equals `run.json`'s `sha`: the tip did not move.
-   An idle tick logs nothing.
+1. It runs board-snapshot when the config has a `board` block and the
+   newest mtime under `var/<name>/gh-status/events/` changed since the last
+   poll.
+2. It runs `git fetch origin` in `mainCi.repo` and resolves
+   `origin/<branch>`. Each git call is killed after 120 s, so a stalled
+   fetch fails that poll and the next poll retries.
+3. When the tip equals the current run's sha, it does nothing more.
 4. When the tip moved, it cancels the current run, moves the `origin-main`
    worktree to the new tip (`checkout --detach -f`,
-   `clean -fd -e node_modules`), writes a fresh `run.json`, and starts a
-   detached runner, `run.mjs`, on the new sha. Then it exits.
+   `clean -fd -e node_modules`), and starts a run on the new sha.
 
-Every repo command runs in the runner, never in the tick, so a hung command
-delays no tip check and a tip move cancels it.
+The driver holds the current run and its process groups in memory. It
+writes no lock file and stores no pid, so a crash leaves nothing to recover
+from. launchd restarts the process, and a started driver always begins a
+fresh run on the current tip. A tick job with a detached runner, a lock
+file, and pids in a state file is rejected: every handoff between the tick
+and the runner was a race, and stored pids can name unrelated processes
+after a restart.
 
 The driver alone moves the `origin-main` worktree. Its path defaults to
 `<repo>-worktrees/origin-main`, and it is added `--lock` because repo
-cleanup scripts remove unlocked worktrees. A tick lock (`.tick.lock`,
-created exclusively; a lock whose pid is gone is stale) keeps a manual tick
-from overlapping the launchd one.
+cleanup scripts remove unlocked worktrees.
 
 Tip moves are the only trigger. A comment, a review, or a ready flip starts
 nothing; a `WatchPaths` job on `events/` (on-merge) is rejected because every
-such event fires it.
+such event fires it. A failed poll logs `poll FAILED: <cause>` once per
+distinct cause and `poll ok again` when it recovers.
 
 ## Cancel and restart
 
-The runner and every command it starts are each their own process group.
-The runner records its pid as `runnerPid` in `run.json` and each running
-command's group in `jobs`; after the tick writes `run.json`, the runner is
-its only writer. On a tip move the tick stops the runner group first, so no
-new command starts, then re-reads `run.json` and stops every listed job
-group. Stopping is `SIGTERM`, then `SIGKILL` for any group alive after 10 s.
+Every command a run starts is its own process group (`detached`), added to
+the run's in-memory set in the same synchronous turn as the spawn. A cancel
+first marks the run cancelled, so it starts no further command and writes no
+further state. It then sends `SIGTERM` to every group in the set and
+`SIGKILL` to any group alive after 10 s, and waits for the run to unwind.
 Only then does the worktree move, because a live command would write into
 the new checkout. A group kill reaches every grandchild, such as a test pool
-or a dev server; when a command exits on its own, its group is killed too,
-so nothing it left behind holds a port.
+or a dev server. When a command exits on its own, its group is killed too,
+so nothing it left behind holds a port. A run cancelled after its first
+`state.json` write is marked `"phase": "cancelled"`.
 
-A run with `finishedAt` set is never signalled: its pids may belong to
-unrelated processes by now. A cancelled run gets `finishedAt`, and a run
-cancelled after its first `state.json` write is marked
-`"phase": "cancelled"`.
-
-The plist sets `AbandonProcessGroup`, so launchd leaves the detached run
-alone when the tick exits.
-
-`--rerun` starts a fresh run on the current tip. Use it after a reboot or a
-killed runner, because a tip that did not move starts nothing.
+When the driver exits (SIGTERM from `launchctl bootout`, SIGINT, SIGHUP, or
+an uncaught error), its exit handler sends `SIGKILL` to the current run's
+groups. A `SIGKILL` of the driver itself runs no handler, and its groups
+keep running; after one, run `pkill -f <worktree path>` before the
+restarted driver's first run.
 
 ## Run order
 
 1. **Cleanup and skip check**: `mainCi.cleanup` runs, logged but outside
    the verdict. When every path changed since the last green, finished run
-   matches `skipPattern`, the runner writes a green `state.json` with a
-   `skipped` step and stops. `--rerun` never skips.
+   matches `skipPattern`, the run writes a green `state.json` with a
+   `skipped` step and stops.
 2. **Core**: `mainCi.core` steps, in order in the worktree. A failed core
    step does not stop the next one, so one red run reports every broken
    step. Core green means every core step passed.
@@ -74,13 +74,13 @@ killed runner, because a tip that did not move starts nothing.
    steps that run in order, such as a build and then the screenshots that
    need it. At most `buildConcurrency` lanes run at once (default 1). Unlike
    core, a failed step marks the rest of its lane `skipped`: a later step in
-   a lane needs the earlier one's output. `state.json` is
-   rewritten after each step and ends with `"phase": "done"`.
+   a lane needs the earlier one's output. The run ends only after every lane
+   has settled, a lane that threw included.
 
 A red core skips the warm cache and the builds. A cleanup or warm-cache
 failure is logged and leaves `green` as it was: neither says anything about
-the tip. A runner that throws writes `green: false`, a `runner: FAIL` step,
-and `"phase": "done"`.
+the tip. A run that throws writes `green: false`, a `runner: FAIL` step, and
+`"phase": "done"`.
 
 Each step runs as `nice -n 19 bash -c <cmd>`. `nice` yields to interactive
 work; `ProcessType=Background` (DARWIN_BG) would starve test pools under
@@ -96,22 +96,19 @@ Under `$AGENT_TOOLS_HOME/var/<name>/main-ci/`:
   is main-health's shape plus `phase` (`builds`, `done`, or `cancelled`).
   boot-report and the repo's warm-cache command read it. A new run leaves the
   previous verdict in place until its core finishes.
-- `run.json`: the current run's `sha`, `runDir`, `runnerPid`, `jobs`,
-  `startedAt`, and `finishedAt`.
 - `run.log`: the driver's decisions and step outcomes, one timestamped line
-  each. It records tip moves, cancels, run start, and each step's `ok` or
-  `FAIL exit=<code>` with the first stderr line or the last log line. It also
+  each. It records driver start, tip moves, cancels, run start, and each
+  step's `ok` or `FAIL exit=<code>` with the step log's last line. It also
   records `FAIL <file> › <test>` lines parsed from vitest output, the
-  cleanup, warm-cache, and board-snapshot outcomes, and `tick FAILED` when
-  `git fetch` or the checkout fails.
-- `runs/<UTC ts>-<sha8>/`: `step-<name>.log` per step, `cleanup.log`,
-  `warm-cache.log`, and `runner.log`, the runner's own output. The last 20
-  run dirs are kept.
+  cleanup, warm-cache, and board-snapshot outcomes, and `poll FAILED` when
+  git fails or times out.
+- `runs/<UTC ts>-<sha8>/`: `step-<name>.log` per step, `cleanup.log`, and
+  `warm-cache.log`. The last 20 run dirs are kept.
 
 A step that cannot run is a failure. A missing binary makes `bash` exit 127,
 and a failed spawn is recorded as exit 127, so the step's status is `FAIL`
-with a logged reason. A failed fetch (auth, network) logs `tick FAILED` and
-exits 1.
+with a logged reason. The driver's own stderr goes to
+`var/main-ci-launchd.log`.
 
 ## What the repo config supplies
 
@@ -120,7 +117,7 @@ green means. The driver owns everything else.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `repo` | yes | Main checkout. The tick fetches there and adds the worktree from it; that checkout's HEAD never moves |
+| `repo` | yes | Main checkout. The driver fetches there and adds the worktree from it; that checkout's HEAD never moves |
 | `core` | yes | `[{name, cmd}]`, run in order |
 | `builds` | no | `[[{name, cmd}, ...], ...]`: lanes that run in parallel, steps in order within a lane |
 | `buildConcurrency` | no | Lanes at once (default 1) |
@@ -129,7 +126,7 @@ green means. The driver owns everything else.
 | `worktree` | no | `origin-main` worktree path (default `<repo>-worktrees/origin-main`) |
 | `branch` | no | Branch to follow (default: `origin/HEAD`, else `main`) |
 | `env` | no | Map exported to every command |
-| `skipPattern` | no | ERE of paths that cannot affect the checks; a tip whose changes all match it is stamped green without a run (default `^docs/\|\.md$`) |
+| `skipPattern` | no | ERE of paths that cannot affect the checks; a tip whose changes all match it is stamped green without running the checks (default `^docs/\|\.md$`) |
 | `stepTimeout` | no | Seconds per step, cleanup, and warm cache (default 1800) |
 
 Every command runs in the worktree with `MAIN_CI_VAR` (the var dir above),
@@ -163,8 +160,8 @@ working until then.
 ## Manual runs
 
 ```bash
-bun tools/main-ci/main-ci.mjs <name>           # one tick
-bun tools/main-ci/main-ci.mjs <name> --rerun   # fresh run on the current tip
+bun tools/main-ci/main-ci.mjs <name>   # the driver in the foreground; Ctrl-C stops its run
+launchctl kickstart -k gui/$UID/com.agent-tools.main-ci   # restart: a fresh run on the current tip
 tail -f "$AGENT_TOOLS_HOME/var/<name>/main-ci/run.log"
 ```
 

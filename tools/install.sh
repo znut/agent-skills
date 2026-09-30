@@ -59,8 +59,9 @@ fi
 
 BUN_DIR="$(dirname "$BUN_PATH")"
 GH_DIR="$(dirname "$GH_PATH")"
-# launchd gets no user PATH: bun, node (a test runner that spawns node must
-# not land on bun's shim), ~/.local/bin (bgh and other wrappers), real gh.
+# launchd gets no user PATH: bun, node (not bun's shim), then ~/.local/bin
+# ahead of the real gh, so `gh` resolves to bgh (the clone's identity) and
+# bgh finds the real binary later on PATH.
 NODE_PATH_BIN="$(command -v node || true)"
 NODE_DIR="${NODE_PATH_BIN:+$(dirname "$NODE_PATH_BIN")}"
 RENDERED_PATH="$BUN_DIR:${NODE_DIR:+$NODE_DIR:}$HOME/.local/bin:$GH_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
