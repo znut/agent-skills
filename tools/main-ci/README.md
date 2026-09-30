@@ -228,8 +228,9 @@ then runs with its output in `<head8>-<tip8>.<attempt>.log`.
 (the carried result's name) when a green carried. `log` is the attempt's
 `<head8>-<tip8>.<attempt>.log`: attempts count 1, 2, … per pairing, a rerun
 after a deleted result file is the next one, and no attempt's log is deleted
-or overwritten. `MAIN_CI_SPEC` is the first `FAIL <file> > <test>` line
-(ANSI stripped) of that log. After a green result, a
+or overwritten while the PR is open (a merged or closed PR loses its results
+directory). `MAIN_CI_SPEC` is the first vitest `FAIL <file> > <test>` or
+playwright `N) [project] › <file> › <test>` line (ANSI stripped) of that log. After a green result, a
 PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the
 `origin-main` worktree. A failed `gh pr ready` is retried on the next poll, at

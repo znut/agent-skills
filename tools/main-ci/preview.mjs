@@ -28,12 +28,12 @@ function lastLine(file) {
 	return readFileSync(file, "utf8").trim().split("\n").pop() || "no output"
 }
 
-// The first vitest/playwright "FAIL <file> > <test>" line of an attempt's log, ANSI stripped.
+// The first vitest "FAIL [project] <file> > <test>" or playwright "N) [project] › <file> › <test>" line of an attempt's log, ANSI stripped.
 function firstFailingSpec(file) {
 	if (!file) return ""
 	try {
 		const plain = readFileSync(file, "utf8").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
-		return plain.match(/\bFAIL\s+(\S+ > .+)$/m)?.[1].trim() ?? ""
+		return plain.match(/(?:\bFAIL\s+(\S.* > .+)|^\s*(?:\S+:\s+)?\d+\)\s+(\S.* › .+))$/m)?.slice(1).find(Boolean)?.trim() ?? ""
 	} catch {
 		return ""
 	}
