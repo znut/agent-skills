@@ -215,8 +215,10 @@ checks out the tip, and merges the head with `--no-ff`. A failed merge is a
 conflict: the result is red with `"conflict": true`, and the check does not
 run. After a clean merge, when an earlier tip holds a green result for the
 same head and `preview.unaffected` exits 0, that green carries to this tip
-without a run, and a ready PR stays ready. Otherwise a ready PR is moved to
-draft (`gh pr ready --undo`) and `vouched.json` records its head. The check
+without a run, and a ready PR stays ready. Otherwise `vouched.json` records
+the head and then a ready PR is moved to draft (`gh pr ready --undo`); a
+cancel between the two leaves the vouch, so a later tip still restores the
+PR. The check
 then runs with its output in `<head8>-<tip8>.log`.
 
 **Result files.** Each verdict is written atomically to
@@ -225,7 +227,8 @@ then runs with its output in `<head8>-<tip8>.log`.
 (the carried result's name) when a green carried. After a green result, a
 PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the
-`origin-main` worktree. After a red result, `preview.notify` runs once per
+`origin-main` worktree. A failed `gh pr ready` is retried on every poll until
+it succeeds or the head moves. After a red result, `preview.notify` runs once per
 pair; `<head8>-<tip8>.notified` marks it sent. A merged or closed PR loses
 its preview worktree and its results directory.
 

@@ -90,25 +90,47 @@ export function startPreviews(s, sha, env, runDir) {
 	}
 
 	// A green result restores the ready state the preview took; a red one
-	// sends the config's notice once per (head, tip) pair.
+	// sends the config's notice once per (head, tip) pair. False = retry on the next poll.
 	async function followUp(jobs, pr, result) {
 		const dir = prDir(pr.number)
 		const vouchFile = join(dir, "vouched.json")
 		if (result.green) {
-			if (readJson(vouchFile)?.head !== pr.head) return
+			if (readJson(vouchFile)?.head !== pr.head) return true
 			const now = await view(jobs, pr)
-			if (now.headRefOid !== pr.head) return s.log(`preview #${pr.number}: stays draft, head moved to ${now.headRefOid.slice(0, 8)}`)
-			if (!now.isDraft) return rmSync(vouchFile, { force: true })
+			if (now.headRefOid !== pr.head) {
+				s.log(`preview #${pr.number}: stays draft, head moved to ${now.headRefOid.slice(0, 8)}`)
+				return true
+			}
+			if (!now.isDraft) {
+				rmSync(vouchFile, { force: true })
+				return true
+			}
 			const r = await run(jobs, pr, "ready", 'gh pr ready "$MAIN_CI_PR" --repo "$MAIN_CI_REPO"', s.worktree)
-			if (r.code !== 0) return s.log(`preview #${pr.number}: stays draft, gh pr ready FAIL exit=${r.code} — ${lastLine(r.file)}`)
+			if (r.code !== 0) {
+				s.log(`preview #${pr.number}: stays draft, gh pr ready FAIL exit=${r.code} — ${lastLine(r.file)}; retrying on the next poll`)
+				return false
+			}
 			rmSync(vouchFile, { force: true })
-			return s.log(`preview #${pr.number}: ready again`)
+			s.log(`preview #${pr.number}: ready again`)
+			return true
 		}
+		// A failed notice waits for the next tip: an unroutable PR would cost a gh call every poll.
 		const marker = join(dir, `${pairOf(pr.head)}.notified`)
-		if (!p.notify || existsSync(marker)) return
+		if (!p.notify || existsSync(marker)) return true
 		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`) })
 		if (r.code === 0) writeFileSync(marker, "")
 		else s.log(`preview #${pr.number}: notify FAIL exit=${r.code} — ${lastLine(r.file)}`)
+		return true
+	}
+
+	// Settled only once nothing is left to retry, so the next poll repeats a failed follow-up.
+	async function settle(jobs, pr, result) {
+		try {
+			if (await followUp(jobs, pr, result)) settled.set(pr.number, pr.head)
+		} catch (e) {
+			if (e === CANCELLED) throw e
+			s.log(`preview #${pr.number}: FAIL ${message(e)}; retrying on the next poll`)
+		}
 	}
 
 	async function preview(jobs, pr) {
@@ -135,11 +157,12 @@ export function startPreviews(s, sha, env, runDir) {
 			const prior = priorGreen(n, pr.head)
 			if (prior && (await run(jobs, pr, "unaffected", p.unaffected, s.worktree, { MAIN_CI_PRIOR: prior.main })).code === 0) carried = prior.name
 		}
-		// Draft for the check itself; a carried green leaves a ready PR ready.
+		// Draft for the check itself; a carried green leaves a ready PR ready. The
+		// vouch comes first: a cancel after GitHub took the draft must not lose it.
 		if (!carried && !now.isDraft) {
+			writeAtomic(join(dir, "vouched.json"), `${JSON.stringify({ head: pr.head, at: new Date().toISOString().replace(/\.\d+Z$/, "Z") })}\n`)
 			const r = await run(jobs, pr, "draft", 'gh pr ready --undo "$MAIN_CI_PR" --repo "$MAIN_CI_REPO"', s.worktree)
 			if (r.code !== 0) throw new Error(`gh pr ready --undo FAILED exit=${r.code}: ${lastLine(r.file)}`)
-			writeAtomic(join(dir, "vouched.json"), `${JSON.stringify({ head: pr.head, at: new Date().toISOString().replace(/\.\d+Z$/, "Z") })}\n`)
 		}
 
 		let green = false
@@ -153,9 +176,8 @@ export function startPreviews(s, sha, env, runDir) {
 		const result = { pr: n, head: pr.head, main: sha, green, conflict, log, finishedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z") }
 		if (carried) result.inherited = carried
 		writeAtomic(join(dir, `${pair}.json`), `${JSON.stringify(result)}\n`)
-		settled.set(n, pr.head)
 		s.log(`preview #${n} ${pair}: ${conflict ? "CONFLICT" : carried ? `green (carried from ${carried})` : green ? "green" : `RED — ${log}`}`)
-		await followUp(jobs, pr, result)
+		await settle(jobs, pr, result)
 	}
 
 	function pump() {
@@ -220,9 +242,8 @@ export function startPreviews(s, sha, env, runDir) {
 		// A deleted result file is a rerun request: the pair runs again.
 		const result = readJson(join(prDir(n), `${pairOf(pr.head)}.json`))
 		if (result) {
-			if (settled.get(n) === pr.head) return
-			settled.set(n, pr.head)
-			return followUp(aux, pr, result)
+			if (settled.get(n) !== pr.head) await settle(aux, pr, result)
+			return
 		}
 		// A PR this driver drafted for its preview still ranks as ready.
 		const ready = !pr.isDraft || readJson(join(prDir(n), "vouched.json"))?.head === pr.head
