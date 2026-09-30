@@ -15,6 +15,20 @@
 		"skipPattern": "^docs/|\\.md$",
 		"stepTimeout": 1800
 	},
+	"mainCi": {
+		"repo": "~/src/your-repo",
+		"core": [
+			{ "name": "install", "cmd": "bun install --frozen-lockfile" },
+			{ "name": "check", "cmd": "bun run check" },
+			{ "name": "test", "cmd": "bun run test" }
+		],
+		"builds": [
+			[{ "name": "build-web", "cmd": "bun run --cwd apps/web build" }, { "name": "screenshots-web", "cmd": "bun run --cwd apps/web screenshots" }]
+		],
+		"buildConcurrency": 2,
+		"cleanup": "bash scripts/cleanup-worktrees.sh --apply",
+		"env": { "CI": "1" }
+	},
 	"onMerge": [
 		{ "type": "board-snapshot" },
 		{ "type": "command", "cmd": "bash scripts/cleanup-worktrees.sh --apply", "cwd": "~/src/your-repo" },

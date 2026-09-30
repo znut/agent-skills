@@ -23,8 +23,12 @@ tools/
                               (install on PATH like bgh:
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
+  main-ci/                    post-merge CI driver: follows the default tip,
+                              cancels and restarts on a tip move; steps come
+                              from the config's mainCi block (main-ci/README.md)
   main-health/                post-merge suite runner on the default tip;
-                              steps come from the config's mainHealth block
+                              steps come from the config's mainHealth block;
+                              main-ci replaces it
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   hooks/                      Claude Code Stop hook: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
@@ -48,6 +52,7 @@ shows the shape (fill-me-in placeholders); copy it to
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
 | `onMerge` | on-merge runner | yes, if using on-merge | Ordered array of steps, see `onMerge` step types |
+| `mainCi` | main-ci | yes, if using main-ci | `repo`, `core` steps, optional `builds` lanes, `buildConcurrency`, `warmCache`, `cleanup` — see `main-ci/README.md` |
 | `mainHealth` | main-health | yes, if using main-health | `repo` (main checkout), `steps` (`[{name, cmd}]`, run in order in a locked worktree at the default tip), optional `worktree`, `env`, `skipPattern`, `stepTimeout` — see the script header |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
@@ -101,6 +106,11 @@ that config started < 60s ago). Appends one line per step to
 A second step-list key, passed as the third CLI argument (e.g. `onMergeGate`),
 runs in its own debounced job with its own log file.
 
+`main-ci/main-ci.mjs <name>` — one tick of its own launchd job; writes
+`$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json` in main-health's shape
+plus `phase`, `run.json`, `run.log`, `runs/`). boot-report reads its
+`state.json` first and falls back to main-health's. See `main-ci/README.md`.
+
 `main-health/main-health.sh <name>` — usually an `onMerge` command step. Runs
 the config's `mainHealth.steps` on the fetched default tip in a locked
 worktree and writes `$AGENT_TOOLS_HOME/var/<name>/main-health/state.json`.
@@ -117,18 +127,19 @@ empty on green. boot-report prints the last verdict at every PM and TL boot.
    builtins only). You do need `bun` and the GitHub CLI (`gh`) on `PATH`.
 2. Add a config file per target repo under `$AGENT_TOOLS_HOME/config/`
    (default `~/.config/agent-tools/config/`) — see Config contract.
-3. Run `tools/install.sh <name>`. It resolves your `bun` and `gh`
-   locations, renders both `tools/launchd/*.plist.template` files with those
-   paths substituted in, lints them with `plutil -lint`, and writes the
+3. Run `tools/install.sh <name>` (`--dry-run` first to see the rendered
+   launchd PATH). It resolves your `bun` and the real `gh` (the first `gh`
+   on PATH that is not a bgh symlink), renders every
+   `tools/launchd/*.plist.template` file with those paths substituted in, lints them with `plutil -lint`, and writes the
    result to `~/Library/LaunchAgents/` (override with `$LAUNCH_AGENTS_DIR`,
    mainly useful for testing). It does **not** run `launchctl bootstrap`
    itself — it prints the exact commands so you can review the rendered
    plists first.
 4. Run the printed `launchctl bootstrap gui/$UID ...` commands.
 
-`<name>` here is only used for the on-merge watcher's `WatchPaths` argument
-(it watches one config's `gh-status/events/` dir and runs that config's
-`onMerge` steps). If you're tracking multiple repos with `gh-status` but only
+`<name>` here is only used for the main-ci tick's config argument and the
+on-merge watcher's `WatchPaths` argument (it watches one config's
+`gh-status/events/` dir and runs that config's `onMerge` steps). If you're tracking multiple repos with `gh-status` but only
 want on-merge behavior for one of them, that is the intended use;
 `gh-status` polls every config regardless.
 
@@ -136,8 +147,9 @@ want on-merge behavior for one of them, that is the intended use;
 
 ```bash
 launchctl bootout gui/$UID/com.agent-tools.gh-status
+launchctl bootout gui/$UID/com.agent-tools.main-ci
 launchctl bootout gui/$UID/com.agent-tools.on-merge
-rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist ~/Library/LaunchAgents/com.agent-tools.on-merge.plist
+rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist ~/Library/LaunchAgents/com.agent-tools.main-ci.plist ~/Library/LaunchAgents/com.agent-tools.on-merge.plist
 ```
 
 ### Manual runs

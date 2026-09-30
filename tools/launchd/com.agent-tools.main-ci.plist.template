@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PATH is rendered by tools/install.sh from the resolved bun, node, and
+	     gh locations; never hardcode an install prefix here. One tick per
+	     StartInterval; the tick exits at once and leaves the detached run
+	     going, so launchd must not reap the run's process groups. -->
+	<key>Label</key><string>com.agent-tools.main-ci</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__BUN__</string>
+		<string>__TOOLS_DIR__/main-ci/main-ci.mjs</string>
+		<string>__CONFIG_NAME__</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key><string>__PATH__</string>
+		<key>AGENT_TOOLS_HOME</key><string>__AGENT_TOOLS_HOME__</string>
+	</dict>
+	<key>WorkingDirectory</key><string>__TOOLS_DIR__/main-ci</string>
+	<key>RunAtLoad</key><true/>
+	<key>StartInterval</key><integer>45</integer>
+	<key>AbandonProcessGroup</key><true/>
+	<!-- No ProcessType=Background: DARWIN_BG starves the child tree under
+	     sustained interactive load; each step runs under nice -n 19. -->
+	<key>StandardOutPath</key><string>__VAR_DIR__/main-ci-launchd.log</string>
+	<key>StandardErrorPath</key><string>__VAR_DIR__/main-ci-launchd.log</string>
+</dict>
+</plist>
