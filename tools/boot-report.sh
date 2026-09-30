@@ -213,22 +213,23 @@ else
 	fi
 fi
 
-# 2b2. Main health — the last post-merge suite verdict on the default tip.
+# 2b2. Main health — main-ci's last verdict on the default tip.
 section "Main health"
-mh="$var_dir/main-health/state.json"
+mh="$var_dir/main-ci/state.json"
 if [ -f "$mh" ]; then
+	mh_phase=$(jq -r '.phase // "done"' "$mh" 2>/dev/null || printf 'done')
 	mh_green=$(jq -r '.green' "$mh" 2>/dev/null || printf '?')
 	mh_sha=$(jq -r '.sha[0:8]' "$mh" 2>/dev/null || printf '?')
 	mh_at=$(jq -r '.finishedAt' "$mh" 2>/dev/null || printf '?')
 	if [ "$mh_green" = true ]; then
-		printf 'green at %s (%s)\n' "$mh_sha" "$mh_at"
+		printf 'green at %s (%s)%s\n' "$mh_sha" "$mh_at" "$([ "$mh_phase" = done ] || printf ' — %s, not final' "$mh_phase")"
 	else
 		printf 'RED at %s (%s): failed %s — see %s/run.log (FAIL lines) and runs/*-%s/step-<name>.log\n' "$mh_sha" "$mh_at" \
 			"$(jq -r '.steps | to_entries[] | select(.value == "FAIL") | .key' "$mh" 2>/dev/null | paste -sd, -)" "$(dirname "$mh")" "$mh_sha"
 	fi
 	[ "$mh_sha" = "$remote_short" ] || printf 'note: verdict is for %s; origin/%s tip is %s\n' "$mh_sha" "$default_branch" "${remote_short:-?}"
 else
-	printf '(no main-health state at %s)\n' "$mh"
+	printf '(no main-ci state under %s)\n' "$var_dir"
 fi
 
 # 2c. Handoff note — the previous same-role session's note, printed bounded;

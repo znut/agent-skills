@@ -18,9 +18,10 @@ through it.
 - orchestrate, review-gate, tl, and pm are rewritten around invariants and
   outcomes; the return form and the failures table are gone.
 - boot-report writes the session role marker for Claude Code, pi, and Codex
-  and prints the last main-health verdict; the UserPromptSubmit role-marker
+  and prints the last main-ci verdict; the UserPromptSubmit role-marker
   hook is gone.
-- main-health takes its steps from the config's `mainHealth` block.
+- main-ci (`tools/main-ci/README.md`) replaces main-health and on-merge; its
+  steps come from the config's `mainCi` block.
 - The poller writes `status/pr-<n>.json`, `status/state.json`,
   `events/pr-<n>.log`, `events/pr-<n>.merged`, the comments payloads, and
   `events/issue-<n>.log`, and prunes PRs merged or closed for thirty days.
@@ -37,11 +38,11 @@ through it.
    `session-role-marker.sh` UserPromptSubmit entry from `~/.claude/settings.json`,
    `~/.codex/hooks.json`, and every repo's `.claude/settings.local.json`.
    Keep watch-guard.
-3. If you run main-health: add a `mainHealth` block to
-   `$AGENT_TOOLS_HOME/config/<name>.json` (see `tools/config/example.json`
-   and the script header) and change the on-merge step to
-   `bash <agent-skills>/tools/main-health/main-health.sh <name>`. Env
-   prefixes on the old command move into `mainHealth.env`.
+3. If you ran main-health or on-merge: move their steps into a `mainCi` block
+   of `$AGENT_TOOLS_HOME/config/<name>.json` (see `tools/config/example.json`
+   and `tools/main-ci/README.md`), drop `mainHealth`, `onMerge`, and
+   `onMergeGate`, and run `tools/install.sh <name>`: it retires the on-merge
+   jobs and prints the main-ci bootstrap line.
 4. Per clone: `git config --unset agent.pr-status-dir`. Set
    `git config agent.ready-check '<command>'` when the repo has a check that
    decides ready (a local gate result, a verdict for the head).
@@ -82,5 +83,5 @@ Edit `.agent/orchestrate.md` against `templates/orchestrate.md`:
 ```sh
 bun test tools/                      # board-snapshot and poller prune
 bash tools/bgh/bgh-self-log.test.sh  # self-log and ready check
-boot-report <pm|tl-<lane>>           # role marker written, main-health line
+boot-report <pm|tl-<lane>>           # role marker written, main-ci line
 ```

@@ -18,8 +18,8 @@
  *                             on a path
  *   events/pr-<n>.head-<sha8> — marker, touched when an OPEN PR's head moves
  *                             (older head-* markers for that PR removed); no
- *                             log line, so a push wakes the on-merge watcher
- *                             only, not every per-PR lane watcher
+ *                             log line, so a push wakes no per-PR lane
+ *                             watcher (main-ci reads heads from status/)
  *   events/pr-<n>.comments.json — the new comments/reviews since the last
  *                             cursor ({author, createdAt, kind, path?, line?,
  *                             body}), overwritten each batch
@@ -233,7 +233,7 @@ async function touch(path: string): Promise<void> {
 /**
  * Push marker for an OPEN PR: touch pr-<n>.head-<sha8> and drop that PR's
  * older head-* markers. No log line — that would wake every lane watcher;
- * the existing on-merge events/ WatchPaths already fires gate-loop on this.
+ * main-ci reads the head from status/pr-<n>.json.
  */
 async function writeHeadMarker(eventsDir: string, prNumber: number, sha: string): Promise<void> {
 	const prefix = `pr-${prNumber}.head-`
@@ -386,7 +386,7 @@ async function pollIssueComments(
  * Agents then read the snapshot file with zero API calls of their own.
  * The refresh subprocess passes --force: probe-gating already rate-limits, and
  * the tool's own debounce would silently swallow a change that lands within
- * 60s of an on-merge refresh. The new stamp is stored only after a successful
+ * 60s of main-ci's refresh. The new stamp is stored only after a successful
  * refresh, so a failed run self-heals by retrying on the next cycle.
  * Known blind spot: an issue TITLE edit may not bump projectV2.updatedAt —
  * the title stales until the next real board change. Field edits, adds,

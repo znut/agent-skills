@@ -62,7 +62,7 @@ review process, so a skill update changes every repo that links these skills.
 ## Tools
 
 `tools/` contains optional local programs: a PR status poller that turns
-GitHub into local files, a board snapshot, a post-merge step runner, a local
-main-health suite, a per-clone gh identity wrapper, a session boot report,
+GitHub into local files, a board snapshot, a post-merge CI driver with merge
+previews, a per-clone gh identity wrapper, a session boot report,
 a worktree hook, and a Claude Code stop hook. Each
 documents its own setup in `tools/README.md` or its folder.
