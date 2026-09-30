@@ -196,7 +196,8 @@ export function startPreviews(s, sha, env, runDir) {
 		if (carried) green = true
 		else if (!conflict) {
 			// Every attempt keeps its own log; a rerun after a deleted result is the next attempt.
-			const taken = readdirSync(dir).map((f) => f.match(new RegExp(`^${pair}\\.(\\d+)\\.log$`))?.[1])
+			const kept = existsSync(archiveDir(n)) ? readdirSync(archiveDir(n)) : []
+			const taken = [...readdirSync(dir), ...kept].map((f) => f.match(new RegExp(`^${pair}\\.(\\d+)(?:-\\d+)?\\.log$`))?.[1])
 			log = join(dir, `${pair}.${Math.max(0, ...taken.filter(Boolean).map(Number)) + 1}.log`)
 			s.log(`preview #${n} ${pair}: start`)
 			green = (await jobs.exec(`preview #${n}`, p.cmd, { cwd: tree, env: prEnv(pr), file: log })) === 0
@@ -258,9 +259,14 @@ export function startPreviews(s, sha, env, runDir) {
 		if (!existsSync(dir)) return
 		const files = readdirSync(dir)
 		const green = new Set(files.filter((f) => f.endsWith(".json")).map((f) => readJson(join(dir, f))).filter((j) => j?.green === true && j.log).map((j) => basename(j.log)))
-		for (const f of files.filter((x) => /\.\d+\.log$/.test(x) && !green.has(x))) {
+		for (const f of files.filter((x) => /^[0-9a-f]{8}-[0-9a-f]{8}(\.\d+)?\.log$/.test(x) && !green.has(x))) {
 			mkdirSync(archiveDir(n), { recursive: true })
-			renameSync(join(dir, f), join(archiveDir(n), f))
+			// A legacy unnumbered log is attempt 0; an archived name is never overwritten.
+			const stem = f.replace(/(\.\d+)?\.log$/, "")
+			const base = /\.\d+\.log$/.test(f) ? f.slice(0, -4) : `${stem}.0`
+			let to = `${base}.log`
+			for (let k = 2; existsSync(join(archiveDir(n), to)); k++) to = `${base}-${k}.log`
+			renameSync(join(dir, f), join(archiveDir(n), to))
 		}
 	}
 
