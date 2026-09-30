@@ -60,8 +60,9 @@ directory is inside the worktree:
 
 ```bash
 launchctl bootout gui/$UID/com.agent-tools.main-ci
-kill $(lsof -a -d cwd -t +D <worktree path>)
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agent-tools.main-ci.plist
+kill $(lsof -a -d cwd -t +D <worktree path>); sleep 10
+pids=$(lsof -a -d cwd -t +D <worktree path>); [ -z "$pids" ] || kill -9 $pids
+lsof -a -d cwd -t +D <worktree path> || launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agent-tools.main-ci.plist
 ```
 
 ## Run order
