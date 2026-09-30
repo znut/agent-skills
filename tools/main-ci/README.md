@@ -227,8 +227,9 @@ then runs with its output in `<head8>-<tip8>.log`.
 (the carried result's name) when a green carried. After a green result, a
 PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the
-`origin-main` worktree. A failed `gh pr ready` is retried on every poll until
-it succeeds or the head moves. After a red result, `preview.notify` runs once per
+`origin-main` worktree. A failed `gh pr ready` is retried on the next poll, at
+most 3 attempts per (head, tip) pair, then waits for the next head or tip
+move: each call runs the ready check, which spends the shared GraphQL budget. After a red result, `preview.notify` runs once per
 pair; `<head8>-<tip8>.notified` marks it sent. A merged or closed PR loses
 its preview worktree and its results directory.
 

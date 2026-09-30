@@ -9,6 +9,8 @@ import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
 import { CANCELLED, jobSet } from "./jobs.mjs"
 
 const SHORT_MS = 120_000
+// Each gh pr ready runs the clone's ready check, which spends the shared GraphQL budget.
+const READY_TRIES = 3
 
 function readJson(file) {
 	try {
@@ -37,6 +39,7 @@ export function startPreviews(s, sha, env, runDir) {
 	const running = new Map() // pr -> { head, jobs, done }
 	const settled = new Map() // pr -> head whose result this tip has followed up
 	const failed = new Map() // pr -> head whose preview failed on this tip; the next tip retries
+	const readyTries = new Map() // pr -> { head, count } of failed gh pr ready calls on this tip
 	let started = false
 	let stopped = false
 	let scanning = null
@@ -107,8 +110,12 @@ export function startPreviews(s, sha, env, runDir) {
 			}
 			const r = await run(jobs, pr, "ready", 'gh pr ready "$MAIN_CI_PR" --repo "$MAIN_CI_REPO"', s.worktree)
 			if (r.code !== 0) {
-				s.log(`preview #${pr.number}: stays draft, gh pr ready FAIL exit=${r.code} — ${lastLine(r.file)}; retrying on the next poll`)
-				return false
+				const prev = readyTries.get(pr.number)
+				const count = prev?.head === pr.head ? prev.count + 1 : 1
+				readyTries.set(pr.number, { head: pr.head, count })
+				const giveUp = count >= READY_TRIES
+				s.log(`preview #${pr.number}: stays draft, gh pr ready FAIL exit=${r.code} (${count}/${READY_TRIES}) — ${lastLine(r.file)}; ${giveUp ? "giving up until the next head or tip" : "retrying on the next poll"}`)
+				return giveUp
 			}
 			rmSync(vouchFile, { force: true })
 			s.log(`preview #${pr.number}: ready again`)
