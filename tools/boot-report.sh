@@ -494,9 +494,9 @@ else
 	fi
 fi
 
-# 8. Worktree hygiene — the last main-ci cleanup summary, read from disk.
+# 8. Worktree hygiene — the newest main-ci cleanup summary, read from disk.
 section "Worktree hygiene"
-last_run=$(ls -1t "$var_dir/main-ci/runs" 2>/dev/null | head -1 || true)
-if [ -n "$last_run" ]; then
-	grep '^summary:' "$var_dir/main-ci/runs/$last_run/cleanup.log" 2>/dev/null | tail -1 || true
-fi
+for run in $(ls -1t "$var_dir/main-ci/runs" 2>/dev/null || true); do
+	line=$(grep '^summary:' "$var_dir/main-ci/runs/$run/cleanup.log" 2>/dev/null | tail -1 || true)
+	if [ -n "$line" ]; then printf '%s (run %s)\n' "$line" "$run"; break; fi
+done

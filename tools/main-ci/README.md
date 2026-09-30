@@ -71,7 +71,7 @@ lsof -a -d cwd -t +D <path> || launchctl bootstrap gui/$UID ~/Library/LaunchAgen
 
 ## Run order
 
-1. **Cleanup and skip check**: `mainCi.cleanup` runs, logged but outside
+1. **Cleanup and skip check**: `mainCi.cleanup` runs (skipped, and logged, while a previous cleanup's process group is still alive, tracked in `cleanup.pid`), logged but outside
    the verdict. When every path changed since the last green, finished run
    matches `skipPattern`, the run writes a green `state.json` with a
    `skipped` step and stops.
