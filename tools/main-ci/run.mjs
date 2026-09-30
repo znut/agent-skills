@@ -16,7 +16,7 @@ const KILL_GRACE_MS = 10_000
 const DEFAULT_SKIP = "^docs/|\\.md$"
 const CANCELLED = Symbol("cancelled")
 
-function signal(pgid, sig) {
+export function signal(pgid, sig) {
 	try {
 		process.kill(-pgid, sig)
 	} catch {}

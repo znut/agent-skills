@@ -10,7 +10,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { basename, dirname, join } from "node:path"
 import { loadConfig, varDir } from "../lib/config.mjs"
 import { expandHome } from "../lib/fs-util.mjs"
-import { startRun } from "./run.mjs"
+import { signal, startRun } from "./run.mjs"
 
 const POLL_MS = 45_000
 const GIT_TIMEOUT_MS = 120_000
@@ -38,21 +38,32 @@ function settings(config) {
 	}
 }
 
-// A bounded child with captured output; a timeout counts as exit 124.
+// Process groups of the in-flight captures, for the driver's exit handler.
+const captures = new Set()
+
+// A bounded child with captured output; a timeout counts as exit 124. The
+// child leads its own process group: a timeout kills the group, because a
+// helper it spawned (ssh, git-remote-https) would otherwise hold the pipes
+// open and `close` would never fire.
 function capture(s, cmd, args, timeoutMs) {
 	return new Promise((resolve) => {
-		const child = spawn(cmd, args, { env: s.env, stdio: ["ignore", "pipe", "pipe"] })
+		const child = spawn(cmd, args, { env: s.env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
+		if (child.pid) captures.add(child.pid)
 		let stdout = ""
 		let stderr = ""
 		child.stdout.on("data", (d) => (stdout += d))
 		child.stderr.on("data", (d) => (stderr += d))
 		const timer = setTimeout(() => {
 			stderr = `timed out after ${timeoutMs / 1000}s\n${stderr}`
-			child.kill("SIGKILL")
+			signal(child.pid, "SIGKILL")
 		}, timeoutMs)
-		child.on("error", (e) => resolve({ code: 127, stdout, stderr: e.message }))
+		child.on("error", (e) => {
+			clearTimeout(timer)
+			resolve({ code: 127, stdout, stderr: e.message })
+		})
 		child.on("close", (code) => {
 			clearTimeout(timer)
+			captures.delete(child.pid)
 			resolve({ code: code ?? 124, stdout: stdout.trim(), stderr })
 		})
 	})
@@ -113,8 +124,11 @@ async function drive(config) {
 	const s = settings(config)
 	let current = null
 	let lastError = ""
-	// Every exit path, a crash included, takes the run's groups with it.
-	process.on("exit", () => current?.kill())
+	// Every exit path, a crash included, takes the run's and any capture's groups with it.
+	process.on("exit", () => {
+		current?.kill()
+		for (const g of captures) signal(g, "SIGKILL")
+	})
 	for (const [sig, n] of [["SIGTERM", 15], ["SIGINT", 2], ["SIGHUP", 1]]) process.on(sig, () => process.exit(128 + n))
 	s.log(`driver start pid=${process.pid}`)
 

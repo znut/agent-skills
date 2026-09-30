@@ -13,8 +13,9 @@ The driver is one long-lived process: `bun tools/main-ci/main-ci.mjs
    newest mtime under `var/<name>/gh-status/events/` changed since the last
    poll.
 2. It runs `git fetch origin` in `mainCi.repo` and resolves
-   `origin/<branch>`. Each git call is killed after 120 s, so a stalled
-   fetch fails that poll and the next poll retries.
+   `origin/<branch>`. Each git call is its own process group, and the whole
+   group is killed after 120 s, so a stalled fetch and its helpers (ssh,
+   git-remote-https) fail that poll and the next poll retries.
 3. When the tip equals the current run's sha, it does nothing more.
 4. When the tip moved, it cancels the current run, moves the `origin-main`
    worktree to the new tip (`checkout --detach -f`,
@@ -52,9 +53,16 @@ so nothing it left behind holds a port. A run cancelled after its first
 
 When the driver exits (SIGTERM from `launchctl bootout`, SIGINT, SIGHUP, or
 an uncaught error), its exit handler sends `SIGKILL` to the current run's
-groups. A `SIGKILL` of the driver itself runs no handler, and its groups
-keep running; after one, run `pkill -f <worktree path>` before the
-restarted driver's first run.
+groups and to any git call in flight. A `SIGKILL` of the driver itself runs
+no handler, and those groups keep running. After one, stop `KeepAlive` from
+restarting the driver mid-cleanup, then kill every process whose working
+directory is inside the worktree:
+
+```bash
+launchctl bootout gui/$UID/com.agent-tools.main-ci
+kill $(lsof -a -d cwd -t +D <worktree path>)
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agent-tools.main-ci.plist
+```
 
 ## Run order
 
