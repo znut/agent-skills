@@ -161,7 +161,7 @@ exported, so a config does not hard-code those paths. Steps run in the
 worktree. The preview commands add `MAIN_CI_PR`, `MAIN_CI_HEAD`,
 `MAIN_CI_BRANCH`, and `MAIN_CI_PREVIEW` (the preview worktree);
 `unaffected` adds `MAIN_CI_PRIOR` (the tip of the green it would carry) and
-`notify` adds `MAIN_CI_RESULT` (the result file) and `MAIN_CI_SPEC` (the first
+`notify` adds `MAIN_CI_RESULT` (the result file), `MAIN_CI_LOG_ARCHIVE` (where that log survives the PR, below), and `MAIN_CI_SPEC` (the first
 failing spec of that attempt's log, empty when it has none). `preview.cmd` runs in the
 preview worktree; `eligible`, `unaffected`, and `notify` run in the
 `origin-main` worktree, so they are the tip's code, not the PR's.
@@ -228,8 +228,10 @@ then runs with its output in `<head8>-<tip8>.<attempt>.log`.
 (the carried result's name) when a green carried. `log` is the attempt's
 `<head8>-<tip8>.<attempt>.log`: attempts count 1, 2, … per pairing, a rerun
 after a deleted result file is the next one, and no attempt's log is deleted
-or overwritten while the PR is open (a merged or closed PR loses its results
-directory). `MAIN_CI_SPEC` is the first vitest `FAIL <file> > <test>` or
+or overwritten while the PR is open. A merged or closed PR loses its results
+directory, but first every red attempt's log (each `.log` no green result
+records) moves to `<resultsDir>/red-archive/pr-<n>/`, and the same pass
+deletes archived logs older than 30 days (mtime). `MAIN_CI_SPEC` is the first vitest `FAIL <file> > <test>` or
 playwright `N) [project] › <file> › <test>` line (ANSI stripped) of that log. After a green result, a
 PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the

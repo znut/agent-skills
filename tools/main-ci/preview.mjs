@@ -3,14 +3,15 @@
  * checked by the config's preview command, inside a run (run.mjs). Design in
  * README.md §Preview gate.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs"
+import { basename, join } from "node:path"
 import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
 import { CANCELLED, jobSet } from "./jobs.mjs"
 
 const SHORT_MS = 120_000
 // Each gh pr ready runs the clone's ready check, which spends the shared GraphQL budget.
 const READY_TRIES = 3
+const ARCHIVE_DAYS = 30
 
 function readJson(file) {
 	try {
@@ -56,6 +57,8 @@ export function startPreviews(s, sha, env, runDir) {
 	let scanning = null
 
 	const prDir = (n) => join(resultsDir, `pr-${n}`)
+	// Red logs outlive their PR here, so a flake ticket keeps its evidence.
+	const archiveDir = (n) => join(resultsDir, "red-archive", `pr-${n}`)
 	const pairOf = (head) => `${head.slice(0, 8)}-${main8}`
 	const treeOf = (n) => join(s.dir, "previews", `pr-${n}`)
 	const prEnv = (pr) => ({ ...env, MAIN_CI_PR: String(pr.number), MAIN_CI_HEAD: pr.head ?? "", MAIN_CI_BRANCH: pr.branch ?? "", MAIN_CI_PREVIEW: treeOf(pr.number) })
@@ -137,7 +140,7 @@ export function startPreviews(s, sha, env, runDir) {
 		// A failed notice waits for the next tip: an unroutable PR would cost a gh call every poll.
 		const marker = join(dir, `${pairOf(pr.head)}.notified`)
 		if (!p.notify || existsSync(marker)) return true
-		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`), MAIN_CI_SPEC: firstFailingSpec(result.log) })
+		const r = await run(jobs, pr, "notify", p.notify, s.worktree, { MAIN_CI_RESULT: join(dir, `${pairOf(pr.head)}.json`), MAIN_CI_SPEC: firstFailingSpec(result.log), MAIN_CI_LOG_ARCHIVE: result.log ? join(archiveDir(pr.number), basename(result.log)) : "" })
 		if (r.code === 0) writeFileSync(marker, "")
 		else s.log(`preview #${pr.number}: notify FAIL exit=${r.code} — ${lastLine(r.file)}`)
 		return true
@@ -244,7 +247,32 @@ export function startPreviews(s, sha, env, runDir) {
 			rmSync(tree, { recursive: true, force: true })
 			await run(aux, pr, "prune", "git worktree prune", s.repo)
 		}
+		archiveRedLogs(pr.number)
 		if (existsSync(prDir(pr.number))) rmSync(prDir(pr.number), { recursive: true, force: true })
+		sweepArchive()
+	}
+
+	// Every attempt log except the ones a green result records is red.
+	function archiveRedLogs(n) {
+		const dir = prDir(n)
+		if (!existsSync(dir)) return
+		const files = readdirSync(dir)
+		const green = new Set(files.filter((f) => f.endsWith(".json")).map((f) => readJson(join(dir, f))).filter((j) => j?.green === true && j.log).map((j) => basename(j.log)))
+		for (const f of files.filter((x) => /\.\d+\.log$/.test(x) && !green.has(x))) {
+			mkdirSync(archiveDir(n), { recursive: true })
+			renameSync(join(dir, f), join(archiveDir(n), f))
+		}
+	}
+
+	function sweepArchive() {
+		const root = join(resultsDir, "red-archive")
+		if (!existsSync(root)) return
+		const cutoff = Date.now() - ARCHIVE_DAYS * 86_400_000
+		for (const d of readdirSync(root)) {
+			const dir = join(root, d)
+			for (const f of readdirSync(dir)) if (statSync(join(dir, f)).mtimeMs < cutoff) rmSync(join(dir, f), { force: true })
+			if (readdirSync(dir).length === 0) rmdirSync(dir)
+		}
 	}
 
 	async function consider(pr) {
