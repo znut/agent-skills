@@ -60,9 +60,8 @@ change.
   the branch to the next worker type.
 - `ERROR`: start another reviewer. An error uses no attempt.
 
-Remove your worktree with plain `git worktree remove <path>` from outside it
-once the task is delivered; report `harness-locked` when the harness holds it.
-Never force-remove a dirty worktree. Never merge.
+Leave your worktree in place; the manager removes it after delivery. Never
+remove it yourself. Never merge.
 
 ## Return
 
@@ -73,7 +72,7 @@ reviewed_sha: <sha>
 pr_url: <url or n/a>
 review: <rounds, final verdict, where it is recorded, open findings>
 open_questions: [<question and owner>]
-worktree: removed | harness-locked
+worktree: left
 awaiting: <external id or URL, one exact check command, ordered remaining work; only with awaiting_external>
 ```
 

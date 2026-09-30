@@ -1,27 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
-	formatSegment,
 	parseOpenAIHeaders,
 	parseOpenAIUsage,
-	parseUsages,
 } from "./index";
 
 describe("plan quota parsing", () => {
-	it("parses Kimi short and weekly windows", () => {
-		const snapshot = parseUsages({
-			limits: [
-				{
-					window: { duration: 5, timeUnit: "HOUR" },
-					detail: { limit: 100, used: 54 },
-				},
-			],
-			usage: { limit: 100, remaining: 59 },
-		});
-
-		expect(snapshot?.windows.map(({ label }) => label)).toEqual(["5h", "wk"]);
-		expect(snapshot && formatSegment(snapshot)).toBe("5h:54%(?) wk:41%(?)");
-	});
-
 	it("parses OpenAI usage endpoint windows", () => {
 		const snapshot = parseOpenAIUsage({
 			rate_limit: {

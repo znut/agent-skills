@@ -5,9 +5,7 @@ set -euo pipefail
 # (gh-status and main-ci) and installs them into ~/Library/LaunchAgents (or
 # $LAUNCH_AGENTS_DIR, for testing). Never runs `launchctl bootstrap` itself —
 # it only prints the commands, so nothing gets registered with launchd
-# without a separate, explicit step from you. It does boot out and remove the
-# retired on-merge and on-merge-gate jobs when their plists are present:
-# main-ci replaces both, and either would run beside it.
+# without a separate, explicit step from you.
 #
 # Usage: tools/install.sh [--dry-run] <configName>
 #   <configName> must match the "name" field of a config you've placed at
@@ -95,30 +93,6 @@ plutil -lint "$GH_STATUS_PLIST"
 plutil -lint "$MAIN_CI_PLIST"
 
 echo
-# A failed bootout keeps the plist: deleting it would hide a job that still runs.
-STILL_LOADED=""
-for label in com.agent-tools.on-merge com.agent-tools.on-merge-gate; do
-	retired="$TARGET_DIR/$label.plist"
-	[ -f "$retired" ] || continue
-	loaded=false
-	launchctl print "gui/$UID/$label" >/dev/null 2>&1 && loaded=true
-	if [ "$DRY_RUN" = true ]; then
-		if [ "$loaded" = true ]; then
-			echo "Would retire: launchctl bootout gui/$UID/$label; rm $retired"
-		else
-			echo "Would retire: rm $retired (not loaded)"
-		fi
-		continue
-	fi
-	if [ "$loaded" = true ] && ! err=$(launchctl bootout "gui/$UID/$label" 2>&1); then
-		echo "install.sh: $label is still loaded; bootout failed: $err; kept $retired" >&2
-		STILL_LOADED="$STILL_LOADED $label"
-		continue
-	fi
-	rm "$retired"
-	echo "Retired: $label ($([ "$loaded" = true ] && echo "booted out, ")$retired removed)"
-done
-
 if [ "$DRY_RUN" = true ]; then
 	echo "Dry run: nothing changed under $TARGET_DIR."
 	echo "launchd PATH: $RENDERED_PATH"
@@ -133,7 +107,3 @@ else
 fi
 echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.gh-status.plist"
 echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.main-ci.plist   # only if this config has a mainCi block"
-if [ -n "$STILL_LOADED" ]; then
-	echo "install.sh: still loaded:$STILL_LOADED — boot it out before bootstrapping main-ci" >&2
-	exit 1
-fi

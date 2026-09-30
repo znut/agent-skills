@@ -137,5 +137,3 @@ priority: [<ticket and reason>]
 open_questions: [<question, owner, due date>]
 risks_and_dependencies: [<item>]
 ```
-
-One session may run both `/pm` and `/tl`; see the note at the end of `/tl`.

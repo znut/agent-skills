@@ -69,7 +69,6 @@ per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
   checks-success, checks-failure, approved, changes-requested, commented,
   ready-stale. One watcher per PR sees every event.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
-- `events/pr-<n>.head-<sha8>` — marker touched on a push to an OPEN PR (older head-* for that PR removed), no log line
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue
   timeline
@@ -109,9 +108,7 @@ every PM and TL boot. See `main-ci/README.md`.
 `<name>` here is only used for the main-ci driver's config argument. If
 you're tracking multiple repos with `gh-status` but only want main-ci for
 one of them, that is the intended use; `gh-status` polls every config
-regardless. The run also boots out and removes the retired
-`com.agent-tools.on-merge` and `com.agent-tools.on-merge-gate` jobs when
-their plists are present; `--dry-run` prints that instead.
+regardless.
 
 ### Uninstall
 

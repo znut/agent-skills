@@ -5,9 +5,9 @@
 #
 # Read-only: prints bounded, labeled sections from the current checkout and
 # writes no state. The pm role reads only its own lane (issue logs plus PRs
-# labeled `pm`, bot-only logs dropped, worktree hygiene as a count); TL roles
-# get every section. Paths come from .agent/orchestrate.local.md, else the
-# current harness's orchestrate.local.md, one `- `key`: `value`` per line.
+# labeled `pm`, bot-only logs dropped); TL roles get every section. The
+# worktree section is the newest main-ci cleanup.log summary line. Paths come
+# from the shared .agent/orchestrate.local.md, one `- `key`: `value`` per line.
 set -euo pipefail
 
 role="${1:-}"
@@ -56,11 +56,6 @@ find_local_md() {
 	for candidate in "$primary/.agent/orchestrate.local.md" "$repo_root/.agent/orchestrate.local.md"; do
 		if [ -f "$candidate" ]; then printf '%s' "$candidate"; return; fi
 	done
-	candidate=''
-	if [ -n "${CODEX_THREAD_ID:-}" ]; then candidate="$repo_root/.codex/orchestrate.local.md"
-	elif [ -n "${PI_CODING_AGENT:-}" ]; then candidate="$repo_root/.pi/orchestrate.local.md"
-	elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then candidate="$repo_root/.claude/orchestrate.local.md"; fi
-	if [ -n "$candidate" ] && [ -f "$candidate" ]; then printf '%s' "$candidate"; fi
 }
 
 human_age() { # <seconds>
@@ -499,65 +494,9 @@ else
 	fi
 fi
 
-# 8. Worktree hygiene — the pm role gets counts only: the trees belong to the
-# TL lanes' workers, and the pm's own docs worktrees are short-lived.
+# 8. Worktree hygiene — the newest main-ci cleanup summary, read from disk.
 section "Worktree hygiene"
-wt_out="$tmpdir/worktree-out"
-touch "$wt_out"
-wt_emit() { if [ "$lane_scoped" -eq 1 ]; then printf '%s\n' "$*" >> "$wt_out"; else printf '%s\n' "$*"; fi; }
-wt_tmp="$tmpdir/worktree"
-wt_reason_tmp="$tmpdir/worktree-locked"
-touch "$wt_tmp" "$wt_reason_tmp"
-git worktree list --porcelain > "$wt_tmp"
-
-# Parse porcelain line-by-line: track current worktree, gather the locked
-# reason line, and flag dead pid locks. Fully portable bash/awk subset.
-current_wt=''
-locked_reason=''
-while IFS= read -r line; do
-	case "$line" in
-		worktree*)
-			# Emit previous worktree's lock if any.
-			if [ -n "$current_wt" ] && [ -n "$locked_reason" ]; then
-				printf '%s\t%s\n' "$current_wt" "$locked_reason" >> "$wt_reason_tmp"
-			fi
-			current_wt=${line#worktree }
-			locked_reason=''
-			;;
-		locked*)
-			locked_reason=${line#locked}
-			locked_reason=${locked_reason# }
-			;;
-		prunable*)
-			wt_emit "prunable: $current_wt (${line#prunable })"
-			;;
-	esac
-done < "$wt_tmp"
-if [ -n "$current_wt" ] && [ -n "$locked_reason" ]; then
-	printf '%s\t%s\n' "$current_wt" "$locked_reason" >> "$wt_reason_tmp"
-fi
-
-while IFS=$'\t' read -r wt reason; do
-	[ -n "$wt" ] || continue
-	pid=$(printf '%s' "$reason" | grep -oE 'pid:[0-9]+' | head -1 | cut -d: -f2 || true)
-	if [ -z "$pid" ]; then
-		wt_emit "locked (no pid): $wt"
-	elif ! kill -0 "$pid" 2>/dev/null; then
-		wt_emit "locked with DEAD pid $pid: $wt"
-	fi
-done < "$wt_reason_tmp"
-
-# local branches with no remote counterpart
-while IFS= read -r branch; do
-	[ -n "$branch" ] || continue
-	if ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
-		wt_emit "no remote counterpart: $branch"
-	fi
-done < <(git for-each-ref refs/heads --format='%(refname:short)')
-if [ "$lane_scoped" -eq 1 ]; then
-	printf 'prunable: %s · dead-pid locked: %s · locked (no pid): %s · no remote counterpart: %s — TL-lane trees; run boot-report tl-<lane> for the list\n' \
-		"$(grep -c '^prunable:' "$wt_out" || true)" \
-		"$(grep -c '^locked with DEAD pid' "$wt_out" || true)" \
-		"$(grep -c '^locked (no pid)' "$wt_out" || true)" \
-		"$(grep -c '^no remote counterpart:' "$wt_out" || true)"
-fi
+for run in $(ls -1t "$var_dir/main-ci/runs" 2>/dev/null || true); do
+	line=$(grep '^summary:' "$var_dir/main-ci/runs/$run/cleanup.log" 2>/dev/null | tail -1 || true)
+	if [ -n "$line" ]; then printf '%s (run %s)\n' "$line" "$run"; break; fi
+done

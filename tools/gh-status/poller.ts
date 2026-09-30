@@ -16,10 +16,6 @@
  *     every event; transitions are detected against the previous snapshot.
  *   events/pr-<n>.merged    — marker, touched once, for watchers that key
  *                             on a path
- *   events/pr-<n>.head-<sha8> — marker, touched when an OPEN PR's head moves
- *                             (older head-* markers for that PR removed); no
- *                             log line, so a push wakes no per-PR lane
- *                             watcher (main-ci reads heads from status/)
  *   events/pr-<n>.comments.json — the new comments/reviews since the last
  *                             cursor ({author, createdAt, kind, path?, line?,
  *                             body}), overwritten each batch
@@ -228,21 +224,6 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 /** Create-only marker for a monotonic fact. */
 async function touch(path: string): Promise<void> {
 	if (!(await Bun.file(path).exists())) await Bun.write(path, `${new Date().toISOString()}\n`)
-}
-
-/**
- * Push marker for an OPEN PR: touch pr-<n>.head-<sha8> and drop that PR's
- * older head-* markers. No log line — that would wake every lane watcher;
- * main-ci reads the head from status/pr-<n>.json.
- */
-async function writeHeadMarker(eventsDir: string, prNumber: number, sha: string): Promise<void> {
-	const prefix = `pr-${prNumber}.head-`
-	const name = `${prefix}${sha.slice(0, 8).toLowerCase()}`
-	await touch(`${eventsDir}/${name}`)
-	const { readdirSync, rmSync } = await import("node:fs")
-	for (const f of readdirSync(eventsDir)) {
-		if (f.startsWith(prefix) && f !== name) rmSync(`${eventsDir}/${f}`, { force: true })
-	}
 }
 
 type TimelineEvent = {
@@ -477,12 +458,6 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		}
 		await writeAtomic(`${statusDir}/pr-${pr.number}.json`, `${JSON.stringify(snapshot, null, "\t")}\n`)
 
-		// Push marker: an OPEN PR's head moved since the last snapshot (or
-		// there is no previous snapshot) — see writeHeadMarker.
-		if (pr.state === "OPEN" && sha && (!prev || prev.headOid !== sha)) {
-			await writeHeadMarker(eventsDir, pr.number, sha)
-		}
-
 		// Ready-stale: a READY (non-draft, open) PR whose head moved while ready —
 		// someone pushed without flipping draft first, so the manager's final
 		// check is void until it re-runs. Fires once per push, since the next
@@ -586,4 +561,4 @@ if (isMain) {
 	}
 }
 
-export { poll, pollRepo, writeHeadMarker }
+export { poll, pollRepo }
