@@ -229,9 +229,13 @@ PR this driver moved to draft goes back to ready (`gh pr ready`) when its
 head still matches `vouched.json`; a clone's ready check runs from the
 `origin-main` worktree. A failed `gh pr ready` is retried on the next poll, at
 most 3 attempts per (head, tip) pair, then waits for the next head or tip
-move: each call runs the ready check, which spends the shared GraphQL budget. After a red result, `preview.notify` runs once per
-pair; `<head8>-<tip8>.notified` marks it sent. A merged or closed PR loses
-its preview worktree and its results directory.
+move: each call runs the ready check, which spends the shared GraphQL budget.
+The cap is checked before each call. A preview that starts for a pair (a
+rerun after a deleted result file included) clears that pair's settled state
+and its attempt count, so a rerun gets 3 fresh attempts and no more. After a
+red result, `preview.notify` runs once per pair; `<head8>-<tip8>.notified`
+marks it sent. A merged or closed PR loses its preview worktree and its
+results directory.
 
 ## Install
 

@@ -108,10 +108,12 @@ export function startPreviews(s, sha, env, runDir) {
 				rmSync(vouchFile, { force: true })
 				return true
 			}
+			const prev = readyTries.get(pr.number)
+			const used = prev?.head === pr.head ? prev.count : 0
+			if (used >= READY_TRIES) return true
 			const r = await run(jobs, pr, "ready", 'gh pr ready "$MAIN_CI_PR" --repo "$MAIN_CI_REPO"', s.worktree)
 			if (r.code !== 0) {
-				const prev = readyTries.get(pr.number)
-				const count = prev?.head === pr.head ? prev.count + 1 : 1
+				const count = used + 1
 				readyTries.set(pr.number, { head: pr.head, count })
 				const giveUp = count >= READY_TRIES
 				s.log(`preview #${pr.number}: stays draft, gh pr ready FAIL exit=${r.code} (${count}/${READY_TRIES}) — ${lastLine(r.file)}; ${giveUp ? "giving up until the next head or tip" : "retrying on the next poll"}`)
@@ -150,6 +152,9 @@ export function startPreviews(s, sha, env, runDir) {
 			return s.log(`preview #${n}: GitHub head is ${now.headRefOid.slice(0, 8)}, not ${pr.head.slice(0, 8)}; waiting for gh-status`)
 		}
 		mkdirSync(dir, { recursive: true })
+		// A pairing without a result is fresh, a rerun after a deleted result file included.
+		settled.delete(n)
+		readyTries.delete(n)
 		const must = async (label, cmd, cwd) => {
 			const r = await run(jobs, pr, label, cmd, cwd)
 			if (r.code !== 0) throw new Error(`${label} FAILED exit=${r.code}: ${lastLine(r.file)}`)
