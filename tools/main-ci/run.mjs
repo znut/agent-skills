@@ -63,11 +63,10 @@ export function startRun(s, sha) {
 	}
 
 	const run = basename(runDir)
-	const sampled = (s.mc.metrics?.treeSampleJobs ?? []).map((g) => new Bun.Glob(g))
+	const sampled = [].concat(s.mc.metrics?.treeSampleJobs ?? []).map((g) => new Bun.Glob(g))
 	const kindOf = (step) => (laneNames.has(step.name) ? (sampled.some((g) => g.match(step.name)) ? "browser" : "build") : "core")
 	const laneNames = new Set((s.mc.builds ?? []).flat().map((x) => x.name))
-	const attempt = (step, file, n) =>
-		jobs.exec(step.name, step.cmd, { cwd: s.worktree, env, file, metrics: { run, sha, job: step.name, kind: kindOf(step), attempt: n, sample: kindOf(step) === "browser" } })
+	const attempt = (step, file, n) => jobs.exec(step.name, step.cmd, { cwd: s.worktree, env, file, metrics: { run, sha, job: step.name, kind: kindOf(step), attempt: n } })
 
 	// A failed step is retried once; only the final attempt's failing tests count.
 	async function runStep(step) {

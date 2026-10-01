@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { attribute, parseTime, turboCounts } from "./metrics.mjs"
+import { attribute, launchctlServices, parseTime, turboFooter } from "./metrics.mjs"
 
 const REPORT = `        1.50 real         0.80 user         0.20 sys
           52428800  maximum resident set size
@@ -15,13 +15,20 @@ describe("parseTime", () => {
 	})
 })
 
-describe("turboCounts", () => {
-	it("counts hits and misses from per-task cache status", () => {
-		const summary = { execution: { attempted: 3, cached: 2 }, tasks: [{ cache: { status: "HIT" } }, { cache: { status: "HIT" } }, { cache: { status: "MISS" } }] }
-		expect(turboCounts(summary)).toEqual({ tasks: 3, hit: 2, miss: 1 })
+describe("turboFooter", () => {
+	it("reads the last footer, ANSI stripped, and derives misses", () => {
+		const log = "\x1b[1m Tasks:    1 successful, 2 total\x1b[0m\n Cached:    0 cached, 2 total\n Tasks:    3 successful, 4 total\n Cached:    3 cached, 4 total\n"
+		expect(turboFooter(log)).toEqual({ tasks: 4, hit: 3, miss: 1 })
 	})
-	it("returns null for a malformed summary", () => {
-		expect(turboCounts({})).toBeNull()
+	it("returns null without a footer", () => {
+		expect(turboFooter("plain output")).toBeNull()
+	})
+})
+
+describe("launchctlServices", () => {
+	it("reads plain and flagged rows, skipping pid 0", () => {
+		const text = "\tservices = {\n\t  1234  -  com.a.b\n\t  5678  (pe)  com.c.d\n\t  0  -  com.e.f\n\t}"
+		expect(launchctlServices(text)).toEqual([1234, 5678])
 	})
 })
 

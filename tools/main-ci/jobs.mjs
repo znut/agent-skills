@@ -44,7 +44,7 @@ export function jobSet(s) {
 			closeSync(fd)
 			if (child.pid) groups.add(child.pid)
 			let sampler = null
-			if (metrics?.sample && child.pid) {
+			if (metrics?.kind === "browser" && child.pid) {
 				try {
 					sampler = treeSampler(child.pid, s.mc.metrics?.treeProcessNames, s.log)
 				} catch (e) {
@@ -64,9 +64,15 @@ export function jobSet(s) {
 				// The leader exited; whatever it left in its group goes with it.
 				if (child.pid) signal(child.pid, "SIGKILL")
 				groups.delete(child.pid)
-				const tree = sampler?.stop() ?? null
-				if (metrics && !cancelled) writeRow(s, metrics, { startMs, cwd, code: code ?? 128, load1: load1Start, timeFile, tree })
-				if (metrics) rmSync(timeFile, { force: true })
+				if (metrics) {
+					try {
+						const tree = sampler?.stop() ?? null
+						if (!cancelled) writeRow(s, metrics, { startMs, logFile: file, code: code ?? 128, load1: load1Start, timeFile, tree })
+						rmSync(timeFile, { force: true })
+					} catch (e) {
+						s.log(`metrics: ${metrics.job}: ${e.message}`)
+					}
+				}
 				if (cancelled) return reject(CANCELLED)
 				if (why) s.log(`${label}: ${why}`)
 				resolve(code)

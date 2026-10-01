@@ -177,7 +177,7 @@ preview worktree; `eligible`, `unaffected`, and `notify` run in the
   "warmCache": "bash scripts/warm-cache.sh \"$MAIN_CI_VAR\" \"$MAIN_CI_WORKTREE\"",
   "builds": [
     [{ "name": "build-web", "cmd": "bun run --cwd apps/web build" },
-     { "name": "screenshots-web", "cmd": "bun run --cwd apps/web screenshots" }]
+     { "name": "e2e-web", "cmd": "bun run --cwd apps/web e2e" }]
   ],
   "buildConcurrency": 2,
   "cleanup": "bash scripts/cleanup-worktrees.sh --apply",
@@ -250,10 +250,10 @@ results directory.
 
 A profile of each job the driver runs: wall time, CPU, peak memory, and
 cache hits. Every core step, build-lane step, and preview check runs under
-`/usr/bin/time -l` (report in a side file, so the step log is unchanged) and
+`/usr/bin/time -l` (report in a side file; a job ended by a signal gets two extra lines from `time` in its log) and
 appends one row to `metrics.jsonl`. A retried step has one row per attempt.
 Cleanup, warm cache, and the driver's own gh and git calls are not measured.
-A missing or unparsable report, an unreadable turbo summary, or a sampler
+A missing or unparsable report, an unreadable step log, or a sampler
 error gives nulls and a `metrics:` line in `run.log`; the job's exit and the
 verdict never change.
 
@@ -265,10 +265,10 @@ verdict never change.
 | `attempt`, `retried` | 1 or 2; `retried` is true from attempt 2 |
 | `start`, `load1_start` | ISO start time; `os.loadavg()[0]` at start |
 | `wall_s`, `cpu_user_s`, `cpu_sys_s` | from `time -l` |
-| `max_rss_mb` | `time -l` peak RSS of the job's process tree it waited on |
+| `max_rss_mb` | `time -l` peak RSS of the largest single process it waited on, not a tree sum |
 | `tree_peak_rss_mb` | sampled peak RSS of the whole tree, including launchd-started helpers `time` misses; only for jobs matching `metrics.treeSampleJobs`, else `null` |
 | `exit` | exit code |
-| `turbo` | `{tasks, hit, miss}` from the newest `.turbo/runs/*.json` written during the job in its cwd (`TURBO_RUN_SUMMARY=true` in `mainCi.env`), else `null`; jobs sharing a cwd in parallel can read each other's summary |
+| `turbo` | `{tasks, hit, miss}` from the last turbo footer (`Tasks:` and `Cached:` lines) in the job's own step log, else `null` |
 
 Optional config: `mainCi.metrics.treeSampleJobs` (globs of job names, e.g.
 `["e2e-*"]`) and `mainCi.metrics.treeProcessNames` (substrings of the
