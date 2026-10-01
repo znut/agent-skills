@@ -83,8 +83,8 @@ export function treeSampler(pid, names, warn = () => {}) {
 			for (const r of rows) {
 				if (!known.has(r.pid) || !hostPatterns.some((p) => r.exe.includes(p))) continue
 				const seen = services.get(r.pid)
-				// Helpers start late: re-read while empty, else every 5th tick.
-				if (seen && seen.list.length > 0 && n - seen.at < 5) continue
+				// Helpers start late: re-read every 5th tick, not every tick.
+				if (seen && n - seen.at < 5) continue
 				const out = await run("launchctl", ["print", `pid/${r.pid}`]).then((x) => x.stdout, () => "")
 				services.set(r.pid, { list: launchctlServices(out), at: n })
 			}
