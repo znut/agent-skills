@@ -4,7 +4,8 @@
  * its own, so a PR head move cancels that PR's preview alone.
  */
 import { spawn } from "node:child_process"
-import { closeSync, openSync } from "node:fs"
+import { closeSync, openSync, rmSync } from "node:fs"
+import { load1, timeArgs, treeSampler, writeRow } from "./metrics.mjs"
 
 export const CANCELLED = Symbol("cancelled")
 const KILL_GRACE_MS = 10_000
@@ -30,14 +31,26 @@ export function jobSet(s) {
 
 	// `nice -n 19 bash -c <cmd>` with stdout and stderr in `file`; resolves
 	// the exit code. The group is recorded in the same synchronous turn as
-	// the spawn, so no cancel can run between the two.
-	function exec(label, cmd, { cwd, env, file, timeoutMs = s.stepTimeoutMs }) {
+	// the spawn, so no cancel can run between the two. With `metrics` the
+	// command runs under `time -l` (report in a side file) and a row is logged.
+	function exec(label, cmd, { cwd, env, file, timeoutMs = s.stepTimeoutMs, metrics }) {
 		if (cancelled) return Promise.reject(CANCELLED)
 		return new Promise((resolve, reject) => {
 			const fd = openSync(file, "w")
-			const child = spawn("nice", ["-n", "19", "bash", "-c", cmd], { cwd, env, detached: true, stdio: ["ignore", fd, fd] })
+			const timeFile = `${file}.time`
+			const startMs = Date.now()
+			const load1Start = load1()
+			const child = spawn("nice", ["-n", "19", ...(metrics ? timeArgs(timeFile) : []), "bash", "-c", cmd], { cwd, env, detached: true, stdio: ["ignore", fd, fd] })
 			closeSync(fd)
 			if (child.pid) groups.add(child.pid)
+			let sampler = null
+			if (metrics?.sample && child.pid) {
+				try {
+					sampler = treeSampler(child.pid, s.mc.metrics?.treeProcessNames, s.log)
+				} catch (e) {
+					s.log(`metrics: ${metrics.job}: sampler not started (${e.message})`)
+				}
+			}
 			let timedOut = false
 			let over = false
 			const timer = setTimeout(() => {
@@ -51,6 +64,9 @@ export function jobSet(s) {
 				// The leader exited; whatever it left in its group goes with it.
 				if (child.pid) signal(child.pid, "SIGKILL")
 				groups.delete(child.pid)
+				const tree = sampler?.stop() ?? null
+				if (metrics && !cancelled) writeRow(s, metrics, { startMs, cwd, code: code ?? 128, load1: load1Start, timeFile, tree })
+				if (metrics) rmSync(timeFile, { force: true })
 				if (cancelled) return reject(CANCELLED)
 				if (why) s.log(`${label}: ${why}`)
 				resolve(code)

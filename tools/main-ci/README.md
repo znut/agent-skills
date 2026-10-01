@@ -119,6 +119,7 @@ Under `$AGENT_TOOLS_HOME/var/<name>/main-ci/`:
   cleanup, warm-cache, and board-snapshot outcomes, each preview's queue,
   start, verdict, and ready or draft flip, and `poll FAILED` when git fails
   or times out.
+- `metrics.jsonl`: one row per job attempt, append-only (see Metrics).
 - `runs/<UTC ts>-<sha8>/`: `step-<name>.log` per step, `cleanup.log`,
   `warm-cache.log`, and `preview-<n>-<label>.log` per preview git or gh
   call. The last 20 run dirs are kept.
@@ -244,6 +245,40 @@ and its attempt count, so a rerun gets 3 fresh attempts and no more. After a
 red result, `preview.notify` runs once per pair; `<head8>-<tip8>.notified`
 marks it sent. A merged or closed PR loses its preview worktree and its
 results directory.
+
+## Metrics
+
+Every core step, build-lane step, and preview check runs under
+`/usr/bin/time -l` (report in a side file, so the step log is unchanged) and
+appends one row to `metrics.jsonl`. A retried step has one row per attempt.
+Cleanup, warm cache, and the driver's own gh and git calls are not measured.
+A missing or unparsable report, an unreadable turbo summary, or a sampler
+error gives nulls and a `metrics:` line in `run.log`; the job's exit and the
+verdict never change.
+
+| Field | Meaning |
+|---|---|
+| `run`, `sha` | run dir name, tip sha |
+| `job`, `kind` | step name; `core`, `build`, `browser` (a lane step matching `metrics.treeSampleJobs`), or `preview` |
+| `pr` | PR number for `preview`, else `null` |
+| `attempt`, `retried` | 1 or 2; `retried` is true from attempt 2 |
+| `start`, `load1_start` | ISO start time; `os.loadavg()[0]` at start |
+| `wall_s`, `cpu_user_s`, `cpu_sys_s` | from `time -l` |
+| `max_rss_mb` | `time -l` peak RSS of the job's process tree it waited on |
+| `tree_peak_rss_mb` | sampled peak RSS of the whole tree, including launchd-started helpers `time` misses; only for jobs matching `metrics.treeSampleJobs`, else `null` |
+| `exit` | exit code |
+| `turbo` | `{tasks, hit, miss}` from the newest `.turbo/runs/*.json` written during the job in its cwd (`TURBO_RUN_SUMMARY=true` in `mainCi.env`), else `null`; jobs sharing a cwd in parallel can read each other's summary |
+
+Optional config: `mainCi.metrics.treeSampleJobs` (globs of job names, e.g.
+`["e2e-*"]`) and `mainCi.metrics.treeProcessNames` (substrings of the
+executable path that mark a process whose launchd services join the tree;
+default `.app/Contents/MacOS/`, `.xpc/Contents/MacOS/`, `/bin/bun`). The
+sampler reads `ps` once a second.
+
+```bash
+f="$AGENT_TOOLS_HOME/var/<name>/main-ci/metrics.jsonl"
+tail -n 2000 "$f" | jq -s 'group_by(.job)[] | {job: .[0].job, runs: length, median_wall_s: (map(.wall_s) | sort | .[length/2|floor])}'
+```
 
 ## Install
 

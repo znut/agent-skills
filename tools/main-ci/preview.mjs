@@ -200,7 +200,7 @@ export function startPreviews(s, sha, env, runDir) {
 			const taken = [...readdirSync(dir), ...kept].map((f) => f.match(new RegExp(`^${pair}\\.(\\d+)(?:-\\d+)?\\.log$`))?.[1])
 			log = join(dir, `${pair}.${Math.max(0, ...taken.filter(Boolean).map(Number)) + 1}.log`)
 			s.log(`preview #${n} ${pair}: start`)
-			green = (await jobs.exec(`preview #${n}`, p.cmd, { cwd: tree, env: prEnv(pr), file: log })) === 0
+			green = (await jobs.exec(`preview #${n}`, p.cmd, { cwd: tree, env: prEnv(pr), file: log, metrics: { run: basename(runDir), sha, job: `preview-${n}`, kind: "preview", pr: n, attempt: 1 } })) === 0
 		}
 		const result = { pr: n, head: pr.head, main: sha, green, conflict, log, finishedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z") }
 		if (carried) result.inherited = carried
