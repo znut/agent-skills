@@ -8,7 +8,7 @@
  */
 import { spawnSync } from "node:child_process"
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { writeAtomic } from "../lib/fs-util.mjs"
 import { CANCELLED, jobSet } from "./jobs.mjs"
 import { startPreviews } from "./preview.mjs"
@@ -62,12 +62,16 @@ export function startRun(s, sha) {
 		writeAtomic(s.stateFile, `${JSON.stringify({ sha, finishedAt, green, failing, phase, steps: { ...steps, _: "end" } })}\n`)
 	}
 
-	const attempt = (step, file) => jobs.exec(step.name, step.cmd, { cwd: s.worktree, env, file })
+	const run = basename(runDir)
+	const sampled = [].concat(s.mc.metrics?.treeSampleJobs ?? []).map((g) => new Bun.Glob(g))
+	const kindOf = (step) => (laneNames.has(step.name) ? (sampled.some((g) => g.match(step.name)) ? "browser" : "build") : "core")
+	const laneNames = new Set((s.mc.builds ?? []).flat().map((x) => x.name))
+	const attempt = (step, file, n) => jobs.exec(step.name, step.cmd, { cwd: s.worktree, env, file, metrics: { run, sha, job: step.name, kind: kindOf(step), attempt: n } })
 
 	// A failed step is retried once; only the final attempt's failing tests count.
 	async function runStep(step) {
 		const file = join(runDir, `step-${step.name}.log`)
-		let code = await attempt(step, file)
+		let code = await attempt(step, file, 1)
 		if (code === 0) {
 			steps[step.name] = "ok"
 			s.log(`${step.name}: ok`)
@@ -76,7 +80,7 @@ export function startRun(s, sha) {
 		for (const f of failLines(file)) s.log(`${step.name}: FAIL ${f}`)
 		s.log(`${step.name}: fail exit=${code} — retrying once`)
 		copyFileSync(file, join(runDir, `step-${step.name}.attempt1.log`))
-		code = await attempt(step, file)
+		code = await attempt(step, file, 2)
 		if (code === 0) {
 			steps[step.name] = "ok(retry)"
 			s.log(`${step.name}: ok on retry`)
@@ -95,7 +99,7 @@ export function startRun(s, sha) {
 	// A repo command outside the verdict (cleanup, warm cache): run once, logged.
 	async function runCommand(label, cmd) {
 		const file = join(runDir, `${label}.log`)
-		const code = await attempt({ name: label, cmd }, file)
+		const code = await jobs.exec(label, cmd, { cwd: s.worktree, env, file })
 		s.log(`${label}: ${code === 0 ? "ok" : `FAIL exit=${code} — ${lastLine(file)}`}`)
 	}
 
