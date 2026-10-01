@@ -248,7 +248,8 @@ results directory.
 
 ## Metrics
 
-Every core step, build-lane step, and preview check runs under
+A profile of each job the driver runs: wall time, CPU, peak memory, and
+cache hits. Every core step, build-lane step, and preview check runs under
 `/usr/bin/time -l` (report in a side file, so the step log is unchanged) and
 appends one row to `metrics.jsonl`. A retried step has one row per attempt.
 Cleanup, warm cache, and the driver's own gh and git calls are not measured.
