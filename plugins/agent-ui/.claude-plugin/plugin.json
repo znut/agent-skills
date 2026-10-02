@@ -1,0 +1,41 @@
+{
+  "name": "agent-ui",
+  "version": "0.1.0",
+  "description": "A /workers pane of this session's child runs with a live tail, and the session's pinned asks above the prompt with their context on click.",
+  "author": {
+    "name": "Nut S."
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "childrenDir": {
+      "type": "string",
+      "title": "Child run directory",
+      "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: $EZOPD_RUNTIME_DIR/kimi-children, else $TMPDIR/ez-opd/kimi-children.",
+      "default": ""
+    },
+    "panelDirs": {
+      "type": "string",
+      "title": "Review panel directories",
+      "description": "Comma-separated folders of review panels (<dir>/<sha>/<focus>/). Empty: <git-common-dir>/.review-panel and $TMPDIR/review-panel.",
+      "default": ""
+    },
+    "stateDir": {
+      "type": "string",
+      "title": "State directory",
+      "description": "Folder holding asks/<session-id>. Empty: $AGENT_STATE_DIR, else the parent of session_bus_dir in the main checkout's .agent/orchestrate.local.md.",
+      "default": ""
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "title": "Refresh seconds",
+      "description": "How often the pane and the asks band re-read their files; clamped to 1-5.",
+      "default": 3
+    },
+    "maxAgeHours": {
+      "type": "number",
+      "title": "Finished-run age limit (hours)",
+      "description": "Finished or dead runs older than this are left out of the pane.",
+      "default": 12
+    }
+  }
+}

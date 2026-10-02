@@ -75,6 +75,11 @@ out of view while the user works elsewhere; the file lets each harness pin
 the ask near the prompt where its own UI allows. Delete the line the moment
 the user answers; on wrap, empty the file
 ([session-bus.md §Wrap](session-bus.md#wrap)).
+With each line, MUST write its context (what it is about, the options, the
+recommendation, as said in chat) to `<state>/asks/<session-id>.d/<n>.md`,
+`<n>` the line's 1-based number; delete the file with its line and renumber
+the files after it — a pinned line alone cannot be answered once the chat
+that explained it scrolled away.
 
 ## Choose the base
 
