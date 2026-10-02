@@ -4,7 +4,6 @@
  * head. Format and meaning: README.md §Vouch.
  */
 import { spawnSync } from "node:child_process"
-import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { loadConfig } from "../lib/config.mjs"
 import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
@@ -15,7 +14,7 @@ function fail(msg) {
 }
 
 export function vouch(name, pr, sha) {
-	if (!name || !/^\d+$/.test(pr ?? "") || !/^[0-9a-f]{40}$/.test(sha ?? "")) {
+	if (!name || !/^[1-9]\d*$/.test(pr ?? "") || !/^[0-9a-f]{40}$/.test(sha ?? "")) {
 		fail("usage: main-ci.mjs vouch <configName> <pr> <full 40-char sha>")
 	}
 	const config = loadConfig(name)
@@ -26,7 +25,6 @@ export function vouch(name, pr, sha) {
 	const head = r.stdout.trim()
 	if (head !== sha) fail(`PR #${pr} head is ${head}, not ${sha}; nothing written`)
 	const dir = join(expandHome(resultsDir), `pr-${pr}`)
-	mkdirSync(dir, { recursive: true })
 	writeAtomic(join(dir, "vouched.json"), `${JSON.stringify({ head, at: new Date().toISOString().replace(/\.\d+Z$/, "Z") })}\n`)
 	console.log(`vouched PR #${pr} at ${head}`)
 }
