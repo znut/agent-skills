@@ -30,7 +30,7 @@ const CODEX_EVENTS = [
   .join('\n')
 
 // Runs: a-run live, b-done finished, c-dead gone without done, d-foreign another
-// session's, e-failed non-zero exit, f-old-dead dead long ago, plus one
+// session's, e-failed non-zero exit, plus one
 // live claude review panel.
 export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/a-run`, { ...run('openai', '101'), 'result.jsonl': CODEX_EVENTS }),
@@ -45,7 +45,6 @@ export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/d-foreign`, run('openai', '104', 'sid-other')),
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
-  ...under(`${KIDS}/f-old-dead`, { ...run('kimi', '107'), 'start-epoch': epoch(13 * 60) }),
   '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus` (peer inboxes)\n',
 }
 

@@ -106,6 +106,14 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
+  test('an old run without done reads dead even if its pid is alive', async ($, on) => {
+    const dir = `${KIDS}/old`
+    world(on, under(dir, { ...run('openai', '401'), 'start-epoch': epoch(25 * 60) }), ['401'])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ key: `run:${dir}` }))?.text).toContain('dead')
+    await ui.unmount()
+  })
+
   test('no runs for the session draws the empty line', async ($, on) => {
     world(on, {})
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })

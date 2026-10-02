@@ -22,6 +22,7 @@ type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
+const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 
@@ -117,7 +118,7 @@ async function alivePids($: $, pids: string[]): Promise<Set<string>> {
   return new Set((ran?.stdout ?? '').split(/\s+/).filter(Boolean))
 }
 
-async function scanRuns($: $, options: PluginOptions): Promise<Run[]> {
+async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
   const sid = await $.session.id()
   const found: Probe[] = []
   const seen = new Set<string>()
@@ -139,11 +140,13 @@ async function scanRuns($: $, options: PluginOptions): Promise<Run[]> {
     }
   }
   for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
-  const alive = await alivePids($, found.filter(one => !one.hasDone).map(one => one.pid))
+  // older runs without `done` read as dead: bounds the ps list and ignores reused pids
+  const recent = (one: Probe) => now - (one.run.startedAt ?? 0) <= LIVE_WINDOW_MS
+  const alive = await alivePids($, found.filter(one => !one.hasDone && recent(one)).map(one => one.pid))
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
-    const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, alive.has(one.pid)) }
+    const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, recent(one) && alive.has(one.pid)) }
     ;(run.status === 'running' ? running : done).push(run)
   }
   const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
@@ -238,7 +241,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const now = await $.clock.now()
-    const runs = await scanRuns($, options)
+    const runs = await scanRuns($, options, now)
     const chosen = await read($, selectedRun)
     const shown = runs.find(run => run.dir === chosen) ?? null
     const tail = shown ? await readTail($, shown) : null
