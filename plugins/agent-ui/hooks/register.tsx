@@ -121,8 +121,10 @@ async function alivePids($: $, pids: string[]): Promise<Set<string>> {
 async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
   const sid = await $.session.id()
   const found: Probe[] = []
+  const seen = new Set<string>()
   for (const root of await resolveRoots($, options)) {
     for (const dir of await runDirs($, root)) {
+      seen.add(dir)
       const entries = await listDir($, dir)
       const key = entries
         .map(entry => entry.name)
@@ -137,6 +139,7 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
       if (cached.probe) found.push(cached.probe)
     }
   }
+  for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
   const alive = await alivePids($, found.filter(one => !one.hasDone).map(one => one.pid))
   const rows: Run[] = []
   for (const one of found) {
@@ -285,27 +288,22 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {asks.map(ask => {
-          const { n, text } = ask
-          const isOpen = ask === shown
-
-          return (
-          <Box key={`ask-row-${n}`} flexDirection="column">
+        {asks.map(ask => (
+          <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Button
-              key={`ask-${n}`}
+              key={`ask-${ask.n}`}
               plain
-              label={`${isOpen ? '▾' : '▸'} ${text}`}
-              onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n, text }))}
+              label={`${ask === shown ? '▾' : '▸'} ${ask.text}`}
+              onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
             />
-            {isOpen &&
+            {ask === shown &&
               (detail ? (
-                <Markdown key={`ask-detail-${n}`} text={detail} />
+                <Markdown key={`ask-detail-${ask.n}`} text={detail} />
               ) : (
                 <Text dimColor>no context recorded</Text>
               ))}
           </Box>
-          )
-        })}
+        ))}
       </Box>
     )
   })
