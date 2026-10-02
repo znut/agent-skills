@@ -86,7 +86,7 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
-  test('lists running runs, then only the 5 newest done runs, and does not re-read the rest', async ($, on) => {
+  test('lists running runs, then only the 5 newest done runs', async ($, on) => {
     const files: Record<string, string> = {}
     for (const i of [1, 2]) Object.assign(files, under(`${KIDS}/run-${i}`, run('openai', `20${i}`)))
     for (let i = 1; i <= 7; i++) {
@@ -99,10 +99,10 @@ describe('workers pane', () => {
     expect(rows).toHaveLength(7)
     expect(rows.slice(0, 2).every(k => k.includes('/run-'))).toBe(true)
     await ui.unmount()
-    const reads = () => w.reads.filter(path => path.startsWith(`${KIDS}/done-7/`)).length
-    const before = reads()
+    for (let i = 1; i <= 5; i++) for (const name of Object.keys(w.files)) if (name.startsWith(`${KIDS}/done-${i}/`)) delete w.files[name]
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(reads()).toBe(before)
+    const left = (await again.findAll({})).map(n => n.key).filter((k): k is string => !!k?.startsWith('run:'))
+    expect(left.map(k => k.slice(k.lastIndexOf('/') + 1)).slice(2)).toEqual(['done-6', 'done-7'])
     await again.unmount()
   })
 

@@ -18,7 +18,7 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; changedAt: number }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
@@ -98,7 +98,6 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     pid,
     hasDone,
     exitCode,
-    changedAt: endedAt ?? startedAt ?? 0,
     run: {
       dir,
       kind: kindOf(provider, isPanel),
@@ -118,7 +117,7 @@ async function alivePids($: $, pids: string[]): Promise<Set<string>> {
   return new Set((ran?.stdout ?? '').split(/\s+/).filter(Boolean))
 }
 
-async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
+async function scanRuns($: $, options: PluginOptions): Promise<Run[]> {
   const sid = await $.session.id()
   const found: Probe[] = []
   const seen = new Set<string>()
@@ -149,10 +148,8 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   }
   const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
   done.sort((a, b) => when(b) - when(a))
-  // past the recent few: settle so later ticks skip the reads
-  for (const run of done.splice(RECENT_DONE)) probes.set(run.dir, { key: probes.get(run.dir)?.key ?? '', probe: null })
   running.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-  return [...running, ...done].slice(0, MAX_ROWS)
+  return [...running, ...done.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
 }
 
 function runElapsed(run: Run, now: number): string {
@@ -241,7 +238,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const now = await $.clock.now()
-    const runs = await scanRuns($, options, now)
+    const runs = await scanRuns($, options)
     const chosen = await read($, selectedRun)
     const shown = runs.find(run => run.dir === chosen) ?? null
     const tail = shown ? await readTail($, shown) : null
