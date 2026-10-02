@@ -18,10 +18,11 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; changedAt: number }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 
 const REFRESH_MS = 3000
-const MAX_AGE_MS = 12 * 3_600_000
+const RECENT_DONE = 5
+const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 
@@ -98,7 +99,6 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     pid,
     hasDone,
     exitCode,
-    changedAt: endedAt ?? startedAt ?? 0,
     run: {
       dir,
       kind: kindOf(provider, isPanel),
@@ -140,19 +140,19 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
     }
   }
   for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
-  const alive = await alivePids($, found.filter(one => !one.hasDone).map(one => one.pid))
-  const rows: Run[] = []
+  // older runs without `done` read as dead: bounds the ps list and ignores reused pids
+  const recent = (one: Probe) => now - (one.run.startedAt ?? 0) <= LIVE_WINDOW_MS
+  const alive = await alivePids($, found.filter(one => !one.hasDone && recent(one)).map(one => one.pid))
+  const running: Run[] = []
+  const done: Run[] = []
   for (const one of found) {
-    const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, alive.has(one.pid)) }
-    if (run.status === 'running') rows.push(run)
-    else if (now - one.changedAt <= MAX_AGE_MS) rows.push(run)
-    // finished or dead past the age limit: settle so later ticks skip the reads
-    else probes.set(run.dir, { key: probes.get(run.dir)?.key ?? '', probe: null })
+    const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, recent(one) && alive.has(one.pid)) }
+    ;(run.status === 'running' ? running : done).push(run)
   }
-  const rank = (run: Run) => (run.status === 'running' ? 0 : 1)
-  return rows
-    .sort((a, b) => rank(a) - rank(b) || (b.startedAt ?? 0) - (a.startedAt ?? 0))
-    .slice(0, MAX_ROWS)
+  const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
+  done.sort((a, b) => when(b) - when(a))
+  running.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+  return [...running, ...done.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
 }
 
 function runElapsed(run: Run, now: number): string {
