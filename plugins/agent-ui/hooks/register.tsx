@@ -21,7 +21,7 @@ type Tail = { lines: string[]; lastMessage: string }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; changedAt: number }
 
 const REFRESH_MS = 3000
-const MAX_AGE_MS = 12 * 3_600_000
+const RECENT_DONE = 5
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 
@@ -141,18 +141,18 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   }
   for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
   const alive = await alivePids($, found.filter(one => !one.hasDone).map(one => one.pid))
-  const rows: Run[] = []
+  const running: Run[] = []
+  const done: Run[] = []
   for (const one of found) {
     const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, alive.has(one.pid)) }
-    if (run.status === 'running') rows.push(run)
-    else if (now - one.changedAt <= MAX_AGE_MS) rows.push(run)
-    // finished or dead past the age limit: settle so later ticks skip the reads
-    else probes.set(run.dir, { key: probes.get(run.dir)?.key ?? '', probe: null })
+    ;(run.status === 'running' ? running : done).push(run)
   }
-  const rank = (run: Run) => (run.status === 'running' ? 0 : 1)
-  return rows
-    .sort((a, b) => rank(a) - rank(b) || (b.startedAt ?? 0) - (a.startedAt ?? 0))
-    .slice(0, MAX_ROWS)
+  const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
+  done.sort((a, b) => when(b) - when(a))
+  // past the recent few: settle so later ticks skip the reads
+  for (const run of done.splice(RECENT_DONE)) probes.set(run.dir, { key: probes.get(run.dir)?.key ?? '', probe: null })
+  running.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+  return [...running, ...done].slice(0, MAX_ROWS)
 }
 
 function runElapsed(run: Run, now: number): string {

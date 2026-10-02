@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { KIDS, PANEL, RUN_FILES, SID, STATE, world } from './world'
+import { epoch, KIDS, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -86,18 +86,23 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
-  test('a dead run past the age limit is hidden and not read again', async ($, on) => {
-    const w = world(on, RUN_FILES)
-    const dir = `${KIDS}/f-old-dead`
-    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(await first.find({ key: `run:${dir}` })).toBeUndefined()
-    await first.unmount()
-    const readsBefore = w.reads.filter(path => path.startsWith(`${dir}/`)).length
-    expect(readsBefore).toBeGreaterThan(0)
-
+  test('lists running runs, then only the 5 newest done runs, and does not re-read the rest', async ($, on) => {
+    const files: Record<string, string> = {}
+    for (const i of [1, 2]) Object.assign(files, under(`${KIDS}/run-${i}`, run('openai', `20${i}`)))
+    for (let i = 1; i <= 7; i++) {
+      Object.assign(files, under(`${KIDS}/done-${i}`, { ...run('openai', `30${i}`), done: '', 'exit-code': '0', 'end-epoch': epoch(i) }))
+    }
+    const w = world(on, files, ['201', '202'])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const rows = (await ui.findAll({})).map(n => n.key).filter((k): k is string => !!k?.startsWith('run:'))
+    expect(rows.map(k => k.slice(k.lastIndexOf('/') + 1)).slice(2)).toEqual(['done-1', 'done-2', 'done-3', 'done-4', 'done-5'])
+    expect(rows).toHaveLength(7)
+    expect(rows.slice(0, 2).every(k => k.includes('/run-'))).toBe(true)
+    await ui.unmount()
+    const reads = () => w.reads.filter(path => path.startsWith(`${KIDS}/done-7/`)).length
+    const before = reads()
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(await again.find({ key: `run:${dir}` })).toBeUndefined()
-    expect(w.reads.filter(path => path.startsWith(`${dir}/`)).length).toBe(readsBefore)
+    expect(reads()).toBe(before)
     await again.unmount()
   })
 
