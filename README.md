@@ -65,3 +65,21 @@ GitHub into local files, a board snapshot, a post-merge CI driver with merge
 previews, a per-clone gh identity wrapper, a session boot report,
 a worktree hook, and a Claude Code stop hook. Each
 documents its own setup in `tools/README.md` or its folder.
+
+## Plugins
+
+`plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
+pane of the session's child runs (GPT, Kimi, Claude review panels) with each
+run's live tail on click, and pins the session's asks
+([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks)) above the prompt,
+each expanding to its recorded context on click. Load it for one session with
+`claude --plugin-dir <clone>/plugins/agent-ui`, or for every session by adding
+that path to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
+`~/.claude/settings.json`. Its paths are `userConfig` options in `/config`;
+each option's description in its `plugin.json` names the default an empty
+value resolves to. The defaults follow the ez-opd runtime layout: child runs
+under `$EZOPD_RUNTIME_DIR/kimi-children`, review panels under the clone's git
+common directory (`.review-panel/`), and the asks state beside the
+`session_bus_dir` the main checkout's `.agent/orchestrate.local.md` declares.
+Check it with `claude plugin validate`, `claude plugin test` and `tsc -p` on
+that folder.

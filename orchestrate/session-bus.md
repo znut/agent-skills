@@ -23,5 +23,5 @@ When the user says wrap, run these in order and report each result:
 1. Stop every worker and watcher this session started; name a worker still running and wait for it.
 2. Sweep the inbox: act on or forward each pending message, then move it to `archive/`.
 3. Overwrite the handoff note (`<state>/notes/<role>.md`) with the state the next boot needs: at most 40 lines, no history.
-4. Empty the [pinned-asks](SKILL.md#pinned-asks) file.
+4. Empty the [pinned-asks](SKILL.md#pinned-asks) file and delete its `<session-id>.d/` context directory.
 5. Save the day's lessons to memory, one index line each.
