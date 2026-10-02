@@ -281,6 +281,20 @@ f="$AGENT_TOOLS_HOME/var/<name>/main-ci/metrics.jsonl"
 tail -n 2000 "$f" | jq -s 'group_by(.job)[] | {job: .[0].job, runs: length, median_wall_s: (map(.wall_s) | sort | .[length/2|floor])}'
 ```
 
+## Vouch
+
+A manager whose PR check passed vouches the PR's head, so the preview gate
+readies the draft on a green preview of that head with nobody awake:
+
+```bash
+bun tools/main-ci/main-ci.mjs vouch <name> <pr> <full-40-char-sha>
+```
+
+It runs `gh pr view` and refuses (exit 1, nothing written) unless the PR's
+head equals `<sha>`. Otherwise it writes `<resultsDir>/pr-<n>/vouched.json`
+(`{ head, at }`) atomically. A push moves the head off the vouch, so the PR
+stays draft until it is vouched again.
+
 ## Install
 
 `tools/install.sh <name>` renders `com.agent-tools.main-ci.plist` with the

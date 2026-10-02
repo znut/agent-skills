@@ -4,6 +4,7 @@
  * CLI: `bun tools/main-ci/main-ci.mjs <configName>` — one long-lived process
  * (launchd KeepAlive) that polls origin every 45 s and owns its runs'
  * process groups in memory. Reads the config's `mainCi` block.
+ * `bun tools/main-ci/main-ci.mjs vouch <configName> <pr> <sha>` — one-shot, see vouch.mjs.
  */
 import { spawn } from "node:child_process"
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
@@ -164,6 +165,11 @@ async function drive(config) {
 	}
 }
 
+if (process.argv[2] === "vouch") {
+	const { vouch } = await import("./vouch.mjs")
+	vouch(...process.argv.slice(3, 6))
+	process.exit(0)
+}
 const name = process.argv[2]
 if (!name) {
 	console.error("usage: bun tools/main-ci/main-ci.mjs <configName>")
