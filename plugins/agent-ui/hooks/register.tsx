@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, FsEntry, PluginOptions, Register } from 'claude-code'
 
-import type { Run } from '../types'
+import type { OpenAsk, Run } from '../types'
 import {
   TAIL_LINES,
   busStateDir,
@@ -11,23 +11,23 @@ import {
   kindOf,
   labelOf,
   lines,
-  projectSlug,
   resultJsonMessage,
   statusOf,
-  transcriptTail,
 } from './lib'
 
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
-
 type Tail = { lines: string[]; lastMessage: string }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; changedAt: number }
 
+const REFRESH_MS = 3000
+const MAX_AGE_MS = 12 * 3_600_000
 const MAX_ROWS = 30
-const TAIL_READ = 200
+const TAIL_BYTES = 262_144
 
-// Settled out-dirs (finished, foreign or too old) never change: skip them on later scans.
-const settled = new Map<string, Run | null>()
-const settledShas = new Map<string, string[]>()
+// Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
+// removes `done`, or a new owner stamp, changes the key and forces a re-probe.
+const probes = new Map<string, { key: string; probe: Probe | null }>()
 let roots: Root[] | null = null
 let stateDir: string | null | undefined
 
@@ -42,8 +42,8 @@ async function listDir($: $, path: string): Promise<FsEntry[]> {
   return $.fs.list(path).catch(() => [])
 }
 
-async function tailFile($: $, path: string, count: number): Promise<string> {
-  const ran = await $.process.run(['tail', '-n', String(count), path]).catch(() => null)
+async function tailBytes($: $, path: string): Promise<string> {
+  const ran = await $.process.run(['tail', '-c', String(TAIL_BYTES), path]).catch(() => null)
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
@@ -54,61 +54,34 @@ async function gitCommonDir($: $): Promise<string | null> {
   return ran?.exitCode === 0 ? ran.stdout.trim() : null
 }
 
-async function tmpDir($: $): Promise<string> {
-  return ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-}
-
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   if (roots) return roots
-  const tmp = await tmpDir($)
+  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
   const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
   const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
-  let panels = String(options.panelDirs ?? '')
-    .split(',')
-    .map(dir => dir.trim())
-    .filter(Boolean)
-  if (panels.length === 0) {
-    const common = await gitCommonDir($)
-    panels = [...(common ? [`${common}/.review-panel`] : []), `${tmp}/review-panel`]
-  }
-  roots = [{ dir: children, isPanel: false }, ...panels.map(dir => ({ dir, isPanel: true }))]
+  const common = await gitCommonDir($)
+  roots = [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
   return roots
 }
 
 async function runDirs($: $, root: Root): Promise<string[]> {
-  const top = (await listDir($, root.dir)).filter(entry => entry.kind === 'dir')
-  if (!root.isPanel) return top.map(entry => `${root.dir}/${entry.name}`)
+  const top = (await listDir($, root.dir)).filter(entry => entry.kind === 'dir').map(entry => `${root.dir}/${entry.name}`)
+  if (!root.isPanel) return top
   const nested = await Promise.all(
-    top.map(async sha => {
-      const shaDir = `${root.dir}/${sha.name}`
-      const cached = settledShas.get(shaDir)
-      if (cached) return cached
-      const focuses = (await listDir($, shaDir)).filter(entry => entry.kind === 'dir')
-      const dirs = focuses.map(entry => `${shaDir}/${entry.name}`)
-      if (dirs.length > 0 && dirs.every(dir => settled.has(dir))) settledShas.set(shaDir, dirs)
-      return dirs
-    }),
+    top.map(async shaDir =>
+      (await listDir($, shaDir)).filter(entry => entry.kind === 'dir').map(entry => `${shaDir}/${entry.name}`),
+    ),
   )
   return nested.flat()
 }
 
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; changedAt: number }
-
-async function probe($: $, dir: string, isPanel: boolean, sid: string): Promise<Probe | null> {
-  const entries = await listDir($, dir)
+async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
   const pidEntry = names.get('pid')
-  if (!pidEntry) {
-    if (names.has('native') || names.has('done')) settled.set(dir, null)
-    return null
-  }
-  const owner = names.has('owner-session') ? await readText($, `${dir}/owner-session`) : ''
-  if (owner !== '' && sid !== '' && owner !== sid) {
-    settled.set(dir, null)
-    return null
-  }
+  if (!pidEntry) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [pid, provider, model, start, end, exitCode] = await Promise.all([
+  const [owner, pid, provider, model, start, end, exitCode] = await Promise.all([
+    field('owner-session'),
     field('pid'),
     field('provider'),
     field('model'),
@@ -116,9 +89,11 @@ async function probe($: $, dir: string, isPanel: boolean, sid: string): Promise<
     field('end-epoch'),
     field('exit-code'),
   ])
+  if (owner !== '' && sid !== '' && owner !== sid) return null
   const hasDone = names.has('done')
   const startedAt = epochMs(start) ?? (pidEntry.mtimeMs || null)
-  const endedAt = epochMs(end) ?? (hasDone ? names.get('done')?.mtimeMs || null : null)
+  // end-epoch survives a resume; only a present `done` makes it this run's end.
+  const endedAt = hasDone ? (epochMs(end) ?? (names.get('done')?.mtimeMs || null)) : null
   return {
     pid,
     hasDone,
@@ -145,26 +120,31 @@ async function alivePids($: $, pids: string[]): Promise<Set<string>> {
 
 async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
   const sid = await $.session.id()
-  const maxAgeMs = Number(options.maxAgeHours ?? 12) * 3_600_000
-  const rows: Run[] = []
-  const probes: Probe[] = []
+  const found: Probe[] = []
   for (const root of await resolveRoots($, options)) {
     for (const dir of await runDirs($, root)) {
-      if (settled.has(dir)) {
-        const kept = settled.get(dir)
-        if (kept && now - (kept.endedAt ?? 0) <= maxAgeMs) rows.push(kept)
-        continue
+      const entries = await listDir($, dir)
+      const key = entries
+        .map(entry => entry.name)
+        .sort()
+        .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
+        .join('/')
+      let cached = probes.get(dir)
+      if (cached?.key !== key) {
+        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid) }
+        probes.set(dir, cached)
       }
-      const found = await probe($, dir, root.isPanel, sid)
-      if (found) probes.push(found)
+      if (cached.probe) found.push(cached.probe)
     }
   }
-  const alive = await alivePids($, probes.filter(one => !one.hasDone).map(one => one.pid))
-  for (const one of probes) {
+  const alive = await alivePids($, found.filter(one => !one.hasDone).map(one => one.pid))
+  const rows: Run[] = []
+  for (const one of found) {
     const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, alive.has(one.pid)) }
-    const isOld = now - one.changedAt > maxAgeMs
-    if (run.status === 'done' || run.status === 'failed') settled.set(run.dir, isOld ? null : run)
-    if (run.status === 'running' || !isOld) rows.push(run)
+    if (run.status === 'running') rows.push(run)
+    else if (now - one.changedAt <= MAX_AGE_MS) rows.push(run)
+    // finished or dead past the age limit: settle so later ticks skip the reads
+    else probes.set(run.dir, { key: probes.get(run.dir)?.key ?? '', probe: null })
   }
   const rank = (run: Run) => (run.status === 'running' ? 0 : 1)
   return rows
@@ -176,26 +156,14 @@ function runElapsed(run: Run, now: number): string {
   return run.startedAt === null ? '?' : elapsed((run.endedAt ?? now) - run.startedAt)
 }
 
-async function newestTranscript($: $, cwd: string): Promise<string | null> {
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) ?? ''}/.claude`
-  const folder = `${config}/projects/${projectSlug(cwd)}`
-  const files = (await listDir($, folder)).filter(entry => entry.name.endsWith('.jsonl'))
-  const newest = files.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
-  return newest ? `${folder}/${newest.name}` : null
-}
-
+// GPT runs stream codex events to result.jsonl; Claude and Kimi runs only stderr.log.
 async function readTail($: $, run: Run): Promise<Tail> {
   const names = new Set((await listDir($, run.dir)).map(entry => entry.name))
-  let tail: string[] = []
-  if (names.has('result.jsonl')) {
-    tail = codexTail(await tailFile($, `${run.dir}/result.jsonl`, TAIL_READ))
-  } else if (run.status === 'running' && names.has('cwd')) {
-    const transcript = await newestTranscript($, await readText($, `${run.dir}/cwd`))
-    if (transcript) tail = transcriptTail(await tailFile($, transcript, TAIL_READ))
-  }
-  if (tail.length === 0 && names.has('stderr.log')) {
-    tail = lines(await tailFile($, `${run.dir}/stderr.log`, TAIL_LINES))
-  }
+  const tail = names.has('result.jsonl')
+    ? codexTail(await tailBytes($, `${run.dir}/result.jsonl`))
+    : names.has('stderr.log')
+      ? lines(await tailBytes($, `${run.dir}/stderr.log`)).slice(-TAIL_LINES)
+      : []
   let lastMessage = ''
   if (run.status !== 'running') {
     lastMessage = names.has('last-message')
@@ -207,7 +175,7 @@ async function readTail($: $, run: Run): Promise<Tail> {
 
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
   if (stateDir !== undefined) return stateDir
-  const configured = String(options.stateDir ?? '') || (await $.env.get('AGENT_STATE_DIR')) || ''
+  const configured = String(options.stateDir ?? '')
   if (configured) return (stateDir = configured.replace(/\/+$/, ''))
   const common = await gitCommonDir($)
   const main = common?.replace(/\/\.git$/, '')
@@ -240,16 +208,23 @@ const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
-export const register: Register = (on, options) => {
-  const periodMs = Math.min(5, Math.max(1, Number(options.refreshSeconds ?? 3))) * 1000
+const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
 
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'workers',
       description: "Open a pane of this session's child runs; click one for its live tail",
     })
-    // One redraw tick for the pane and the band: each re-reads its files while drawn.
-    $.clock.every(periodMs, () => $.ui.invalidate('ui.render'))
+    // One tick redraws the pane and the band (each re-reads its files while drawn)
+    // and drops an expanded ask whose line is gone, so a later ask at that line opens closed.
+    $.clock.every(REFRESH_MS, async () => {
+      $.ui.invalidate('ui.render')
+      const open = await read($, openAsk)
+      if (open === null) return
+      const { asks } = await readAsks($, options)
+      if (!asks.some(ask => isSameAsk(open, ask))) await update($, openAsk, () => null)
+    })
 
     return next(e)
   })
@@ -305,27 +280,32 @@ export const register: Register = (on, options) => {
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const open = await read($, openAsk)
-    const isOpen = asks.some(ask => ask.n === open)
-    const detail = isOpen && open !== null ? await readAskDetail($, detailDir, open) : ''
+    const shown = asks.find(ask => isSameAsk(open, ask))
+    const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
 
     return (
       <Box flexDirection="column">
-        {asks.map(({ n, text }) => (
+        {asks.map(ask => {
+          const { n, text } = ask
+          const isOpen = ask === shown
+
+          return (
           <Box key={`ask-row-${n}`} flexDirection="column">
             <Button
               key={`ask-${n}`}
               plain
-              label={`${open === n ? '▾' : '▸'} ${text}`}
-              onPress={() => update($, openAsk, was => (was === n ? null : n))}
+              label={`${isOpen ? '▾' : '▸'} ${text}`}
+              onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n, text }))}
             />
-            {open === n &&
+            {isOpen &&
               (detail ? (
                 <Markdown key={`ask-detail-${n}`} text={detail} />
               ) : (
                 <Text dimColor>no context recorded</Text>
               ))}
           </Box>
-        ))}
+          )
+        })}
       </Box>
     )
   })

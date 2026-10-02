@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { KIDS, PANEL, RUN_FILES, STATE, SID, world } from './world'
+import { KIDS, PANEL, RUN_FILES, SID, STATE, world } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -69,6 +69,38 @@ describe('workers pane', () => {
     }
   })
 
+  test('a resumed run (done removed) shows running again, not its old end', async ($, on) => {
+    const w = world(on, RUN_FILES)
+    const dir = `${KIDS}/b-done`
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await first.find({ key: `run:${dir}` }))?.text).toContain('4m  done')
+    await first.unmount()
+
+    delete w.files[`${dir}/done`]
+    delete w.files[`${dir}/exit-code`]
+    w.alive.add('102')
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await again.find({ key: `run:${dir}` }))?.text).toContain('5m  running')
+    await again.press({ key: `run:${dir}` })
+    expect(await again.find({ key: 'last-message' })).toBeUndefined()
+    await again.unmount()
+  })
+
+  test('a dead run past the age limit is hidden and not read again', async ($, on) => {
+    const w = world(on, RUN_FILES)
+    const dir = `${KIDS}/f-old-dead`
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await first.find({ key: `run:${dir}` })).toBeUndefined()
+    await first.unmount()
+    const readsBefore = w.reads.filter(path => path.startsWith(`${dir}/`)).length
+    expect(readsBefore).toBeGreaterThan(0)
+
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await again.find({ key: `run:${dir}` })).toBeUndefined()
+    expect(w.reads.filter(path => path.startsWith(`${dir}/`)).length).toBe(readsBefore)
+    await again.unmount()
+  })
+
   test('no runs for the session draws the empty line', async ($, on) => {
     world(on, {})
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -102,6 +134,27 @@ describe('asks band', () => {
       expect(await ui.find({ type: 'Text', text: 'no context recorded' })).toBeUndefined()
       await ui.unmount()
     }
+  })
+
+  test('an expanded ask closes once its line is gone', async ($, on) => {
+    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the DF fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await ui.press({ key: 'ask-1' })
+    expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('Recommend A.')
+    await ui.unmount()
+
+    w.files[ASKS] = ''
+    await w.clock.advance(3000)
+    w.files[ASKS] = '#12 merge the DF fold?\n'
+    const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await again.find({ key: 'ask-1' }))?.text).toContain('▸ #12')
+    expect(await again.find({ key: 'ask-detail-1' })).toBeUndefined()
+    await again.unmount()
   })
 
   for (const [name, asks] of [

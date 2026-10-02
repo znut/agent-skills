@@ -77,24 +77,6 @@ export function codexTail(jsonl: string): string[] {
   return out.slice(-TAIL_LINES)
 }
 
-// Claude Code transcript rows: assistant text and tool calls.
-export function transcriptTail(jsonl: string): string[] {
-  const out: string[] = []
-  for (const line of jsonl.split('\n')) {
-    const message = parseJson(line)?.message as Record<string, unknown> | undefined
-    if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue
-    for (const block of message.content as Record<string, unknown>[]) {
-      if (block.type === 'text') out.push(...lines(String(block.text ?? '')))
-      if (block.type === 'tool_use') {
-        const input = (block.input ?? {}) as Record<string, unknown>
-        const arg = input.command ?? input.file_path ?? input.pattern ?? input.description ?? ''
-        out.push(`> ${String(block.name)} ${oneLine(String(arg), 120)}`)
-      }
-    }
-  }
-  return out.slice(-TAIL_LINES)
-}
-
 // claude -p --output-format json writes one object; its `result` is the final message.
 export function resultJsonMessage(text: string): string {
   const result = parseJson(text)?.result
@@ -105,8 +87,4 @@ export function busStateDir(localMd: string, home: string): string | null {
   const match = /^- `session_bus_dir`: `([^`]*)`/m.exec(localMd)
   if (!match?.[1]) return null
   return parentDir(match[1].replace(/^~(?=\/|$)/, home))
-}
-
-export function projectSlug(cwd: string): string {
-  return cwd.replace(/[/.]/g, '-')
 }

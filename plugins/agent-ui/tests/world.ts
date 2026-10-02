@@ -1,4 +1,5 @@
 import type { FsEntry, On } from 'claude-code'
+import type { MockClock } from 'claude-code/testing'
 import { mock } from 'claude-code/testing'
 
 export const SID = 'sid-1'
@@ -29,7 +30,8 @@ const CODEX_EVENTS = [
   .join('\n')
 
 // Runs: a-run live, b-done finished, c-dead gone without done, d-foreign another
-// session's, e-failed non-zero exit, plus one live claude review panel.
+// session's, e-failed non-zero exit, f-old-dead dead past the age limit, plus one
+// live claude review panel.
 export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/a-run`, { ...run('openai', '101'), 'result.jsonl': CODEX_EVENTS }),
   ...under(`${KIDS}/b-done`, {
@@ -43,24 +45,30 @@ export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/d-foreign`, run('openai', '104', 'sid-other')),
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
+  ...under(`${KIDS}/f-old-dead`, { ...run('kimi', '107'), 'start-epoch': epoch(13 * 60) }),
   '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus` (peer inboxes)\n',
 }
 
-export const ALIVE = new Set(['101', '106'])
+export const ALIVE = ['101', '106']
+
+export type World = { files: Record<string, string>; alive: Set<string>; reads: string[]; clock: MockClock }
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
-export function world(on: On, files: Record<string, string>): void {
+// The test mutates the returned world (files, alive pids) to stage a change.
+export function world(on: On, files: Record<string, string>, alive: readonly string[] = ALIVE): World {
   mock.env(on, { TMPDIR: '/fx/tmp/', HOME: '/fx/home' })
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
+  const w: World = { files: { ...files }, alive: new Set(alive), reads: [], clock }
   on('session.id', () => ({ value: SID }))
   on('fs.read', ($, e) => {
-    const text = files[e.path]
+    w.reads.push(e.path)
+    const text = w.files[e.path]
     if (text === undefined) return { deny: `ENOENT: ${e.path}` }
     return { value: text }
   })
   on('fs.list', ($, e) => {
     const seen = new Map<string, FsEntry>()
-    for (const [path, text] of Object.entries(files)) {
+    for (const [path, text] of Object.entries(w.files)) {
       if (!path.startsWith(`${e.path}/`)) continue
       const [name = '', ...rest] = path.slice(e.path.length + 1).split('/')
       const kind = rest.length > 0 ? 'dir' : 'file'
@@ -75,12 +83,13 @@ export function world(on: On, files: Record<string, string>): void {
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
     if (command === 'git') return ok('/fx/repo/.git\n')
-    if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => ALIVE.has(pid)).join('\n'))
+    if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => w.alive.has(pid)).join('\n'))
     if (command === 'tail') {
-      const text = files[args.at(-1) ?? '']
-      if (text === undefined) return ok('', 1)
-      return ok(text.split('\n').slice(-Number(args[1])).join('\n'))
+      const text = w.files[args.at(-1) ?? '']
+      if (text === undefined || args[0] !== '-c') return ok('', 1)
+      return ok(text.slice(-Number(args[1])))
     }
     throw new Error(`unexpected command ${command}`)
   })
+  return w
 }
