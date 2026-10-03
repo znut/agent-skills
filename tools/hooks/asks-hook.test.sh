@@ -103,21 +103,32 @@ reply "go"
 check "a short reply alone clears the newest ask" asks_are "#1111 #2222 "
 
 # ---------- capture: one ask per ticket, newest wins ----------
-# Jev is stubbed: curl writes a fixed "yes, a decision" answer with no context lines.
+# Jev is stubbed: curl keeps the last request in $STUB_REQ and answers with $STUB_ANSWERS, else a
+# fixed "yes, a decision" answer with no context lines.
 stub=$tmp/stub
 mkdir -p "$stub"
 cat >"$stub/curl" <<'STUB'
 #!/bin/sh
 cat >/dev/null
-while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
-printf '%s' '{"answers":{"decision":{"noul":0.9},"problem":{"choice":"none","confidence":0},"options":{"choice":"none","confidence":0},"rec":{"choice":"none","confidence":0}}}' >"$out"
+while [ $# -gt 0 ]; do
+	case $1 in -o) out=$2 ;; --data-binary) req=${2#@} ;; esac
+	shift
+done
+[ -z "${STUB_REQ:-}" ] || cp "$req" "$STUB_REQ"
+if [ -f "${STUB_ANSWERS:-/nonexistent}" ]; then cat "$STUB_ANSWERS" >"$out"
+else printf '%s' '{"answers":{"decision":{"noul":0.9},"problem":{"choice":"none","confidence":0},"options":{"choice":"none","confidence":0},"rec":{"choice":"none","confidence":0}}}' >"$out"; fi
 STUB
 chmod +x "$stub/curl"
 echo fake >"$tmp/token"
 capture() { # capture <final assistant message>
 	jq -nc --arg m "$1" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:"/nonexistent"}' |
 		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
-			ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
+			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
+}
+# same_scores <json of same_<n> scores>: Jev's answer for the next captures, a decision plus these.
+same_scores() {
+	jq -n --argjson s "$1" '{answers: ({decision:{noul:0.9}, problem:{choice:"none",confidence:0},
+		options:{choice:"none",confidence:0}, rec:{choice:"none",confidence:0}} + $s)}' >"$tmp/answers.json"
 }
 # seed_lines <ask line>...: the given lines verbatim, each with a detail file "context <line number>".
 seed_lines() {
@@ -131,6 +142,7 @@ seed_lines() {
 		echo "context $n" >"$st/asks/s1.d/$n.md"
 	done
 }
+jqt() { jq -e "$@" >/dev/null; }
 lines_are() { [ "$(tr '\n' '|' <"$st/asks/s1")" = "$1" ]; }
 detail_is() { [ "$(cat "$st/asks/s1.d/$1.md" 2>/dev/null)" = "$2" ]; }
 detail_links() { grep -q "issues/$2\$" "$st/asks/s1.d/$1.md" 2>/dev/null; }
@@ -158,6 +170,35 @@ check "an ask with no #N is deduped by exact text" lines_are "Ship it now or wai
 check "the deduped ask keeps its detail" detail_is 1 "context 1"
 capture "Another question here?"
 check "a different ask with no #N is appended" lines_are "Ship it now or wait?|Another question here?|"
+
+# A re-ask in other words: Jev scores each open ask as the same decision, 0.7 or above replaces the best.
+seed_lines "#1111 first?" "Shall we do the thing?" "#3333 third?"
+same_scores '{"same_1":{"noul":0.1},"same_2":{"noul":0.9},"same_3":{"noul":0.2}}'
+capture "Should we do that thing a new way?"
+check "a re-ask scored 0.9 replaces that ask and goes last" lines_are "#1111 first?|#3333 third?|Should we do that thing a new way?|"
+check "the survivors' details renumber after the replace" detail_is 2 "context 3"
+check "no detail of the replaced ask is left" bash -c '! grep -rq "context 2" "$0"' "$st/asks/s1.d"
+check "Jev got one same-decision question per open ask" test "$(jq '[.questions | keys[] | select(startswith("same_"))] | length' "$tmp/req.last")" = 3
+check "Jev got the open ask line, no context" jqt '.questions.same_2.instructions | keys == ["open_ask","question"] and .open_ask == "Shall we do the thing?"' "$tmp/req.last"
+check "the log keeps every ask's score" jqt -s 'last | .decision == "replace" and .scores.same == {"1":0.1,"2":0.9,"3":0.2}' "$st/asks/jev-log.jsonl"
+
+seed_lines "#1111 first?" "Shall we do the thing?"
+same_scores '{"same_1":{"noul":0.2},"same_2":{"noul":0.5}}'
+capture "Should we do that thing a new way?"
+check "a re-ask scored 0.5 is appended" lines_are "#1111 first?|Shall we do the thing?|Should we do that thing a new way?|"
+check "an appended re-ask is logged as a pin" jqt -s 'last | .decision == "pin"' "$st/asks/jev-log.jsonl"
+
+seed_lines "Shall we do the thing?" "#3333 third?"
+same_scores '{"same_1":{"noul":0.7},"same_2":{"noul":0.2}}'
+capture "Should we do that thing a new way?"
+check "a re-ask scored exactly 0.7 replaces" lines_are "#3333 third?|Should we do that thing a new way?|"
+
+seed_lines "#1111 first?" "other?"
+same_scores '{"same_1":{"noul":0.9},"same_2":{"noul":0.9}}'
+capture "Ship #1111 as one PR?"
+check "a #N match replaces without a Jev same-decision question" lines_are "other?|Ship #1111 as one PR?|"
+check "the #N match sent no same-decision question" bash -c '! grep -q same_ "$0"' "$tmp/req.last"
+rm -f "$tmp/answers.json"
 
 # No-#N asks are compared as literal text: glob characters and letter case never merge two asks.
 seed_lines "a*b?" "axxb?" "#2222 x?"
