@@ -21,6 +21,7 @@ trap 'exit 0' EXIT
 PIN_MIN=0.6      # yes-probability that the final question is a decision
 CLEAR_MIN=0.6    # yes-probability that a message answers an ask
 PICK_MIN=0.4     # confidence to keep a context-line pick
+SAME_MIN=0.7     # yes-probability that a new question is the same decision as an open ask
 OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
@@ -146,13 +147,27 @@ capture() {
 	[ -n "$cand" ] || return 0
 	if [ -z "$DRY" ] && grep -qxF -- "$cand" "$asks" 2>/dev/null; then return 0; fi
 
-	# Jev sees the candidate and the 12 non-empty lines before it (the choices), nothing else.
+	# Jev also gets one same-decision question per open ask, unless the candidate's first #N matches
+	# one: that ask is replaced by the #N rule, with no Jev call.
+	local num= line
+	[[ $cand =~ \#[0-9]+ ]] && num=${BASH_REMATCH[0]}
+	: >"$tmp/open.txt"
+	if [ -s "$asks" ]; then
+		cat "$asks" >"$tmp/open.txt"
+		if [ -n "$num" ]; then
+			while IFS= read -r line; do
+				[[ $line =~ \#[0-9]+ && ${BASH_REMATCH[0]} == "$num" ]] && { : >"$tmp/open.txt"; break; }
+			done <"$asks"
+		fi
+	fi
+
+	# Jev sees the candidate and the 12 non-empty lines before it (the choices), the open ask lines, nothing else.
 	printf '%s\n' "$msg" | awk -v idx="$idx" '
 		NR < idx && $0 ~ /[^ \t]/ { n++; i[n] = NR; t[n] = $0 }
 		END { for (k = n > 12 ? n - 11 : 1; k <= n; k++) { gsub(/\t/, " ", t[k]); print i[k] "\t" substr(t[k], 1, 200) } }' >"$tmp/prev.tsv"
 
 	jq -n --arg cand "$cand" '{final_question:$cand}' >"$tmp/state.json"
-	jq -n --rawfile prev "$tmp/prev.tsv" '
+	jq -n --rawfile prev "$tmp/prev.tsv" --rawfile open "$tmp/open.txt" '
 		($prev | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries
 		 + {none: "No line fits."}) as $lines
 		| def pick($q): {type:"choice", instructions:$q, criteria:$lines};
@@ -162,14 +177,19 @@ capture() {
 		  problem: pick("Which listed line states the problem or situation that `final_question` is about? Choose none if no line does."),
 		  options: pick("Which listed line states one of the options or alternatives offered by `final_question`? Choose none if no line does."),
 		  rec: pick("Which listed line states the recommendation behind `final_question`? Choose none if no line does.")
-		}' >"$tmp/q.json"
+		}
+		+ ($open | split("\n") | to_entries | map(select(.value != ""))
+		   | map({key: "same_\(.key + 1)", value: {type:"noul", instructions:{open_ask: .value,
+		     question: "Is `final_question` the same decision as `open_ask`? Answer yes only if one answer settles both, even when worded differently; a different decision on the same ticket or topic is not the same."}}})
+		   | from_entries)' >"$tmp/q.json"
 
 	local score
 	judge capture "$cand" || return 0
 	score=$(printf '%s' "$ans" | jq -r '.decision.noul')
 	local scores
 	scores=$(printf '%s' "$ans" | jq -c '{decision:.decision.noul,
-		problem:[.problem.choice,.problem.confidence], options:[.options.choice,.options.confidence], rec:[.rec.choice,.rec.confidence]}')
+		problem:[.problem.choice,.problem.confidence], options:[.options.choice,.options.confidence], rec:[.rec.choice,.rec.confidence],
+		same:([to_entries[] | select(.key | startswith("same_")) | {key: (.key | ltrimstr("same_")), value: .value.noul}] | from_entries)}')
 	if ! awk -v s="$score" -v m="$PIN_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
 		log capture "$cand" skip "$scores"
 		[ -z "$DRY" ] || printf 'SKIP %s\n     scores %s\n' "$cand" "$scores"
@@ -210,16 +230,27 @@ capture() {
 		esac
 		ctx="$ctx$label ${text:0:200}"$'\n'
 	done
-	local num slug
-	num=$(printf '%s' "$cand" | grep -oE '#[0-9]+' | head -n 1)
+	local slug
 	if [ -n "$num" ]; then
 		slug=$(git -C "$cwd" remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')
 		ctx="${ctx}link: https://github.com/${slug:-EZ-OPD/ez-opd-services}/issues/${num#\#}"$'\n'
 	fi
 
+	# The best same-decision score at SAME_MIN or above names the open ask this one replaces.
+	local same_n= same_s= replace= decision=pin
+	if [ -s "$tmp/open.txt" ]; then
+		IFS=$'\t' read -r same_n same_s < <(printf '%s' "$ans" | jq -r '[to_entries[] | select(.key | startswith("same_"))
+			| {n: (.key | ltrimstr("same_")), s: .value.noul}] | max_by(.s) // empty | [.n, .s] | @tsv')
+		if [[ $same_n =~ ^[0-9]+$ ]] && awk -v s="$same_s" -v m="$SAME_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
+			replace=$(sed -n "${same_n}p" "$tmp/open.txt")
+			[ -z "$replace" ] || decision=replace
+		fi
+	fi
+
 	if [ -n "$DRY" ]; then
-		log capture "$cand" pin-dry "$scores"
-		printf 'PIN  %s\n%s' "$cand" "$(printf '%s' "$ctx" | sed 's/^/     | /')"
+		log capture "$cand" "$decision-dry" "$scores"
+		printf '%s %s\n%s' "$([ "$decision" = pin ] && echo PIN || echo REPLACE)" "$cand" "$(printf '%s' "$ctx" | sed 's/^/     | /')"
+		[ -z "$replace" ] || printf '\n     replaces %s' "$replace"
 		printf '\n     scores %s\n' "$scores"
 		return 0
 	fi
@@ -231,9 +262,9 @@ capture() {
 		return 0
 	fi
 	if grep -qxF -- "$cand" "$asks" 2>/dev/null; then unlock; return 0; fi
-	rewrite_asks "$cand" "$ctx"
+	rewrite_asks "$cand" "$ctx" ${replace:+"$replace"}
 	unlock
-	log capture "$cand" pin "$scores"
+	log capture "$cand" "$decision" "$scores"
 }
 
 # ---------- the one writer of the asks file (call it under the lock) ----------
