@@ -176,6 +176,8 @@ build_ctx() {
 # compared with each open ask; every open ask is also asked whether the message settles it.
 capture() {
 	resolve_state && job_init || return 0
+	tick
+	snap=$now
 	if [ -z "$msg" ]; then
 		[ -r "$tp" ] || return 0
 		msg=$(tail -n 200 "$tp" | jq -R 'fromjson? // empty' | jq -rs '
@@ -341,10 +343,8 @@ capture() {
 # ticket_done <N>: its PR is MERGED or CLOSED in the gh-status files, or its board row is Done
 # ($board_done, set by rewrite_asks). Local files only; a missing file means not done.
 ticket_done() {
-	local json
 	if [ -n "$gh_dir" ] && [ -r "$gh_dir/status/pr-$1.json" ]; then
-		json=$(<"$gh_dir/status/pr-$1.json")
-		[[ $json =~ \"state\"[[:space:]]*:[[:space:]]*\"(MERGED|CLOSED)\" ]] && return 0
+		case $(jq -r '.state // empty' "$gh_dir/status/pr-$1.json" 2>/dev/null) in MERGED|CLOSED) return 0 ;; esac
 	fi
 	[[ $board_done == *" $1 "* ]]
 }
@@ -354,6 +354,9 @@ log_dismissed() {
 	for t in ${dismissed[@]+"${dismissed[@]}"}; do log clear "$t" done-ticket; done
 }
 
+# tick: $now = microseconds since the epoch (whole seconds before bash 5), a fork-free clock.
+tick() { now=${EPOCHREALTIME//[.,]/}; [ -n "$now" ] || printf -v now '%(%s)T000000' -1; }
+
 # ---------- the one writer of the asks file (call it under the lock) ----------
 # rewrite_asks <new ask or ""> <its context> <dropped ask text>...: append the new ask, keep only
 # the newest ask per ticket (its first #N; without one, its whole text), drop the lines with exactly
@@ -361,16 +364,23 @@ log_dismissed() {
 # the file may have changed since a judgment. Dropped lines land in $removed. An ask whose first #N
 # is a done ticket is dropped too (into $dismissed): its PR is MERGED or CLOSED in the gh-status
 # files, or its board row is Done.
+# Every line has a pinned-at stamp (microseconds) in the sidecar $asks.meta, parallel to the file; a
+# line with no stamp is old. A dropped text only removes a line stamped at or before $snap, the time
+# its judgment read the file: an identical ask pinned while Jev ran is not touched.
 rewrite_asks() {
-	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop nums=''
-	local -a text keep ids
+	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop nums='' k=0 st
+	local -a text keep ids stamp
 	shift 2
 	removed=() dismissed=() board_done=''
 	while IFS= read -r line; do
 		n=$((n + 1))
 		text[n]=$line
 	done <"$asks"
-	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; }
+	while IFS= read -r line; do
+		k=$((k + 1))
+		stamp[k]=$line
+	done <"$asks.meta"
+	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; tick; stamp[n]=$now; }
 	for ((i = n; i >= 1; i--)); do
 		line=${text[i]}
 		[ -n "$line" ] || continue
@@ -394,10 +404,16 @@ rewrite_asks() {
 	done
 	[ -z "$ctx" ] || mkdir -p "$detail"
 	: >"$asks.new"
+	: >"$asks.meta.new"
 	for ((i = 1; i <= n; i++)); do
 		line=${text[i]}
 		drop=
 		for t in "$@"; do [ "$line" = "$t" ] && drop=1; done
+		if [ -n "$drop" ] && [ -n "${snap:-}" ]; then
+			st=${stamp[i]:-0}
+			[[ $st =~ ^[0-9]+$ ]] || st=0
+			[ "$st" -le "$snap" ] || drop=
+		fi
 		if [ -z "${keep[i]:-}" ] || [ -n "$drop" ]; then
 			[ -z "$drop" ] || removed+=("$line")
 			[ ! -f "$detail/$i.md" ] || rm -f "$detail/$i.md"
@@ -405,12 +421,14 @@ rewrite_asks() {
 		fi
 		m=$((m + 1))
 		printf '%s\n' "$line" >>"$asks.new"
+		printf '%s\n' "${stamp[i]:-0}" >>"$asks.meta.new"
 		if [ -n "$new" ] && [ "$i" -eq "$n" ]; then
 			if [ -n "$ctx" ]; then printf '%s' "$ctx" >"$detail/$m.md"; elif [ -f "$detail/$m.md" ]; then rm -f "$detail/$m.md"; fi
 		elif [ "$m" -ne "$i" ] && [ -f "$detail/$i.md" ]; then
 			mv "$detail/$i.md" "$detail/$m.md"
 		fi
 	done
+	mv "$asks.meta.new" "$asks.meta"
 	mv "$asks.new" "$asks"
 }
 
@@ -433,6 +451,8 @@ apply_clear() {
 # The Jev part: one yes/no per open ask, judged over a snapshot of the file.
 clear_jev() {
 	resolve_state && job_init || return 0
+	tick
+	snap=$now
 	local n=0 line k v scores texts=()
 	printf '{}' >"$tmp/q.json"
 	jq -n --arg prompt "$prompt" '{user_message:$prompt}' >"$tmp/state.json"
@@ -487,6 +507,8 @@ NUM_RE='(^|[^[:alnum:]])#?([0-9]+)([^[:alnum:]]|$)'
 # must match an open ask. Returns 1 to hand the reply to Jev.
 short_clear() {
 	local rest=$prompt reply= line n found targets=() nums=()
+	tick
+	snap=$now
 	[ "${#prompt}" -le 120 ] || return 1
 	while [[ $rest =~ $NUM_RE ]]; do
 		nums+=("${BASH_REMATCH[2]}")

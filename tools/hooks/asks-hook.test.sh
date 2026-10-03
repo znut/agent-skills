@@ -61,7 +61,7 @@ echo pm >"$roles/s1"
 # seed <ticket>...: one open ask per ticket, each with a detail file naming it.
 seed() {
 	local n=0 t
-	rm -rf "$st/asks/s1.d" "$st/asks/jev-log.jsonl"
+	rm -rf "$st/asks/s1.d" "$st/asks/s1.meta" "$st/asks/jev-log.jsonl"
 	: >"$st/asks/s1"
 	mkdir -p "$st/asks/s1.d"
 	for t in "$@"; do
@@ -115,6 +115,13 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -z "${STUB_REQ:-}" ] || cp "$req" "$STUB_REQ"
+# STUB_REPIN: while Jev "runs", the user answers the open ask and the same ask is pinned again.
+if [ -n "${STUB_REPIN:-}" ] && [ -z "${STUB_NESTED:-}" ]; then
+	printf '%s' '{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"go","cwd":"/nonexistent"}' |
+		STUB_NESTED=1 STUB_ANSWERS= STUB_REQ= bash "$STUB_HOOK"
+	printf '{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":"%s","cwd":"/nonexistent"}' "$STUB_REPIN" |
+		STUB_NESTED=1 STUB_ANSWERS= STUB_REQ= bash "$STUB_HOOK"
+fi
 if [ -f "${STUB_ANSWERS:-/nonexistent}" ]; then cat "$STUB_ANSWERS" >"$out"
 else printf '%s' '{"answers":{"decision":{"noul":0.9},"problem":{"choice":"none","confidence":0},"options":{"choice":"none","confidence":0},"rec":{"choice":"none","confidence":0}}}' >"$out"; fi
 STUB
@@ -123,7 +130,7 @@ echo fake >"$tmp/token"
 capture() { # capture <final assistant message>
 	jq -nc --arg m "$1" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:"/nonexistent"}' |
 		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
-			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
+			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" STUB_HOOK="$script" STUB_REPIN="${repin:-}" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
 }
 # same_scores <json of same_<n> scores>: Jev's answer for the next captures, a decision plus these.
 same_scores() {
@@ -133,7 +140,7 @@ same_scores() {
 # seed_lines <ask line>...: the given lines verbatim, each with a detail file "context <line number>".
 seed_lines() {
 	local n=0 l
-	rm -rf "$st/asks/s1.d" "$st/asks/jev-log.jsonl"
+	rm -rf "$st/asks/s1.d" "$st/asks/s1.meta" "$st/asks/jev-log.jsonl"
 	: >"$st/asks/s1"
 	mkdir -p "$st/asks/s1.d"
 	for l in "$@"; do
@@ -270,6 +277,31 @@ seed_lines "first?" "second?"
 same_scores '{"settled_1":{"noul":0.9}}'
 capture $'It is merged.\nShip #8888 next?'
 check "a message with a question pins it and clears the settled ask" lines_are "second?|Ship #8888 next?|"
+rm -f "$tmp/answers.json"
+
+# A done PR is read by its top-level state only: nested objects with a state never decide.
+rm -rf "$st/gh-status" "$st/board-snapshot.md"
+mkdir -p "$st/gh-status/status"
+echo '{"checks":{"state":"CLOSED"},"reviews":[{"state":"CLOSED"}],"number":4460,"state":"OPEN"}' >"$st/gh-status/status/pr-4460.json"
+write_with_dismiss
+check "an OPEN PR with a nested CLOSED state is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+echo '{"reviews":[{"state":"OPEN"}],"number":4460,"state":"MERGED"}' >"$st/gh-status/status/pr-4460.json"
+write_with_dismiss
+check "a MERGED PR with a nested OPEN state is dropped" lines_are "plain ask?|"
+rm -rf "$st/gh-status"
+
+# A judgment only clears asks that were already pinned when it read the file: an identical ask
+# pinned while Jev ran stays (the stub answers the open ask and pins it again during the call).
+seed_lines "Shall we do the thing?"
+same_scores '{"settled_1":{"noul":0.9}}'
+repin="Shall we do the thing?"
+capture "Nothing is waiting on you."
+repin=
+check "a settled score for the old ask leaves the identical ask pinned meanwhile" lines_are "Shall we do the thing?|"
+check "the log shows no settled clear" bash -c '! grep -q "\"decision\":\"settled\"" "$0"' "$st/asks/jev-log.jsonl"
+seed_lines "Shall we do the thing?"
+capture "Nothing is waiting on you."
+check "the same score clears an ask that was already pinned" lines_are ""
 rm -f "$tmp/answers.json"
 
 # The ask is the question sentence alone, so a done ticket named in a lead-in sentence cannot dismiss it.

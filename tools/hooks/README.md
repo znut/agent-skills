@@ -50,8 +50,9 @@ TypeSafe token in `~/.config/typesafe.token`.
   waiting on the user settles every ask. A Stop with no `?` and no open ask
   makes no call.
 - **Done tickets.** Every write also drops an ask whose first `#N` is a done
-  ticket: its PR is `MERGED` or `CLOSED` in `<gh_status_dir>/status/pr-N.json`,
-  or its row in `board_snapshot_file` has Status `Done` (both paths from
+  ticket: its PR file `<gh_status_dir>/status/pr-N.json` has a top-level
+  `state` of `MERGED` or `CLOSED` (read with `jq`, so a nested object's `state`
+  never counts), or its row in `board_snapshot_file` has Status `Done` (both paths from
   `.agent/orchestrate.local.md`, or beside `ASKS_STATE_DIR` in tests). Local
   files only, no network; a missing file means keep, and an ask with no `#N` is
   never dismissed. The `agent-ui` band hides such asks at render time from the
@@ -75,6 +76,11 @@ TypeSafe token in `~/.config/typesafe.token`.
   once. Writers hold a kernel `flock` on `<sid>.lock` (taken through `perl`; the
   kernel drops it when the holder dies, so no stale lock is ever broken) and
   rewrite by temp file plus `mv`; a clear matches ask text, not line numbers.
+  Each ask line carries a pinned-at stamp (microseconds) in the hook-private
+  sidecar `<sid>.meta`, one line per ask, which the plugin ignores. A judgment
+  (clear, settled, replace) stamps the moment it read the asks and only removes
+  an ask pinned at or before that moment, so an identical ask pinned while Jev
+  ran stays; an ask with no stamp counts as old.
   A prompt that lands while a capture is still judging cancels that pin.
   `bash tools/hooks/asks-hook.test.sh` checks the lock, the deterministic clear and the fail-open paths.
 - **Failure.** Each Jev call has a 3 s cap; curl's exit status decides, and the
