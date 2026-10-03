@@ -194,14 +194,14 @@ capture() {
 	if [ -s "$tmp/cand.tsv" ]; then
 		idx=$(cut -f1 "$tmp/cand.tsv")
 		cand=$(cut -f2- "$tmp/cand.tsv" | sed -E 's/^[[:space:]]*([-*>]|[0-9]+[.)]|#+)[[:space:]]+//; s/\*\*//g; s/^[[:space:]]+//')
-		if [ "${#cand}" -gt 110 ]; then # over the cap: its last full sentence; if still over, its start cut at a word
-			cand=$(printf '%s' "$cand" | sed -E 's/^.*[.!?:] ([^.!?:])/\1/')
-			if [ "${#cand}" -gt 110 ]; then
-				cand=${cand:0:108}
-				case "$cand" in *" "*) cand=${cand% *} ;; esac
-				while [ "${cand%[[:space:],;:-]}" != "$cand" ]; do cand=${cand%[[:space:],;:-]}; done
-				cand="${cand}…?"
-			fi
+		# The ask is the question sentence alone: the last full sentence of the line (the boundary is
+		# . ! ? or : plus a space, or the line start); one still over the cap keeps its start, cut at a word.
+		cand=$(printf '%s' "$cand" | sed -E 's/^.*[.!?:] ([^.!?:])/\1/')
+		if [ "${#cand}" -gt 110 ]; then
+			cand=${cand:0:108}
+			case "$cand" in *" "*) cand=${cand% *} ;; esac
+			while [ "${cand%[[:space:],;:-]}" != "$cand" ]; do cand=${cand%[[:space:],;:-]}; done
+			cand="${cand}…?"
 		fi
 		while [ "$cand" != "$prev" ]; do # a cut at a sentence can leave a leading ": "
 			prev=$cand

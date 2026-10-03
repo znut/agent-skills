@@ -26,10 +26,12 @@ marker naming pm, tl-product or tl-platform. It needs `jq`, `curl`, `perl` and a
 TypeSafe token in `~/.config/typesafe.token`.
 
 - **Stop (capture).** The candidate is the last line of the final assistant
-  message that ends in `?`. A candidate over 110 chars becomes its last full
-  sentence (the boundary is `.`, `!`, `?` or `:` plus a space, or the line
-  start); a sentence still over 110 keeps its start and is cut at a word with
-  `…?`, never with a leading ellipsis. Its first `#N` becomes the `link:` line.
+  message that ends in `?`, cut to its question sentence alone: the last full
+  sentence of the line (the boundary is `.`, `!`, `?` or `:` plus a space, or
+  the line start), so `Merged #4465. Should I start #4466?` pins `Should I
+  start #4466?`, keyed `#4466`. A sentence over 110 chars keeps its start and is
+  cut at a word with `…?`, never with a leading ellipsis. Its first `#N`
+  becomes the `link:` line.
   One Jev request asks whether it is a decision the user must make (yes at 0.6
   or above pins it), and picks up to three earlier lines as Problem, Options
   and Rec context (`<n>.md`). A leading `:`, `;`, `,`, dash or space is

@@ -272,6 +272,24 @@ capture $'It is merged.\nShip #8888 next?'
 check "a message with a question pins it and clears the settled ask" lines_are "second?|Ship #8888 next?|"
 rm -f "$tmp/answers.json"
 
+# The ask is the question sentence alone, so a done ticket named in a lead-in sentence cannot dismiss it.
+rm -rf "$st/gh-status" "$st/board-snapshot.md"
+pr_state 4465 MERGED
+seed_lines "#1111 first?"
+capture "Merged #4465. Should I start #4466?"
+check "a lead-in naming a merged ticket does not key the ask: it pins as #4466 and survives" lines_are "#1111 first?|Should I start #4466?|"
+check "the pinned ask links the ticket of its question sentence" detail_links 2 4466
+seed_lines "#1111 first?"
+capture "Should I start #4465?"
+check "a question whose own first #N is merged is dismissed" lines_are "#1111 first?|"
+rm -rf "$st/gh-status"
+seed_lines "#1111 first?"
+capture "Should we ship the schema change now?"
+check "a short single-sentence question is unchanged" lines_are "#1111 first?|Should we ship the schema change now?|"
+seed_lines "#1111 first?"
+capture "Still open: shall I dispatch the PRD change?"
+check "a lead-in clause before a colon is not part of the ask" lines_are "#1111 first?|shall I dispatch the PRD change?|"
+
 # An over-length question keeps its last full sentence; one still too long is cut at a word with …?
 seed_lines "#1111 first?"
 capture 'Should platform own both, with tl-product closing #4466 into the rewrite, or does the ADR part go to tl-product?'
