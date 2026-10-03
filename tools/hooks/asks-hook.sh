@@ -138,6 +138,11 @@ capture() {
 		if [ "${#clause}" -le 110 ] && [ "$clause" != "$cand" ]; then cand=$clause
 		else cand="…$(printf '%s' "${cand: -100}" | sed -E 's/^[^ ]* //')"; fi
 	fi
+	local prev=
+	while [ "$cand" != "$prev" ]; do # a cut at a clause can leave a leading ": "
+		prev=$cand
+		cand=${cand#[[:space:]:;,-]}; cand=${cand#–}; cand=${cand#—}
+	done
 	[ -n "$cand" ] || return 0
 	if [ -z "$DRY" ] && grep -qxF -- "$cand" "$asks" 2>/dev/null; then return 0; fi
 
@@ -226,44 +231,69 @@ capture() {
 		return 0
 	fi
 	if grep -qxF -- "$cand" "$asks" 2>/dev/null; then unlock; return 0; fi
-	mkdir -p "$detail"
-	local n
-	n=$(($(grep -c . "$asks" 2>/dev/null) + 1))
-	[ -z "$ctx" ] || printf '%s' "$ctx" >"$detail/$n.md"
-	{ cat "$asks" 2>/dev/null; printf '%s\n' "$cand"; } >"$asks.new" && mv "$asks.new" "$asks"
+	rewrite_asks "$cand" "$ctx"
 	unlock
 	log capture "$cand" pin "$scores"
 }
 
+# ---------- the one writer of the asks file (call it under the lock) ----------
+# rewrite_asks <new ask or ""> <its context> <dropped ask text>...: append the new ask, keep only
+# the newest ask per ticket (its first #N; without one, its whole text), drop the lines with exactly
+# the dropped texts, and renumber the detail files to follow their lines. Texts, not line numbers:
+# the file may have changed since a judgment. Dropped lines land in $removed.
+rewrite_asks() {
+	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop
+	local -a text keep
+	shift 2
+	removed=()
+	while IFS= read -r line; do
+		n=$((n + 1))
+		text[n]=$line
+	done <"$asks"
+	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; }
+	for ((i = n; i >= 1; i--)); do
+		line=${text[i]}
+		[ -n "$line" ] || continue
+		if [[ $line =~ \#[0-9]+ ]]; then id=${BASH_REMATCH[0]}; else id=$line; fi
+		case "$seen" in *$'\n'"$id"$'\n'*) continue ;; esac
+		seen="$seen$id"$'\n'
+		keep[i]=1
+	done
+	[ -z "$ctx" ] || mkdir -p "$detail"
+	: >"$asks.new"
+	for ((i = 1; i <= n; i++)); do
+		line=${text[i]}
+		drop=
+		for t in "$@"; do [ "$line" = "$t" ] && drop=1; done
+		if [ -z "${keep[i]:-}" ] || [ -n "$drop" ]; then
+			[ -z "$drop" ] || removed+=("$line")
+			[ ! -f "$detail/$i.md" ] || rm -f "$detail/$i.md"
+			continue
+		fi
+		m=$((m + 1))
+		printf '%s\n' "$line" >>"$asks.new"
+		if [ -n "$new" ] && [ "$i" -eq "$n" ]; then
+			if [ -n "$ctx" ]; then printf '%s' "$ctx" >"$detail/$m.md"; elif [ -f "$detail/$m.md" ]; then rm -f "$detail/$m.md"; fi
+		elif [ "$m" -ne "$i" ] && [ -f "$detail/$i.md" ]; then
+			mv "$detail/$i.md" "$detail/$m.md"
+		fi
+	done
+	mv "$asks.new" "$asks"
+}
+
 # ---------- UserPromptSubmit: clear answered asks ----------
-# apply_clear <scores-json> <ask text>...: drop the lines with exactly these texts and
-# their details, then renumber the survivors in ascending order (texts, not line numbers:
-# the file may have changed since the judgment).
+# apply_clear <scores-json> <ask text>...: drop the lines with exactly these texts.
 apply_clear() {
-	local scores=$1 n=0 new=0 line drop t
+	local scores=$1 t
 	shift
 	if [ -n "$DRY" ]; then
 		printf 'CLEAR %s\n     scores %s\n' "$(printf '%s | ' "$@")" "$scores"
 		return 0
 	fi
 	lock || return 0
-	: >"$asks.new"
-	while IFS= read -r line; do
-		n=$((n + 1))
-		[ -n "$line" ] || continue
-		drop=
-		for t in "$@"; do [ "$line" = "$t" ] && drop=1; done
-		if [ -n "$drop" ]; then
-			[ ! -f "$detail/$n.md" ] || rm -f "$detail/$n.md"
-			log clear "$line" clear "$scores"
-		else
-			new=$((new + 1))
-			printf '%s\n' "$line" >>"$asks.new"
-			[ "$new" -eq "$n" ] || { [ ! -f "$detail/$n.md" ] || mv "$detail/$n.md" "$detail/$new.md"; }
-		fi
-	done <"$asks"
-	mv "$asks.new" "$asks"
+	rewrite_asks "" "" "$@"
 	unlock
+	for t in ${removed[@]+"${removed[@]}"}; do log clear "$t" clear "$scores"; done
 }
 
 # The Jev part: one yes/no per open ask, judged over a snapshot of the file.

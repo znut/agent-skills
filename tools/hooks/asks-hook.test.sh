@@ -102,6 +102,69 @@ seed 1111 2222 3333
 reply "go"
 check "a short reply alone clears the newest ask" asks_are "#1111 #2222 "
 
+# ---------- capture: one ask per ticket, newest wins ----------
+# Jev is stubbed: curl writes a fixed "yes, a decision" answer with no context lines.
+stub=$tmp/stub
+mkdir -p "$stub"
+cat >"$stub/curl" <<'STUB'
+#!/bin/sh
+cat >/dev/null
+while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+printf '%s' '{"answers":{"decision":{"noul":0.9},"problem":{"choice":"none","confidence":0},"options":{"choice":"none","confidence":0},"rec":{"choice":"none","confidence":0}}}' >"$out"
+STUB
+chmod +x "$stub/curl"
+echo fake >"$tmp/token"
+capture() { # capture <final assistant message>
+	jq -nc --arg m "$1" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:"/nonexistent"}' |
+		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
+			ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
+}
+# seed_lines <ask line>...: the given lines verbatim, each with a detail file "context <line number>".
+seed_lines() {
+	local n=0 l
+	rm -rf "$st/asks/s1.d" "$st/asks/jev-log.jsonl"
+	: >"$st/asks/s1"
+	mkdir -p "$st/asks/s1.d"
+	for l in "$@"; do
+		n=$((n + 1))
+		echo "$l" >>"$st/asks/s1"
+		echo "context $n" >"$st/asks/s1.d/$n.md"
+	done
+}
+lines_are() { [ "$(tr '\n' '|' <"$st/asks/s1")" = "$1" ]; }
+detail_is() { [ "$(cat "$st/asks/s1.d/$1.md" 2>/dev/null)" = "$2" ]; }
+detail_links() { grep -q "issues/$2\$" "$st/asks/s1.d/$1.md" 2>/dev/null; }
+
+seed_lines "#1111 first?" "#2222 second?"
+capture "Ship #1111 as one PR?"
+check "a capture with an open ticket's #N replaces that ask" lines_are "#2222 second?|Ship #1111 as one PR?|"
+check "the survivor's detail follows its line" detail_is 1 "context 2"
+check "the replaced ask's detail is replaced, not kept" detail_links 2 1111
+check "no detail of the replaced ask is left" bash -c '! grep -rq "context 1" "$0"' "$st/asks/s1.d"
+
+seed_lines "#1111 old?" "#2222 mid?" "#1111 new?"
+capture "Hold #3333 a week?"
+check "a write collapses existing duplicates, keeping the newest" lines_are "#2222 mid?|#1111 new?|Hold #3333 a week?|"
+check "the kept duplicate's detail is its own" detail_is 2 "context 3"
+
+seed_lines "#1111 old?" "#2222 mid?" "#1111 new?"
+reply "2222 go"
+check "a clear also collapses existing duplicates" lines_are "#1111 new?|"
+check "the survivor's detail is the newest one's" detail_is 1 "context 3"
+
+seed_lines "Ship it now or wait?"
+capture "Ship it now or wait?"
+check "an ask with no #N is deduped by exact text" lines_are "Ship it now or wait?|"
+check "the deduped ask keeps its detail" detail_is 1 "context 1"
+capture "Another question here?"
+check "a different ask with no #N is appended" lines_are "Ship it now or wait?|Another question here?|"
+
+seed_lines "#1111 first?"
+capture $'Intro.\n: should we ship #4449 now?'
+check "a leading colon is stripped from the candidate" lines_are "#1111 first?|should we ship #4449 now?|"
+capture $'Intro.\n\xe2\x80\x94 should we hold #5555 a week?'
+check "a leading em dash is stripped from the candidate" lines_are "#1111 first?|should we ship #4449 now?|should we hold #5555 a week?|"
+
 # ---------- fail open: every early path exits 0 with no output ----------
 event_json() { # event_json <sid> <event> <prompt-or-message>
 	jq -nc --arg s "$1" --arg e "$2" --arg t "$3" \

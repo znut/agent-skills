@@ -29,7 +29,12 @@ TypeSafe token in `~/.config/typesafe.token`.
   message that ends in `?`; no `?`, no call. Its first `#N` becomes the
   `link:` line. One Jev request asks whether it is a decision the user must
   make (yes at 0.6 or above pins it), and picks up to three earlier lines as
-  Problem, Options and Rec context (`<n>.md`).
+  Problem, Options and Rec context (`<n>.md`). A leading `:`, `;`, `,`, dash
+  or space is stripped from the candidate. There is one ask per ticket: a
+  pin whose first `#N` matches an open ask's first `#N` replaces that ask (line
+  and `<n>.md`, no Jev call) and goes last; asks with no `#N` dedupe by exact
+  text. Every write (pin or clear) also collapses duplicates already in the
+  file, keeping the newest per `#N`.
 - **UserPromptSubmit (clear).** A reply on a fixed short-reply list
   (`SHORT_REPLIES` in the script, one per line: `go`, `go ahead`, `do it`,
   `yes`, `no`, `ok`, `ship`, `merge` and the like; matched whole,
