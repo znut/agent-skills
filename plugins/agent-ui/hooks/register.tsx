@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, FsEntry, PluginOptions, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
 import {
@@ -11,6 +11,7 @@ import {
   kindOf,
   labelOf,
   lines,
+  parentDir,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -19,6 +20,8 @@ type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
+type NativeRun = { id: string; label: string; kind: string; status: Run['status']; model: string }
+type Row = { key: string; run: Run | NativeRun; native: boolean }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
@@ -31,6 +34,7 @@ const TAIL_BYTES = 262_144
 const probes = new Map<string, { key: string; probe: Probe | null }>()
 let roots: Root[] | null = null
 let stateDir: string | null | undefined
+let ghStatusDir: string | null | undefined
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -76,34 +80,41 @@ async function runDirs($: $, root: Root): Promise<string[]> {
   return nested.flat()
 }
 
-async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
+async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string, now: number): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
   const pidEntry = names.get('pid')
   if (!pidEntry) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, start, end, exitCode] = await Promise.all([
+  const [owner, pid, provider, model, fullModel, start, end, exitCode] = await Promise.all([
     field('owner-session'),
     field('pid'),
     field('provider'),
     field('model'),
+    field('full-model'),
     field('start-epoch'),
     field('end-epoch'),
     field('exit-code'),
   ])
   if (owner !== '' && sid !== '' && owner !== sid) return null
+  const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
+  const startMs = epochMs(start)
+  if (owner === '' && (lastMtime || startMs) && now - (lastMtime || startMs || 0) > LIVE_WINDOW_MS) return null
+  const evidence = names.has('result.jsonl') ? 'codex-events' : fullModel
+  const inferred = kindOf(provider, isPanel, evidence)
+  const providerLabel = provider || (inferred === 'gpt' ? 'gpt' : '?')
+  const modelLabel = model || fullModel.replace(/^gpt-/, '') || '?'
   const hasDone = names.has('done')
-  const startedAt = epochMs(start) ?? (pidEntry.mtimeMs || null)
-  // end-epoch survives a resume; only a present `done` makes it this run's end.
-  const endedAt = hasDone ? (epochMs(end) ?? (names.get('done')?.mtimeMs || null)) : null
+  const startedAt = startMs ?? (pidEntry.mtimeMs || null)
+  const endedAt = epochMs(end) ?? (lastMtime || null)
   return {
     pid,
     hasDone,
     exitCode,
     run: {
       dir,
-      kind: kindOf(provider, isPanel),
+      kind: inferred,
       label: labelOf(dir, isPanel),
-      model: [provider || '?', model || '?'].join('/'),
+      model: [providerLabel, modelLabel].join('/'),
       status: 'running',
       startedAt,
       endedAt,
@@ -133,7 +144,7 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
         .join('/')
       let cached = probes.get(dir)
       if (cached?.key !== key) {
-        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid) }
+        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid, now) }
         probes.set(dir, cached)
       }
       if (cached.probe) found.push(cached.probe)
@@ -152,11 +163,11 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
   done.sort((a, b) => when(b) - when(a))
   running.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-  return [...running, ...done.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
+  return [...running, ...done]
 }
 
 function runElapsed(run: Run, now: number): string {
-  return run.startedAt === null ? '?' : elapsed((run.endedAt ?? now) - run.startedAt)
+  return run.startedAt === null ? '?' : elapsed(((run.status === 'running' ? now : run.endedAt) ?? now) - run.startedAt)
 }
 
 // GPT runs stream codex events to result.jsonl; Claude and Kimi runs only stderr.log.
@@ -176,6 +187,75 @@ async function readTail($: $, run: Run): Promise<Tail> {
   return { lines: tail, lastMessage }
 }
 
+async function readNativeTail($: $, run: NativeRun): Promise<Tail> {
+  const messages = await $.session.messages({ agentId: run.id }).catch(() => [])
+  if (!Array.isArray(messages)) return { lines: [], lastMessage: '' }
+  const linesOut = messages.flatMap(message => lines(message.text)).slice(-TAIL_LINES)
+  return { lines: linesOut, lastMessage: '' }
+}
+
+type PrRow = { number: number; title: string; head: string; readyAt: string }
+type PrState = { prs: PrRow[]; gates: Map<number, Record<string, unknown> | null> }
+
+async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
+  const dir = await resolveGhStatusDir($, options)
+  if (!dir) return { prs: [], gates: new Map() }
+  const entries = await listDir($, `${dir}/status`)
+  const statusFiles = entries.filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
+  const prs = (await Promise.all(statusFiles.map(async entry => {
+    const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
+    if (!value || value.state !== 'OPEN' || value.isDraft !== false || typeof value.number !== 'number') return null
+    return {
+      number: value.number,
+      title: typeof value.title === 'string' ? value.title : '',
+      head: typeof value.headOid === 'string' ? value.headOid : '',
+      readyAt: String(value.approvedAt ?? value.readyAt ?? value.createdAt ?? value.updatedAt ?? ''),
+    }
+  }))).filter((pr): pr is PrRow => pr !== null)
+  prs.sort((a, b) => a.readyAt.localeCompare(b.readyAt) || a.number - b.number)
+  const gates = new Map<number, Record<string, unknown> | null>()
+  await Promise.all(prs.map(async pr => {
+    const path = `${parentDir(dir)}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
+    gates.set(pr.number, jsonObject(await readText($, path)))
+  }))
+  return { prs, gates }
+}
+
+async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: number } | null> {
+  const ghDir = await resolveGhStatusDir($, options)
+  if (!ghDir) return null
+  const root = parentDir(ghDir)
+  const [stateText, log] = await Promise.all([readText($, `${root}/main-ci/state.json`), readText($, `${root}/main-ci/run.log`)] )
+  const state = jsonObject(stateText)
+  if (!state || typeof state.sha !== 'string' || log === '') return null
+  const main8 = state.sha.slice(0, 8)
+  const linesIn = log.split('\n')
+  const active = new Map<string, boolean>()
+  for (const line of linesIn) {
+    if (line.includes(`-${main8}: queued`)) {
+      const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): queued/.exec(line)
+      if (match) active.set(match[0].split(' ')[1].split(':')[0], true)
+    } else {
+      const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): (?:green|red|conflict)/.exec(line)
+      if (match && match[2] === main8) active.delete(`${match[1]}-${match[2]}`)
+    }
+  }
+  return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue: active.size }
+}
+
+function rowsFor(runs: Run[], agents: AgentInfo[]): Row[] {
+  const disk = runs.map(run => ({ key: `disk:${run.dir}`, run, native: false }))
+  const native = agents.map(asNative).map(run => ({ key: `native:${run.id}`, run, native: true }))
+  const all = [...disk, ...native]
+  const running = all.filter(row => row.run.status === 'running')
+  const finished = all.filter(row => row.run.status !== 'running').sort((a, b) => {
+    const at = a.native ? 0 : (a.run as Run).endedAt ?? (a.run as Run).startedAt ?? 0
+    const bt = b.native ? 0 : (b.run as Run).endedAt ?? (b.run as Run).startedAt ?? 0
+    return bt - at
+  })
+  return [...running, ...finished.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
+}
+
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
   if (stateDir !== undefined) return stateDir
   const configured = String(options.stateDir ?? '')
@@ -187,7 +267,47 @@ async function resolveStateDir($: $, options: PluginOptions): Promise<string | n
   return stateDir
 }
 
+async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string | null> {
+  if (ghStatusDir !== undefined) return ghStatusDir
+  const configured = String(options.stateDir ?? '')
+  if (configured) return (ghStatusDir = `${configured.replace(/\/+$/, '')}/gh-status`)
+  const common = await gitCommonDir($)
+  const main = common?.replace(/\/\.git$/, '')
+  const localMd = main ? await readText($, `${main}/.agent/orchestrate.local.md`) : ''
+  const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(localMd)
+  const value = match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '')
+  ghStatusDir = value ? value.replace(/\/+$/, '') : null
+  return ghStatusDir
+}
+
 type Ask = { n: number; text: string }
+
+function jsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text)
+    return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function issueNumber(text: string): string | null {
+  return /#(\d+)/.exec(text)?.[1] ?? /\/issues\/(\d+)/.exec(text)?.[1] ?? /\/pull\/(\d+)/.exec(text)?.[1] ?? null
+}
+
+function repoSlug(options: PluginOptions): string {
+  return String(options.repoSlug ?? 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+}
+
+function asNative(agent: AgentInfo): NativeRun {
+  const status = agent.status === 'running' ? 'running' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'dead' : 'done'
+  return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status, model: '?' }
+}
+
+function askOptions(detail: string): string[] {
+  const line = detail.split('\n').find(text => /^options?:/i.test(text.trim()))
+  return line ? line.replace(/^options?:/i, '').split(/\s*[|;]\s*/).map(text => text.trim()).filter(Boolean).slice(0, 4) : []
+}
 
 // `n` is the ask's 1-based line number in the file: its detail file is `<n>.md`.
 async function readAsks($: $, options: PluginOptions): Promise<{ asks: Ask[]; detailDir: string }> {
@@ -239,28 +359,59 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const now = await $.clock.now()
-    const runs = await scanRuns($, options, now)
+    const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
+    const rows = rowsFor(runs, agents)
+    const prState = await readReadyPrs($, options, main?.sha ?? '')
     const chosen = await read($, selectedRun)
-    const shown = runs.find(run => run.dir === chosen) ?? null
-    const tail = shown ? await readTail($, shown) : null
+    const shown = rows.find(row => row.key === chosen) ?? null
+    const tail = shown
+      ? shown.native
+        ? await readNativeTail($, shown.run as NativeRun)
+        : await readTail($, shown.run as Run)
+      : null
+    const repo = repoSlug(options)
+    const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
 
     return (
       <Box flexDirection="column">
-        {runs.length === 0 && <Text dimColor>No child runs for this session.</Text>}
-        {runs.map(run => (
+        {main && <Text dimColor>{`main ${main.sha} · ${main.state} · preview queue ${main.queue}`}</Text>}
+        {prState.prs.length > 0 && (
+          <Box key="needs-you" flexDirection="column" marginBottom={1}>
+            <Text bold>Needs you</Text>
+            {prState.prs.map(pr => {
+              const gate = prState.gates.get(pr.number)
+              const result = gate === null ? '…' : gate.green === true ? '✓' : '✗'
+              return (
+                <Box key={`pr:${pr.number}`}>
+                  <Link key={`pr-link-${pr.number}`} href={issueUrl(pr.number)} label={`#${pr.number}`} />
+                  <Text>{` ${pr.title} ${result}${gate?.conflict === true ? ' ⚡ conflict' : ''}`}</Text>
+                </Box>
+              )
+            })}
+          </Box>
+        )}
+        <Text bold>Workers</Text>
+        {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
+        {rows.map(row => {
+          const run = row.run
+          const duration = row.native ? '?' : runElapsed(run as Run, now)
+          const label = row.native ? (run as NativeRun).label : (run as Run).label
+          const kind = row.native ? (run as NativeRun).kind : (run as Run).kind
+          return (
           <Button
-            key={`run:${run.dir}`}
+            key={row.key}
             plain
             dimColor={run.status !== 'running'}
-            label={`${MARK[run.status]} ${run.kind} ${run.label}  ${run.model}  ${runElapsed(run, now)}  ${run.status}`}
-            onPress={() => update($, selectedRun, dir => (dir === run.dir ? null : run.dir))}
+            label={`${MARK[run.status]} ${kind} ${label}  ${run.model}  ${duration}  ${run.status}`}
+            onPress={() => update($, selectedRun, key => (key === row.key ? null : row.key))}
           />
-        ))}
+          )
+        })}
         {shown && tail && (
           <Box key="tail" flexDirection="column" marginTop={1}>
-            <Text bold>{`${shown.label} (${shown.status})`}</Text>
+            <Text bold>{`${shown.native ? (shown.run as NativeRun).label : (shown.run as Run).label} (${shown.run.status})`}</Text>
             {tail.lines.length === 0 && <Text dimColor>No output yet.</Text>}
             {tail.lines.map(line => (
               <Text wrap="truncate-end">{line}</Text>
@@ -281,10 +432,11 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
+    const detailText = detail.split('\n').filter(line => !/^options?:/i.test(line.trim()) && !/^link:\s*/i.test(line.trim())).join('\n')
 
     return (
       <Box flexDirection="column">
@@ -293,12 +445,23 @@ export const register: Register = (on, options) => {
             <Button
               key={`ask-${ask.n}`}
               plain
-              label={`${ask === shown ? '▾' : '▸'} ${ask.text}`}
+              label={`${ask === shown ? '▾' : '▸'} ${ask.text.replace(/#\d+\s*/, '')}`}
               onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
             />
+            {issueNumber(ask.text) && <Link key={`ask-link-${ask.n}`} href={`https://github.com/${repoSlug(options)}/issues/${issueNumber(ask.text)}`} label={`#${issueNumber(ask.text)}`} />}
+            {!issueNumber(ask.text) && /https?:\/\/\S+$/.test(ask.text) && <Link key={`ask-link-${ask.n}`} href={ask.text.match(/https?:\/\/\S+$/)?.[0] ?? ''} label="open link" />}
             {ask === shown &&
               (detail ? (
-                <Markdown key={`ask-detail-${ask.n}`} text={detail} />
+                <Box key={`ask-detail-${ask.n}`} flexDirection="column">
+                  {detailText !== '' && <Markdown text={detailText} />}
+                  {detail.match(/^link:\s*(\S+)/im)?.[1] && <Link href={detail.match(/^link:\s*(\S+)/im)?.[1] ?? ''} label="open link" />}
+                  {askOptions(detail).map((option, i) => (
+                    <Button key={`ask-option-${ask.n}-${i}`} plain label={option} onPress={() => {
+                      const prefix = issueNumber(ask.text) ? `#${issueNumber(ask.text)}` : ask.text.match(/https?:\/\/\S+$/)?.[0] ?? ''
+                      return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'replace' })
+                    }} />
+                  ))}
+                </Box>
               ) : (
                 <Text dimColor>no context recorded</Text>
               ))}

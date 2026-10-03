@@ -1,4 +1,4 @@
-export type RunKind = 'gpt' | 'kimi' | 'claude' | 'claude-panel'
+export type RunKind = 'gpt' | 'kimi' | 'claude' | 'claude-panel' | '?'
 export type RunStatus = 'running' | 'done' | 'failed' | 'dead'
 
 export type Run = {

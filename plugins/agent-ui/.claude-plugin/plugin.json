@@ -18,6 +18,12 @@
       "title": "State directory",
       "description": "Folder holding asks/<session-id>. Empty: the parent of session_bus_dir in the main checkout's .agent/orchestrate.local.md.",
       "default": ""
+    },
+    "repoSlug": {
+      "type": "string",
+      "title": "GitHub repository",
+      "description": "Owner and repository for ticket links. Empty: EZ-OPD/ez-opd-services.",
+      "default": ""
     }
   }
 }

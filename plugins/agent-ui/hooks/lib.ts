@@ -12,10 +12,11 @@ export function parentDir(path: string): string {
   return cut <= 0 ? '/' : trimmed.slice(0, cut)
 }
 
-export function kindOf(provider: string, isPanel: boolean): RunKind {
+export function kindOf(provider: string, isPanel: boolean, evidence = ''): RunKind {
   if (provider === 'openai' || provider === 'codex') return 'gpt'
   if (provider === 'claude') return isPanel ? 'claude-panel' : 'claude'
-  return 'kimi'
+  if (provider === 'kimi') return 'kimi'
+  return /(?:^|\/)gpt-[^/]+/i.test(evidence) || evidence === 'codex-events' ? 'gpt' : '?'
 }
 
 export function labelOf(dir: string, isPanel: boolean): string {
