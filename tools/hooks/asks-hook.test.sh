@@ -159,6 +159,20 @@ check "the deduped ask keeps its detail" detail_is 1 "context 1"
 capture "Another question here?"
 check "a different ask with no #N is appended" lines_are "Ship it now or wait?|Another question here?|"
 
+# No-#N asks are compared as literal text: glob characters and letter case never merge two asks.
+seed_lines "a*b?" "axxb?" "#2222 x?"
+capture "Hold #3333 a week?"
+check "no-#N asks differing by a glob character both survive a pin" lines_are "a*b?|axxb?|#2222 x?|Hold #3333 a week?|"
+seed_lines "a*b?" "axxb?" "#2222 x?"
+reply "2222 go"
+check "no-#N asks differing by a glob character both survive a clear" lines_are "a*b?|axxb?|"
+seed_lines "Ship it?" "ship it?" "#2222 x?"
+reply "2222 go"
+check "no-#N asks differing only by letter case both survive a clear" lines_are "Ship it?|ship it?|"
+seed_lines "#1111 first?" "#2222 second?"
+reply "Go Ahead!"
+check "a short reply matches in any letter case" lines_are "#1111 first?|"
+
 seed_lines "#1111 first?"
 capture $'Intro.\n: should we ship #4449 now?'
 check "a leading colon is stripped from the candidate" lines_are "#1111 first?|should we ship #4449 now?|"

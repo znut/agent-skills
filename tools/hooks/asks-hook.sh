@@ -326,7 +326,7 @@ clear_jev() {
 }
 
 # The fixed short replies that clear an ask without a Jev call, one per line. A reply matches
-# whole (case-insensitive, edge punctuation ignored); anything else goes to Jev.
+# whole (compared in lower case, edge punctuation ignored); anything else goes to Jev.
 SHORT_REPLIES='go
 go ahead
 do it
@@ -359,6 +359,7 @@ short_clear() {
 		rest=${rest/"${BASH_REMATCH[0]}"/ }
 	done
 	[[ $rest =~ $TRIM_RE ]] && reply=${BASH_REMATCH[1]}
+	reply=${reply,,}
 	[[ -n $reply && $reply != *$'\n'* && $'\n'$SHORT_REPLIES$'\n' == *$'\n'"$reply"$'\n'* ]] || return 1
 	if [ "${#nums[@]}" -eq 0 ]; then
 		while IFS= read -r line; do [ -z "$line" ] || targets=("$line"); done <"$asks"
@@ -389,7 +390,6 @@ UserPromptSubmit)
 	: >"$asks.seen"
 	[ -n "$prompt" ] && [ -s "$asks" ] || exit 0
 	case "$prompt" in /*) exit 0 ;; esac
-	shopt -s nocasematch
 	short_clear || job clear_jev
 	;;
 esac
