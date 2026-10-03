@@ -49,10 +49,12 @@ TypeSafe token in `~/.config/typesafe.token`.
   kernel drops it when the holder dies, so no stale lock is ever broken) and
   rewrite by temp file plus `mv`; a clear matches ask text, not line numbers.
   A prompt that lands while a capture is still judging cancels that pin.
-  `bash tools/hooks/asks-hook.test.sh` checks the lock and the deterministic clear.
+  `bash tools/hooks/asks-hook.test.sh` checks the lock, the deterministic clear and the fail-open paths.
 - **Failure.** Each Jev call has a 3 s cap; curl's exit status decides, and the
   body is parsed only after curl succeeded. A non-zero exit or HTTP error pins
-  and clears nothing and logs `jev-failed`.
+  and clears nothing and logs `jev-failed`. Every other failure (no role
+  marker, empty or non-JSON stdin, missing `jq` or `perl`, an unwritable state
+  dir) also exits 0 with no output; an exit trap enforces it.
 - **Data sent to Jev.** Capture: the candidate line and the at most 12 non-empty
   lines before it, each cut to 200 chars. Clear: the user's message, each open
   ask line and its `<n>.md`. Nothing else leaves the machine.

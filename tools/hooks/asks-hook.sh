@@ -15,6 +15,8 @@
 
 set -u
 [ -n "${ASKS_DEBUG:-}" ] || exec 2>/dev/null
+# Fail open on every path, including an abort under set -u: the exit status is always 0.
+trap 'exit 0' EXIT
 
 PIN_MIN=0.6      # yes-probability that the final question is a decision
 CLEAR_MIN=0.6    # yes-probability that a message answers an ask
@@ -22,12 +24,14 @@ PICK_MIN=0.4     # confidence to keep a context-line pick
 OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
-TOKEN_FILE=${ASKS_TOKEN_FILE:-$HOME/.config/typesafe.token}
+TOKEN_FILE=${ASKS_TOKEN_FILE:-${HOME:-}/.config/typesafe.token}
 DRY=${ASKS_DRY_RUN:-}
 
 # Inline work: builtins and one jq (a fork costs ~5 ms of every turn and prompt).
 input=$(</dev/stdin)
 
+# Unset when stdin is empty or not JSON, or jq is missing.
+sid= event= cwd= msg= prompt= tp= role=
 eval "$(printf '%s' "$input" | jq -r '@sh "sid=\(.session_id // "") event=\(.hook_event_name // "") cwd=\(.cwd // "") msg=\(.last_assistant_message // "") prompt=\(.prompt // "") tp=\(.transcript_path // "")"')"
 case "$sid" in ""|*/*|*..*) exit 0 ;; esac
 read -r role <"$ROLE_DIR/$sid" 2>/dev/null
@@ -64,7 +68,7 @@ job() {
 
 job_init() {
 	tmp=$(mktemp -d) || return 1
-	trap '[ -n "${ASKS_KEEP:-}" ] || rm -rf "$tmp" "${stamp:-}"' EXIT
+	trap '[ -n "${ASKS_KEEP:-}" ] || rm -rf "$tmp" "${stamp:-}"; exit 0' EXIT
 }
 
 # Writers of the asks file and its details hold a kernel flock on fd 9 (perl, as macOS has no

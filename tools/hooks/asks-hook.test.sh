@@ -102,4 +102,48 @@ seed 1111 2222 3333
 reply "go"
 check "a short reply alone clears the newest ask" asks_are "#1111 #2222 "
 
+# ---------- fail open: every early path exits 0 with no output ----------
+event_json() { # event_json <sid> <event> <prompt-or-message>
+	jq -nc --arg s "$1" --arg e "$2" --arg t "$3" \
+		'{session_id:$s,hook_event_name:$e,prompt:$t,last_assistant_message:$t,cwd:"/nonexistent"}'
+}
+# silent_ok <stdin-text> [-u VAR] [VAR=value...]: the hook exits 0 and prints nothing.
+silent_ok() {
+	local in=$1 out rc unset_opt=()
+	shift
+	if [ "${1:-}" = -u ]; then unset_opt=(-u "$2"); shift 2; fi
+	out=$(printf '%s' "$in" | env ${unset_opt[@]+"${unset_opt[@]}"} ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/none" \
+		TMPDIR="$tmp" ASKS_SYNC=1 "$@" "$BASH" "$script" 2>&1)
+	rc=$?
+	[ "$rc" -eq 0 ] && [ -z "$out" ]
+}
+closed_stdin_ok() { [ -z "$("$BASH" "$script" <&- 2>&1)" ] && "$BASH" "$script" <&-; }
+
+check "no role marker, UserPromptSubmit" silent_ok "$(event_json nomarker UserPromptSubmit go)"
+check "no role marker, Stop" silent_ok "$(event_json nomarker Stop 'Ship it?')"
+check "empty stdin" silent_ok ""
+check "closed stdin" closed_stdin_ok
+check "empty JSON object" silent_ok "{}"
+check "stdin that is not JSON" silent_ok "garbage"
+check "an unknown event" silent_ok "$(event_json s1 SessionStart go)"
+check "a non-manager role" silent_ok "$(echo worker >"$roles/w1"; event_json w1 Stop 'Ship it?')"
+
+seed 1111 2222
+check "Stop with no message text and no transcript" silent_ok "$(jq -nc '{session_id:"s1",hook_event_name:"Stop"}')"
+check "Stop with an unreadable transcript path" silent_ok "$(jq -nc '{session_id:"s1",hook_event_name:"Stop",transcript_path:"/nonexistent/t.jsonl"}')"
+check "no resolvable state dir" silent_ok "$(event_json s1 UserPromptSubmit go)" ASKS_STATE_DIR=
+: >"$tmp/afile"
+check "an unwritable state dir, UserPromptSubmit" silent_ok "$(event_json s1 UserPromptSubmit go)" ASKS_STATE_DIR="$tmp/afile/x"
+check "an unwritable state dir, Stop" silent_ok "$(event_json s1 Stop 'Ship it?')" ASKS_STATE_DIR="$tmp/afile/x"
+check "no jq, curl or perl on PATH" silent_ok "$(event_json s1 UserPromptSubmit go)" PATH=/var/empty
+check "no HOME" silent_ok "$(event_json s1 Stop 'Ship it?')" -u HOME ASKS_TOKEN_FILE=
+
+# Every tool but perl: the lock fails, so the clear is skipped and the asks stay.
+bin=$tmp/bin-no-perl
+mkdir -p "$bin"
+for t in jq sed awk tr cut grep find mktemp rm mv cat git dirname head tail curl sleep mkdir; do ln -s "$(command -v $t)" "$bin/$t"; done
+seed 1111 2222
+check "no perl: exits 0" silent_ok "$(event_json s1 UserPromptSubmit go)" PATH="$bin"
+check "no perl: the asks stay" asks_are "#1111 #2222 "
+
 exit $((failures > 0))
