@@ -94,10 +94,15 @@ jev() {
 	[ -r "$TOKEN_FILE" ] || return 1
 	jq -n --slurpfile q "$1" --slurpfile s "$2" \
 		'{model:"jev-latest",state:$s[0],questions:$q[0]}' >"$tmp/req.json" || return 1
-	# The token goes in through curl's config on stdin, never on argv.
+	# The token goes in through curl's config on stdin, never on argv; xtrace stays off
+	# around it so `bash -x` can never print it.
+	{ local x=$- rc; set +x; } 2>/dev/null
 	printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '[:space:]' <"$TOKEN_FILE")" |
 		curl -sS -f --max-time "$JEV_TIMEOUT" -K - -H 'Content-Type: application/json' \
-			--data-binary "@$tmp/req.json" -o "$tmp/resp.json" https://api.typesafe.ai/v1/systemone || return 1
+			--data-binary "@$tmp/req.json" -o "$tmp/resp.json" https://api.typesafe.ai/v1/systemone
+	rc=$?
+	[[ $x == *x* ]] && set -x
+	[ "$rc" -eq 0 ] || return 1
 	jq -e '.answers' "$tmp/resp.json"
 }
 
