@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
+import { type Avatar, SPRITE_COLS, avatarCells, avatarOf } from './sprites'
 import {
   TAIL_LINES,
   busStateDir,
@@ -24,7 +25,19 @@ type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null
 type RunDir = { dir: string; mtimeMs: number }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; unowned: boolean; startMs: number | null; lastMtime: number }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
-type Row = { key: string; kind: string; label: string; status: Run['status']; model?: string; duration?: string; diskRun?: Run; agentId?: string }
+type Row = {
+  key: string
+  kind: string
+  label: string
+  status: Run['status']
+  avatar: Avatar | null
+  model?: string
+  duration?: string
+  diskRun?: Run
+  agentId?: string
+  parent?: string
+  children: Row[]
+}
 type PrRow = { number: number; title: string; head: string }
 type PrFile = { mtimeMs: number; pr: PrRow | null }
 type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
@@ -105,7 +118,7 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
   const pidEntry = names.get('pid')
   if (!pidEntry) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, fullModel, start, end, exitCode] = await Promise.all([
+  const [owner, pid, provider, model, fullModel, start, end, exitCode, cwd, agent] = await Promise.all([
     field('owner-session'),
     field('pid'),
     field('provider'),
@@ -114,6 +127,8 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     field('start-epoch'),
     field('end-epoch'),
     field('exit-code'),
+    field('cwd'),
+    field('agent'),
   ])
   if (owner !== '' && sid !== '' && owner !== sid) return null
   const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
@@ -136,6 +151,8 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
       dir,
       kind: inferred,
       label: labelOf(dir, isPanel),
+      cwd,
+      isReviewer: isPanel || agent === 'reviewer',
       model: [providerLabel, modelLabel].join('/'),
       status: 'running',
       startedAt,
@@ -279,13 +296,42 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
   return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue }
 }
 
+const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
+
 function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
-  const disk = runs.map(run => ({ key: `disk:${run.dir}`, kind: run.kind, label: run.label, status: run.status, model: run.model, duration: runElapsed(run, now), diskRun: run }))
-  const native = agents.map(asNative).map(run => ({ key: `native:${run.id}`, kind: run.kind, label: run.label, status: run.status, agentId: run.id }))
-  const running = [...disk, ...native].filter(row => row.status === 'running')
-  const finishedDisk = disk.filter(row => row.status !== 'running').slice(0, RECENT_DONE)
-  const finishedNative = native.filter(row => row.status !== 'running').slice(-RECENT_DONE).reverse()
-  return [...running, ...finishedDisk, ...finishedNative].slice(0, MAX_ROWS)
+  const disk: Row[] = runs.map(run => ({ key: `disk:${run.dir}`, kind: run.kind, label: run.label, status: run.status, avatar: avatarOf(run.kind), model: run.model, duration: runElapsed(run, now), diskRun: run, children: [] }))
+  const native: Row[] = agents.map(agent => {
+    const run = asNative(agent)
+    const parent = agents.some(other => other.id === agent.parentId) ? `native:${agent.parentId}` : undefined
+    return { key: `native:${run.id}`, kind: run.kind, label: run.label, status: run.status, avatar: 'claude', agentId: run.id, parent, children: [] }
+  })
+  // A disk reviewer joins the newest worker that started before it in the same worktree.
+  const workers = disk.filter(row => row.diskRun && !row.diskRun.isReviewer && row.diskRun.cwd.startsWith('/'))
+  for (const row of disk) {
+    const run = row.diskRun
+    if (!run?.isReviewer || !run.cwd.startsWith('/')) continue
+    row.parent = workers.filter(w => w.diskRun?.cwd === run.cwd && startOf(w) <= (run.startedAt ?? Infinity)).sort((a, b) => startOf(b) - startOf(a))[0]?.key
+  }
+  const all = [...disk, ...native]
+  const byKey = new Map(all.map(row => [row.key, row]))
+  const rootOf = (row: Row) => {
+    let root = row
+    for (let hops = 0; root.parent && hops < 8; hops++) root = byKey.get(root.parent) ?? root
+    return root
+  }
+  const nested = new Set<Row>()
+  for (const row of all) {
+    const root = rootOf(row)
+    if (root !== row) { root.children.push(row); nested.add(row) }
+  }
+  const top = all.filter(row => !nested.has(row))
+  const running = top.filter(row => row.status === 'running')
+  const finishedDisk = top.filter(row => row.diskRun && row.status !== 'running').slice(0, RECENT_DONE)
+  const finishedNative = top.filter(row => !row.diskRun && row.status !== 'running').slice(-RECENT_DONE).reverse()
+  const shown = [...running, ...finishedDisk, ...finishedNative].slice(0, MAX_ROWS)
+  // a running child whose worker rolled off the list stays visible at the top
+  const orphans = all.filter(row => nested.has(row) && row.status === 'running' && !shown.includes(rootOf(row)))
+  return [...shown, ...orphans]
 }
 
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
@@ -391,8 +437,38 @@ async function readAskDetail($: $, detailDir: string, n: number): Promise<string
 }
 
 const PANE = 'workers'
+const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
+
+const FRAME_MS = 250
+const MAX_ANIMATED = 20
+const CHILD_CAP = 8
+
+// Only running rows animate: one timer, one keyed blit per row a frame (no pane redraw).
+// A render lists the rows to animate; the timer cancels itself once the list is empty.
+let frameTimer: Timer | null = null
+let frameTick = 0
+let animating: { key: string; avatar: Avatar }[] = []
+
+function syncFrames($: $): void {
+  if (animating.length === 0) {
+    frameTimer?.cancel()
+    frameTimer = null
+    return
+  }
+  if (frameTimer) return
+  frameTimer = $.clock.every(FRAME_MS, async () => {
+    frameTick++
+    const batch = animating
+    const results = await Promise.all(
+      batch.map(row => $.ui.blit({ requestId: PANE, key: `avatar:${row.key}`, cells: avatarCells(row.avatar, 'running', frameTick) }).catch(() => ({ deny: 'blit failed' }))),
+    )
+    // nothing of ours is mounted any more (the pane closed): wait for the next render
+    if (results.every(result => result.deny)) animating = []
+    syncFrames($)
+  })
+}
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
@@ -425,12 +501,21 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : null
     const now = await $.clock.now()
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
-    const chosen = await read($, selectedRun)
-    const shown = rows.find(row => row.key === chosen) ?? null
+    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
+    const visible = rows.flatMap(row => [
+      { row, isChild: false },
+      ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+    ])
+    const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
+    animating = Raster
+      ? visible.filter(({ row }) => row.status === 'running' && row.avatar).slice(0, MAX_ANIMATED).flatMap(({ row }) => (row.avatar ? [{ key: row.key, avatar: row.avatar }] : []))
+      : []
+    syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
     const repo = repoSlug(options)
     const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
@@ -463,14 +548,29 @@ export const register: Register = (on, options) => {
         )}
         <Text bold>Workers</Text>
         {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
-        {rows.map(row => (
-          <Button
-            key={row.key}
-            plain
-            dimColor={row.status !== 'running'}
-            label={`${MARK[row.status]} ${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}`}
-            onPress={() => update($, selectedRun, key => (key === row.key ? null : row.key))}
-          />
+        {visible.map(({ row, isChild }) => (
+          <Box key={`row:${row.key}`} flexDirection="row">
+            {isChild && <Text dimColor>{'  └ '}</Text>}
+            {Raster && row.avatar ? (
+              <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
+            ) : (
+              <Box key={`mark:${row.key}`}>
+                <Text dimColor={row.status !== 'running'}>{`${MARK[row.status]}    `}</Text>
+              </Box>
+            )}
+            <Text>{' '}</Text>
+            <Button
+              key={row.key}
+              plain
+              dimColor={row.status !== 'running'}
+              label={`${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
+              onPress={async () => {
+                const wasShown = (await read($, selectedRun)) === row.key
+                await update($, selectedRun, () => (wasShown ? null : row.key))
+                if (row.children.length > 0) await update($, expanded, keys => (wasShown ? keys.filter(key => key !== row.key) : [...keys, row.key]))
+              }}
+            />
+          </Box>
         ))}
         {shown && tail && (
           <Box key="tail" flexDirection="column" marginTop={1}>

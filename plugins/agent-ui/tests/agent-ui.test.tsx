@@ -114,7 +114,7 @@ describe('workers pane', () => {
     world(on, files, [], { agents })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const keys = (await ui.findAll({})).map(node => node.key).filter((key): key is string => !!key)
-    expect(keys.filter(key => key.includes('/disk-done-'))).toHaveLength(5)
+    expect(keys.filter(key => key.startsWith('disk:') && key.includes('/disk-done-'))).toHaveLength(5)
     expect(keys.filter(key => key.startsWith('native:finished-'))).toHaveLength(5)
     await ui.unmount()
   })
@@ -183,8 +183,8 @@ describe('workers pane', () => {
       transcripts: { 'agent-1': [{ role: 'assistant', text: 'native transcript tail', toolUses: [] }] },
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ key: 'native:agent-1' }))?.text).toBe('◐ Explore inspect sidebar  running')
-    expect((await ui.find({ key: 'native:agent-2' }))?.text).toContain('✓ Explore finished inspect')
+    expect((await ui.find({ key: 'native:agent-1' }))?.text).toBe('Explore inspect sidebar  running')
+    expect((await ui.find({ key: 'native:agent-2' }))?.text).toContain('Explore finished inspect')
     await ui.press({ key: 'native:agent-1' })
     expect(await ui.find({ type: 'Text', text: 'native transcript tail' })).toBeDefined()
     await ui.unmount()
@@ -305,6 +305,141 @@ describe('workers pane', () => {
     expect(w.lists.filter(path => path === dir)).toHaveLength(1)
     expect(w.reads.filter(path => path === `${dir}/pid`)).toHaveLength(1)
     expect(w.lists.filter(path => path === `${KIDS}/a-run`)).toHaveLength(2)
+  })
+
+  describe('avatars', () => {
+    const cellsOf = async (ui: { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, dir: string) =>
+      (await ui.find({ key: `avatar:disk:${dir}` }))?.props.cells
+    const frames = (key: string, w: { blits: { key: string; cells: string }[] }) => w.blits.filter(blit => blit.key === key)
+
+    test('terminal rows draw a sprite per status in place of the mark; other surfaces keep the mark', async ($, on) => {
+      world(on, { ...RUN_FILES, ...under(`${KIDS}/f-unknown`, { pid: '110', 'owner-session': SID, 'start-epoch': epoch(5) }) })
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      const run = await cellsOf(ui, `${KIDS}/a-run`)
+      const done = await cellsOf(ui, `${KIDS}/b-done`)
+      const failed = await cellsOf(ui, `${KIDS}/e-failed`)
+      expect(new Set([run, done, failed]).size).toBe(3)
+      expect(await cellsOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
+      expect(await ui.find({ key: `mark:disk:${KIDS}/a-run` })).toBeUndefined()
+      expect((await ui.find({ key: `mark:disk:${KIDS}/f-unknown` }))?.text).toContain('†')
+      await ui.unmount()
+
+      const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+      expect(await desktop.find({ key: `avatar:disk:${KIDS}/a-run` })).toBeUndefined()
+      const mark = async (dir: string) => (await desktop.find({ key: `mark:disk:${dir}` }))?.text
+      expect(await mark(`${KIDS}/a-run`)).toContain('◐')
+      expect(await mark(`${KIDS}/b-done`)).toContain('✓')
+      expect(await mark(`${KIDS}/e-failed`)).toContain('✗')
+      await desktop.unmount()
+    })
+
+    test('only running rows blit, a frame per tick; the timer is off with no running row', async ($, on) => {
+      const w = world(on, RUN_FILES)
+      w.blitOk = true
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(1000)
+      const keys = new Set(w.blits.map(blit => blit.key))
+      expect([...keys].sort()).toEqual([`avatar:disk:${KIDS}/a-run`, `avatar:disk:${PANEL}/0123abcdef/code`].sort())
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(4)
+      expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.cells)).size).toBeGreaterThan(1)
+      await ui.unmount()
+
+      w.alive.clear()
+      const settled = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(1000)
+      const before = w.blits.length
+      await w.clock.advance(5000)
+      expect(w.blits).toHaveLength(before)
+      await settled.unmount()
+    })
+
+    test('animation stays under the blit limit however many rows run', async ($, on) => {
+      const files: Record<string, string> = {}
+      for (let i = 0; i < 25; i++) Object.assign(files, under(`${KIDS}/m-${i}`, run('openai', `70${i}`)))
+      const w = world(on, files, Array.from({ length: 25 }, (_, i) => `70${i}`))
+      w.blitOk = true
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(1000)
+      expect(w.blits).toHaveLength(80)
+      await ui.unmount()
+    })
+
+    test('a pane that is not mounted denies a blit and the timer stands down', async ($, on) => {
+      const w = world(on, RUN_FILES)
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(250)
+      const first = w.blits.length
+      expect(first).toBeGreaterThan(0)
+      await w.clock.advance(5000)
+      expect(w.blits).toHaveLength(first)
+      await ui.unmount()
+    })
+  })
+
+  describe('worker hierarchy', () => {
+    const rowKeys = async (ui: { findAll: (q: object) => Promise<{ key?: string }[]> }) =>
+      (await ui.findAll({})).map(node => node.key ?? '').filter(key => /^(disk|native):/.test(key))
+    const child = (extra: Record<string, string>) => ({ ...run('openai', '902'), ...extra })
+
+    test('a native subagent nests under its parent; a click toggles expansion and shows each transcript', async ($, on) => {
+      world(on, {}, [], {
+        agents: [
+          { id: 'p', description: 'parent', type: 'general-purpose', status: 'running' },
+          { id: 'r', description: 'reviewer', type: 'reviewer', status: 'running', parentId: 'p' },
+        ],
+        transcripts: {
+          p: [{ role: 'assistant', text: 'worker transcript', toolUses: [] }],
+          r: [{ role: 'assistant', text: 'reviewer transcript', toolUses: [] }],
+        },
+      })
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect(await rowKeys(ui)).toEqual(['native:p'])
+
+      await ui.press({ key: 'native:p' })
+      expect(await rowKeys(ui)).toEqual(['native:p', 'native:r'])
+      expect(await ui.find({ type: 'Text', text: '  └ ' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'worker transcript' })).toBeDefined()
+
+      await ui.press({ key: 'native:r' })
+      expect(await ui.find({ type: 'Text', text: 'reviewer transcript' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'worker transcript' })).toBeUndefined()
+      expect(await rowKeys(ui)).toEqual(['native:p', 'native:r'])
+
+      await ui.press({ key: 'native:p' })
+      expect(await ui.find({ type: 'Text', text: 'worker transcript' })).toBeDefined()
+      await ui.press({ key: 'native:p' })
+      expect(await rowKeys(ui)).toEqual(['native:p'])
+      expect(await ui.find({ key: 'tail' })).toBeUndefined()
+      await ui.unmount()
+    })
+
+    test('a disk reviewer links to the worker in its cwd; an unlinked reviewer stays top-level', async ($, on) => {
+      const w = `${KIDS}/w-1`
+      const linked = `${KIDS}/rev-linked`
+      const loose = `${KIDS}/rev-loose`
+      world(
+        on,
+        {
+          ...under(w, child({ pid: '901', cwd: '/wt/x', agent: 'worker-high' })),
+          ...under(linked, child({ cwd: '/wt/x', agent: 'reviewer', 'last-message': 'linked verdict', done: '', 'exit-code': '0' })),
+          ...under(loose, child({ pid: '903', cwd: '/wt/other', agent: 'reviewer' })),
+          ...under(`${PANEL}/0123abcdef/code`, { ...run('claude', '904'), cwd: '.', agent: 'reviewer' }),
+        },
+        ['901', '903', '904'],
+      )
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      const top = await rowKeys(ui)
+      expect(top).toContain(`disk:${w}`)
+      expect(top).toContain(`disk:${loose}`)
+      expect(top).toContain(`disk:${PANEL}/0123abcdef/code`)
+      expect(top).not.toContain(`disk:${linked}`)
+
+      await ui.press({ key: `disk:${w}` })
+      expect(await rowKeys(ui)).toContain(`disk:${linked}`)
+      await ui.press({ key: `disk:${linked}` })
+      expect((await ui.find({ key: 'last-message' }))?.text).toContain('linked verdict')
+      await ui.unmount()
+    })
   })
 
   test('no runs for the session draws the empty line', async ($, on) => {
