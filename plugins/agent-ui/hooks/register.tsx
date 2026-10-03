@@ -555,7 +555,7 @@ export const register: Register = (on, options) => {
               <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
             ) : (
               <Box key={`mark:${row.key}`}>
-                <Text dimColor={row.status !== 'running'}>{`${MARK[row.status]}    `}</Text>
+                <Text dimColor={row.status !== 'running'}>{`${MARK[row.status]} `}</Text>
               </Box>
             )}
             <Text>{' '}</Text>

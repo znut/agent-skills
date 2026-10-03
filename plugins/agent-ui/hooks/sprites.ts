@@ -1,9 +1,9 @@
-// Provider avatars: 5 terminal cells wide, one row tall, drawn in braille (2x4 dots a
-// cell, so 10x4 pixels). Every frame is encoded once, here.
+// Provider avatars: 2 terminal cells wide, one row tall, drawn in braille (2x4 dots a
+// cell, so a square 4x4 pixels). Every frame is encoded once, here.
 export type Avatar = 'claude' | 'gpt' | 'kimi'
 type Look = { run: string[]; done: string; failed: string }
 
-export const SPRITE_COLS = 5
+export const SPRITE_COLS = 2
 const DEFAULT_BG = 0x01000000
 const FAILED = 0xe06c75
 const WHITE = 0xf2f2f2
@@ -17,27 +17,28 @@ const DOT_BITS = [
   [0x08, 0x10, 0x20, 0x80],
 ]
 
-// 'X' is the main color, 'B' the accent (a cell with a B dot takes the accent whole).
-// A frame is 4 rows of 10 pixels; a cadence plays the frames in order.
-const KIMI_K = ['XX..XX..BB', 'XX.XX...BB', 'XXXX......', 'XX..XX....']
-const mirrorK = (frame: string[]) => frame.map(row => [...row.slice(0, 8)].reverse().join('') + row.slice(8))
-
+// 'X' is the main color, 'B' the accent. Color is per cell, so the Kimi dot (upper right,
+// in the right cell) turns that whole cell blue: the K's right half and the dot. A frame
+// is 4 rows of 4 pixels; a cadence plays the frames in order.
 const FRAMES: Record<Avatar, string[][]> = {
-  // legs shuffle
+  // eyes are the gaps; the legs alternate
   claude: [
-    ['..XXXXXX..', 'XXX.XX.XXX', '..XXXXXX..', '.X.X..X.X.'],
-    ['..XXXXXX..', 'XXX.XX.XXX', '..XXXXXX..', '..X.XX.X..'],
+    ['XXXX', 'X..X', 'XXXX', 'X..X'],
+    ['XXXX', 'X..X', 'XXXX', '.XX.'],
   ],
-  // the hexagonal knot turns: three loops, then the loops shift up and down
+  // a ring with a center gap, turning
   gpt: [
-    ['..XXXXXX..', '.XX.XX.XX.', '.XX.XX.XX.', '..XXXXXX..'],
-    ['..XXXXXX..', '.XXX..XXX.', '.X.XXXX.X.', '..XXXXXX..'],
-    ['..XXXXXX..', '.X.XXXX.X.', '.XXX..XXX.', '..XXXXXX..'],
+    ['.XX.', 'X..X', 'X..X', '.XX.'],
+    ['XXX.', 'X..X', 'X..X', '.XXX'],
+    ['.XXX', 'X..X', 'X..X', 'XXX.'],
   ],
   // the K flips left to right, its dot stays
-  kimi: [KIMI_K, mirrorK(KIMI_K)],
+  kimi: [
+    ['X.XB', 'XX..', 'XX..', 'X.X.'],
+    ['X.XB', '.XX.', '.XX.', 'X.X.'],
+  ],
 }
-const CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 2, 1], kimi: [0, 0, 1, 1] }
+const CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 0, 2], kimi: [0, 0, 1, 1] }
 
 function encode(frame: string[], main: number, accent: number): string {
   const words = new Uint32Array(SPRITE_COLS * 3)
