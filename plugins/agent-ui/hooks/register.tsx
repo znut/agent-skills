@@ -513,7 +513,7 @@ export const register: Register = (on, options) => {
     ])
     const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
     animating = Raster
-      ? visible.filter(({ row }) => row.status === 'running' && row.avatar).slice(0, MAX_ANIMATED).flatMap(({ row }) => (row.avatar ? [{ key: row.key, avatar: row.avatar }] : []))
+      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null

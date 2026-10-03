@@ -64,6 +64,7 @@ export type World = {
   blits: { key: string; cells: string }[]
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
   blitOk: boolean
+  denied: number
 }
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
@@ -78,14 +79,18 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false,
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0,
   }
   on('session.id', () => ({ value: SID }))
   on('agent.list', () => ({ value: w.agents }))
   on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
   on('ui.blit', ($, e) => {
+    if (!w.blitOk) {
+      w.denied++
+      return { value: { deny: 'not mounted' } }
+    }
     if ('cells' in e) w.blits.push({ key: e.key, cells: e.cells })
-    return { value: w.blitOk ? {} : { deny: 'not mounted' } }
+    return { value: {} }
   })
   on('prompt.fill', ($, e) => {
     w.filled.push(e.text)

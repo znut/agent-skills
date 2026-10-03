@@ -364,15 +364,22 @@ describe('workers pane', () => {
       await ui.unmount()
     })
 
-    test('a pane that is not mounted denies a blit and the timer stands down', async ($, on) => {
+    test('after unmount the engine denies blits and the timer stands down', async ($, on) => {
       const w = world(on, RUN_FILES)
+      w.blitOk = true
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
       await w.clock.advance(250)
-      const first = w.blits.length
-      expect(first).toBeGreaterThan(0)
-      await w.clock.advance(5000)
-      expect(w.blits).toHaveLength(first)
+      const flowing = w.blits.length
+      expect(flowing).toBeGreaterThan(0)
       await ui.unmount()
+
+      w.blitOk = false
+      await w.clock.advance(250)
+      expect(w.denied).toBeGreaterThan(0)
+      const denied = w.denied
+      await w.clock.advance(5000)
+      expect(w.denied).toBe(denied)
+      expect(w.blits).toHaveLength(flowing)
     })
   })
 
