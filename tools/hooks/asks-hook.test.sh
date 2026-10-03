@@ -200,6 +200,86 @@ check "a #N match replaces without a Jev same-decision question" lines_are "othe
 check "the #N match sent no same-decision question" bash -c '! grep -q same_ "$0"' "$tmp/req.last"
 rm -f "$tmp/answers.json"
 
+# A done ticket drops its ask on the next write: its PR is MERGED or CLOSED, or its board row is Done.
+pr_state() { # pr_state <number> <state>
+	mkdir -p "$st/gh-status/status"
+	echo "{\"number\": $1, \"state\": \"$2\", \"title\": \"say \\\"state\\\": \\\"MERGED\\\"\"}" >"$st/gh-status/status/pr-$1.json"
+}
+board_row() { # board_row <number> <status>
+	printf '%s\n' '| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |' \
+		"| #$1 | a \\| Done \\| title | $2 | Practice | Free | Week 16 | M7 | — |" >"$st/board-snapshot.md"
+}
+write_with_dismiss() { # the ask under test, a plain ask and a newest ask that a bare "go" clears
+	seed_lines "#4460 run the bake-off once it merges?" "plain ask?" "#4462 newest?"
+	reply "go"
+}
+rm -rf "$st/gh-status" "$st/board-snapshot.md"
+pr_state 4460 MERGED
+write_with_dismiss
+check "an ask whose PR is MERGED is dropped on the next write" lines_are "plain ask?|"
+check "the dropped ask's detail goes and the survivor's renumbers" detail_is 1 "context 2"
+check "the dismissal is logged" bash -c 'grep -q "\"decision\":\"done-ticket\"" "$0"' "$st/asks/jev-log.jsonl"
+pr_state 4460 CLOSED
+write_with_dismiss
+check "an ask whose PR is CLOSED is dropped" lines_are "plain ask?|"
+pr_state 4460 OPEN
+write_with_dismiss
+check "an ask whose PR is OPEN is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+rm -rf "$st/gh-status"
+write_with_dismiss
+check "an ask with no status file is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+board_row 4460 Done
+write_with_dismiss
+check "an ask whose board row is Done is dropped" lines_are "plain ask?|"
+board_row 4460 Backlog
+write_with_dismiss
+check "an ask whose board row is not Done is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+board_row 4461 Done
+write_with_dismiss
+check "an ask with no board row is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+pr_state 4460 MERGED
+seed_lines "no ticket, but merged? #4460" "plain ask?" "#4462 newest?"
+reply "go"
+check "only the first #N keys an ask" lines_are "plain ask?|"
+rm -rf "$st/gh-status" "$st/board-snapshot.md"
+
+# The assistant's own message settles asks: a no-? Stop still asks Jev, once, about every open ask.
+rm -f "$tmp/req.last"
+seed_lines "Starting with 1: should I make the skills edit?" "Shall I dispatch the PRD change?" "#4464 go ahead?"
+same_scores '{"settled_1":{"noul":0.9},"settled_2":{"noul":0.4},"settled_3":{"noul":0.69}}'
+capture $'You merged it, so the PRD now says it.\nNothing else is waiting on you from this lane.'
+check "a no-? message scored 0.9 for ask 1 clears ask 1" lines_are "Shall I dispatch the PRD change?|#4464 go ahead?|"
+check "the others keep their details, renumbered" detail_is 1 "context 2"
+check "the request had one settled question per open ask and no gate" jqt '[.questions | keys[]] == ["settled_1","settled_2","settled_3"]' "$tmp/req.last"
+check "the request carried the message tail and no final question" jqt '.state | keys == ["assistant_message"]' "$tmp/req.last"
+check "the log keeps each ask's settled score" jqt -s 'last | .decision == "settled" and .scores.settled == {"1":0.9,"2":0.4,"3":0.69}' "$st/asks/jev-log.jsonl"
+same_scores '{"settled_1":{"noul":0.5},"settled_2":{"noul":0.5}}'
+seed_lines "first?" "second?"
+capture "Nothing to report."
+check "settled scores under 0.7 keep every ask" lines_are "first?|second?|"
+rm -f "$tmp/req.last"
+seed_lines "first?" "second?"
+same_scores '{"settled_1":{"noul":0.9}}'
+capture $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14'
+check "Jev gets the last 12 lines of the message" jqt '.state.assistant_message | split("\n") | length == 12 and .[0] == "Line 3"' "$tmp/req.last"
+: >"$st/asks/s1"
+rm -f "$tmp/req.last"
+capture "Done, nothing to ask."
+check "a no-? message with no open ask makes no Jev call" test ! -e "$tmp/req.last"
+seed_lines "first?" "second?"
+same_scores '{"settled_1":{"noul":0.9}}'
+capture $'It is merged.\nShip #8888 next?'
+check "a message with a question pins it and clears the settled ask" lines_are "second?|Ship #8888 next?|"
+rm -f "$tmp/answers.json"
+
+# An over-length question keeps its last full sentence; one still too long is cut at a word with …?
+seed_lines "#1111 first?"
+capture 'Should platform own both, with tl-product closing #4466 into the rewrite, or does the ADR part go to tl-product?'
+check "an over-length question is cut at a word with …? and never gets a leading ellipsis" lines_are "#1111 first?|Should platform own both, with tl-product closing #4466 into the rewrite, or does the ADR part go to…?|"
+seed_lines "#1111 first?"
+capture 'We settled the schema in the earlier round and the migration lands with the next release train. Shall I dispatch the PRD change now?'
+check "an over-length line keeps its last full sentence" lines_are "#1111 first?|Shall I dispatch the PRD change now?|"
+
 # No-#N asks are compared as literal text: glob characters and letter case never merge two asks.
 seed_lines "a*b?" "axxb?" "#2222 x?"
 capture "Hold #3333 a week?"
