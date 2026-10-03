@@ -28,6 +28,7 @@ const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
+const ASK_ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
@@ -295,8 +296,29 @@ function issueNumber(text: string): string | null {
   return /#(\d+)/.exec(text)?.[1] ?? /\/issues\/(\d+)/.exec(text)?.[1] ?? /\/pull\/(\d+)/.exec(text)?.[1] ?? null
 }
 
+function trailingLink(text: string): string | null {
+  return /https?:\/\/\S+$/.exec(text)?.[0] ?? null
+}
+
+function linkLabel(href: string): string {
+  const issue = issueNumber(href)
+  if (issue) return `#${issue}`
+  try {
+    const url = new URL(href)
+    return url.pathname.split('/').filter(Boolean).at(-1) || url.host
+  } catch {
+    return href
+  }
+}
+
+function labeledLine(line: string): { label: string; value: string } | null {
+  const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
+  return match ? { label: match[1], value: match[2] } : null
+}
+
 function repoSlug(options: PluginOptions): string {
-  return String(options.repoSlug ?? 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+  const configured = String(options.repoSlug ?? '').trim()
+  return (configured || 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
 }
 
 function asNative(agent: AgentInfo): NativeRun {
@@ -436,31 +458,73 @@ export const register: Register = (on, options) => {
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
-    const detailText = detail.split('\n').filter(line => !/^options?:/i.test(line.trim()) && !/^link:\s*/i.test(line.trim())).join('\n')
+    const detailLines = detail.split('\n').filter(line => line.trim() !== '')
 
     return (
       <Box flexDirection="column">
         {asks.map(ask => (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
-            <Button
-              key={`ask-${ask.n}`}
-              plain
-              label={`${ask === shown ? '▾' : '▸'} ${ask.text.replace(/#\d+\s*/, '')}`}
-              onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
-            />
-            {issueNumber(ask.text) && <Link key={`ask-link-${ask.n}`} href={`https://github.com/${repoSlug(options)}/issues/${issueNumber(ask.text)}`} label={`#${issueNumber(ask.text)}`} />}
-            {!issueNumber(ask.text) && /https?:\/\/\S+$/.test(ask.text) && <Link key={`ask-link-${ask.n}`} href={ask.text.match(/https?:\/\/\S+$/)?.[0] ?? ''} label="open link" />}
+            <Box key={`ask-line-${ask.n}`} flexDirection="row">
+              {issueNumber(ask.text) ? (
+                <Text color={ASK_ACCENT}>
+                  <Link href={`https://github.com/${repoSlug(options)}/issues/${issueNumber(ask.text)}`} label={`#${issueNumber(ask.text)}`} />
+                </Text>
+              ) : trailingLink(ask.text) ? (
+                <Text color={ASK_ACCENT} underline>
+                  <Link href={trailingLink(ask.text) ?? ''} label={linkLabel(trailingLink(ask.text) ?? '')} />
+                </Text>
+              ) : null}
+              <Button
+                key={`ask-${ask.n}`}
+                plain
+                label={`${ask === shown ? '▾' : '▸'} ${ask.text.replace(/#\d+\s*/, '').replace(/\s*https?:\/\/\S+$/, '')}`}
+                onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
+              />
+            </Box>
             {ask === shown &&
               (detail ? (
-                <Box key={`ask-detail-${ask.n}`} flexDirection="column">
-                  {detailText !== '' && <Markdown text={detailText} />}
-                  {detail.match(/^link:\s*(\S+)/im)?.[1] && <Link href={detail.match(/^link:\s*(\S+)/im)?.[1] ?? ''} label="open link" />}
-                  {askOptions(detail).map((option, i) => (
-                    <Button key={`ask-option-${ask.n}-${i}`} plain label={option} onPress={() => {
-                      const prefix = issueNumber(ask.text) ? `#${issueNumber(ask.text)}` : ask.text.match(/https?:\/\/\S+$/)?.[0] ?? ''
-                      return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'replace' })
-                    }} />
-                  ))}
+                <Box key={`ask-detail-${ask.n}`} flexDirection="column" marginLeft={2}>
+                  <Box key="ask-detail-border" flexDirection="row">
+                    <Text color={ASK_ACCENT}>│</Text>
+                    <Box flexDirection="column" marginLeft={1}>
+                      {detailLines.map((line, i) => {
+                        const labeled = labeledLine(line)
+                        const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
+                        if (link) {
+                          const href = link[1] ?? link[2]
+                          return (
+                            <Text key={`ask-context-${i}`} color={ASK_ACCENT} underline>
+                              <Link href={href} label={linkLabel(href)} />
+                            </Text>
+                          )
+                        }
+                        if (labeled) {
+                          return (
+                            <Box key={`ask-context-${i}`} flexDirection="row">
+                              <Text dimColor bold>{`${labeled.label}: `}</Text>
+                              <Text>{labeled.value}</Text>
+                            </Box>
+                          )
+                        }
+                        return <Text key={`ask-context-${i}`}>{line}</Text>
+                      })}
+                    </Box>
+                  </Box>
+                  {askOptions(detail).length > 0 && (
+                    <Box key="ask-options" flexDirection="row" marginTop={1}>
+                      {askOptions(detail).map((option, i) => (
+                        <Button
+                          key={`ask-option-${ask.n}-${i}`}
+                          plain
+                          label={option}
+                          onPress={() => {
+                            const prefix = issueNumber(ask.text) ? `#${issueNumber(ask.text)}` : trailingLink(ask.text) ?? ''
+                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'replace' })
+                          }}
+                        />
+                      ))}
+                    </Box>
+                  )}
                 </Box>
               ) : (
                 <Text dimColor>no context recorded</Text>
