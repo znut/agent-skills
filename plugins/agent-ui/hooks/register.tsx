@@ -54,9 +54,6 @@ const ASK_ACCENT = '#CBA6F7'
 // A run with `done` is immutable: it is not re-listed while its parent's entry mtime holds.
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
-let roots: Root[] | null = null
-let stateDir: string | null | undefined
-let ghStatusDir: string | null | undefined
 let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
 let mainLog = { key: '', sha: '', queue: 0 }
 
@@ -76,21 +73,37 @@ async function tailBytes($: $, path: string): Promise<string> {
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
+// One answer per session cwd, hit or miss: a non-git cwd costs one lookup per cwd change, and
+// a later repo cwd resolves afresh. The promise is cached, so concurrent callers share one run.
+const byCwd = new Map<string, { cwd: string; value: Promise<unknown> }>()
+
+async function perCwd<T>($: $, name: string, compute: () => Promise<T>): Promise<T> {
+  const cwd = await $.session.cwd()
+  const hit = byCwd.get(name)
+  if (hit?.cwd === cwd) return hit.value as Promise<T>
+  const entry = { cwd, value: compute() }
+  byCwd.set(name, entry)
+  entry.value.catch(() => { if (byCwd.get(name) === entry) byCwd.delete(name) })
+  return entry.value
+}
+
 async function gitCommonDir($: $): Promise<string | null> {
-  const ran = await $.process
-    .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-    .catch(() => null)
-  return ran?.exitCode === 0 ? ran.stdout.trim() : null
+  return perCwd($, 'git', async () => {
+    const ran = await $.process
+      .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+      .catch(() => null)
+    return ran?.exitCode === 0 ? ran.stdout.trim() : null
+  })
 }
 
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
-  if (roots) return roots
-  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-  const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
-  const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
-  const common = await gitCommonDir($)
-  roots = [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
-  return roots
+  return perCwd($, 'roots', async () => {
+    const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
+    const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
+    const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
+    const common = await gitCommonDir($)
+    return [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
+  })
 }
 
 const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
@@ -335,28 +348,27 @@ function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
   return [...shown, ...orphans]
 }
 
+async function localMdOf($: $): Promise<string> {
+  const main = (await gitCommonDir($))?.replace(/\/\.git$/, '')
+  return main ? readText($, `${main}/.agent/orchestrate.local.md`) : ''
+}
+
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
-  if (stateDir !== undefined) return stateDir
-  const configured = String(options.stateDir ?? '')
-  if (configured) return (stateDir = configured.replace(/\/+$/, ''))
-  const common = await gitCommonDir($)
-  const main = common?.replace(/\/\.git$/, '')
-  const localMd = main ? await readText($, `${main}/.agent/orchestrate.local.md`) : ''
-  stateDir = busStateDir(localMd, (await $.env.get('HOME')) ?? '')
-  return stateDir
+  return perCwd($, 'state', async () => {
+    const configured = String(options.stateDir ?? '')
+    if (configured) return configured.replace(/\/+$/, '')
+    return busStateDir(await localMdOf($), (await $.env.get('HOME')) ?? '')
+  })
 }
 
 async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string | null> {
-  if (ghStatusDir !== undefined) return ghStatusDir
-  const configured = String(options.stateDir ?? '')
-  if (configured) return (ghStatusDir = `${configured.replace(/\/+$/, '')}/gh-status`)
-  const common = await gitCommonDir($)
-  const main = common?.replace(/\/\.git$/, '')
-  const localMd = main ? await readText($, `${main}/.agent/orchestrate.local.md`) : ''
-  const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(localMd)
-  const value = match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '')
-  ghStatusDir = value ? value.replace(/\/+$/, '') : null
-  return ghStatusDir
+  return perCwd($, 'gh-status', async () => {
+    const configured = String(options.stateDir ?? '')
+    if (configured) return `${configured.replace(/\/+$/, '')}/gh-status`
+    const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(await localMdOf($))
+    const value = match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '')
+    return value ? value.replace(/\/+$/, '') : null
+  })
 }
 
 type Ask = { n: number; text: string }

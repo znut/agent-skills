@@ -461,6 +461,34 @@ describe('workers pane', () => {
     })
   })
 
+  test('a non-git cwd draws no strip; a repo cwd resolves afresh; one cwd runs git once', async ($, on) => {
+    const root = '/fx/home/state'
+    const w = world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'abcdef0123456789', green: true }),
+    })
+    const strip = async () => {
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      const found = await ui.find({ key: 'main-strip' })
+      await ui.unmount()
+      return found
+    }
+    w.cwd = '/fx/elsewhere'
+    expect(await strip()).toBeUndefined()
+    expect(await strip()).toBeUndefined()
+    expect(w.gitRuns).toBe(1)
+
+    w.cwd = '/fx/repo'
+    expect((await strip())?.text).toContain('main abcdef01')
+    const inRepo = w.gitRuns
+    expect(await strip()).toBeDefined()
+    expect(w.gitRuns).toBe(inRepo)
+
+    w.cwd = '/fx/elsewhere'
+    expect(await strip()).toBeUndefined()
+    expect(w.gitRuns).toBe(inRepo + 1)
+  })
+
   test('no runs for the session draws the empty line', async ($, on) => {
     world(on, {})
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })

@@ -65,6 +65,10 @@ export type World = {
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
   blitOk: boolean
   denied: number
+  // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
+  cwd: string
+  repos: Set<string>
+  gitRuns: number
 }
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
@@ -80,7 +84,9 @@ export function world(
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
     mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0,
+    cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
   }
+  on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: SID }))
   on('agent.list', () => ({ value: w.agents }))
   on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
@@ -127,7 +133,10 @@ export function world(
     const ok = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
-    if (command === 'git') return ok('/fx/repo/.git\n')
+    if (command === 'git') {
+      w.gitRuns++
+      return w.repos.has(w.cwd) ? ok('/fx/repo/.git\n') : ok('', 128)
+    }
     if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => w.alive.has(pid)).join('\n'))
     if (command === 'tail') {
       const text = w.files[args.at(-1) ?? '']
