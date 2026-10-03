@@ -254,6 +254,11 @@ describe('workers pane', () => {
       ['queued then start', [queued(4390), start(4390)], '1/0'],
       ['one running and one queued', [start(4390), queued(4391)], '1/1'],
       ['start then green', [start(4390), `preview #4390 11111110-${MAIN}: green`], '0/0'],
+      ['red result drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: RED — /x/pr-4390/log`], '0/0'],
+      ['conflict drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: CONFLICT`], '0/0'],
+      ['cancel without a sha pair drains it', [queued(4390), 'preview #4390: cancelled'], '0/0'],
+      ['head move without a sha pair drains it', [queued(4390), 'preview #4390: head moved 11111110 -> 22222222; cancelling its preview'], '0/0'],
+      ['requeue on a new head replaces the running state', [start(4390), `preview #4390 22222222-${MAIN}: queued (ready)`], '0/1'],
       ['an older main is excluded', ['preview #4390 11111110-ffffffff: queued (ready)'], '0/0'],
     ] as const) {
       test(name, async ($, on) => {
