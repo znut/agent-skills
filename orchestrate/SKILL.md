@@ -75,11 +75,16 @@ out of view while the user works elsewhere; the file lets each harness pin
 the ask near the prompt where its own UI allows. Delete the line the moment
 the user answers; on wrap, empty the file
 ([session-bus.md §Wrap](session-bus.md#wrap)).
-With each line, MUST write its context (what it is about, the options, the
-recommendation, as said in chat) to `<state>/asks/<session-id>.d/<n>.md`,
-`<n>` the line's 1-based number; delete `<n>.md` with its line, then rename
-each later `<m>.md` to `<m-1>.md` in ascending order — a pinned line alone
-cannot be answered once the chat that explained it scrolled away.
+Name the GitHub ticket as `#N` in each ask line, or end the line with a link.
+With each ask, MUST write its context (what it is about, its options and
+recommendation) to `<state>/asks/<session-id>.d/<n>.md` in at most three short
+lines, plus an optional `link: <url>` line to a GitHub ticket or PR, image, or
+SSOT mock HTML; put longer context behind the link. An optional `options: a | b`
+line counts toward the three. The renderer slices the detail text to three
+lines and draws the `link:` line after them. `<n>` is the line's
+1-based number. Delete `<n>.md` with its line, then rename each later
+`<m>.md` to `<m-1>.md` in ascending order — stale detail files point at the
+wrong ask.
 
 ## Choose the base
 

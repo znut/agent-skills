@@ -12,10 +12,11 @@ export function parentDir(path: string): string {
   return cut <= 0 ? '/' : trimmed.slice(0, cut)
 }
 
-export function kindOf(provider: string, isPanel: boolean): RunKind {
+export function kindOf(provider: string, isPanel: boolean, evidence = ''): RunKind {
   if (provider === 'openai' || provider === 'codex') return 'gpt'
   if (provider === 'claude') return isPanel ? 'claude-panel' : 'claude'
-  return 'kimi'
+  if (provider === 'kimi') return 'kimi'
+  return /(?:^|\/)gpt-[^/]+/i.test(evidence) || evidence === 'codex-events' ? 'gpt' : '?'
 }
 
 export function labelOf(dir: string, isPanel: boolean): string {
@@ -87,4 +88,19 @@ export function busStateDir(localMd: string, home: string): string | null {
   const match = /^- `session_bus_dir`: `([^`]*)`/m.exec(localMd)
   if (!match?.[1]) return null
   return parentDir(match[1].replace(/^~(?=\/|$)/, home))
+}
+
+// Previews still queued or running on `main8`, replayed from main-ci's run.log. A PR's
+// entry ends with its result, a cancel, or a head move (the last two carry no sha pair).
+export function previewQueue(log: string, main8: string): number {
+  const active = new Map<number, string>()
+  for (const line of log.split('\n')) {
+    const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|canceled|head moved)/i.exec(line)
+    if (!match) continue
+    const [, pr = '', main, event = ''] = match
+    if (/^(queued|start)$/i.test(event)) {
+      if (main) active.set(Number(pr), main)
+    } else active.delete(Number(pr))
+  }
+  return [...active.values()].filter(main => main === main8).length
 }

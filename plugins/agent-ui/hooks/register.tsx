@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, FsEntry, PluginOptions, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
+import { type Avatar, SPRITE_COLS, avatarCells, avatarOf } from './sprites'
 import {
   TAIL_LINES,
   busStateDir,
@@ -11,6 +12,8 @@ import {
   kindOf,
   labelOf,
   lines,
+  parentDir,
+  previewQueue,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -18,19 +21,41 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
+type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
+type RunDir = { dir: string; mtimeMs: number }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; unowned: boolean; startMs: number | null; lastMtime: number }
+type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
+type Row = {
+  key: string
+  kind: string
+  label: string
+  status: Run['status']
+  avatar: Avatar | null
+  model?: string
+  duration?: string
+  diskRun?: Run
+  agentId?: string
+  parent?: string
+  children: Row[]
+}
+type PrRow = { number: number; title: string; head: string }
+type PrFile = { mtimeMs: number; pr: PrRow | null }
+type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
+const ASK_ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-const probes = new Map<string, { key: string; probe: Probe | null }>()
-let roots: Root[] | null = null
-let stateDir: string | null | undefined
+// A run with `done` is immutable: it is not re-listed while its parent's entry mtime holds.
+const probes = new Map<string, Cached>()
+const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
+let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
+let mainLog = { key: '', sha: '', queue: 0 }
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -48,30 +73,55 @@ async function tailBytes($: $, path: string): Promise<string> {
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
+// One answer per session cwd, hit or miss: a non-git cwd costs one lookup per cwd change, and
+// a later repo cwd resolves afresh. The promise is cached, so concurrent callers share one run.
+const byCwd = new Map<string, { cwd: string; value: Promise<unknown> }>()
+
+async function perCwd<T>($: $, name: string, compute: () => Promise<T>): Promise<T> {
+  const cwd = await $.session.cwd()
+  const hit = byCwd.get(name)
+  if (hit?.cwd === cwd) return hit.value as Promise<T>
+  const entry = { cwd, value: compute() }
+  byCwd.set(name, entry)
+  entry.value.catch(() => { if (byCwd.get(name) === entry) byCwd.delete(name) })
+  return entry.value
+}
+
 async function gitCommonDir($: $): Promise<string | null> {
-  const ran = await $.process
-    .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-    .catch(() => null)
-  return ran?.exitCode === 0 ? ran.stdout.trim() : null
+  return perCwd($, 'git', async () => {
+    const ran = await $.process
+      .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+      .catch(() => null)
+    return ran?.exitCode === 0 ? ran.stdout.trim() : null
+  })
 }
 
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
-  if (roots) return roots
-  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-  const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
-  const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
-  const common = await gitCommonDir($)
-  roots = [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
-  return roots
+  return perCwd($, 'roots', async () => {
+    const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
+    const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
+    const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
+    const common = await gitCommonDir($)
+    return [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
+  })
 }
 
-async function runDirs($: $, root: Root): Promise<string[]> {
-  const top = (await listDir($, root.dir)).filter(entry => entry.kind === 'dir').map(entry => `${root.dir}/${entry.name}`)
+const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
+  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}`, mtimeMs: entry.mtimeMs }))
+
+// A sha dir is re-listed only when its own mtime moves (a new panel run dir appears).
+async function runDirs($: $, root: Root): Promise<RunDir[]> {
+  const top = subDirs(await listDir($, root.dir), root.dir)
   if (!root.isPanel) return top
   const nested = await Promise.all(
-    top.map(async shaDir =>
-      (await listDir($, shaDir)).filter(entry => entry.kind === 'dir').map(entry => `${shaDir}/${entry.name}`),
-    ),
+    top.map(async sha => {
+      let cached = shaRuns.get(sha.dir)
+      if (cached?.mtimeMs !== sha.mtimeMs) {
+        cached = { mtimeMs: sha.mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
+        shaRuns.set(sha.dir, cached)
+      }
+      return cached.runs
+    }),
   )
   return nested.flat()
 }
@@ -81,29 +131,42 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
   const pidEntry = names.get('pid')
   if (!pidEntry) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, start, end, exitCode] = await Promise.all([
+  const [owner, pid, provider, model, fullModel, start, end, exitCode, cwd, agent] = await Promise.all([
     field('owner-session'),
     field('pid'),
     field('provider'),
     field('model'),
+    field('full-model'),
     field('start-epoch'),
     field('end-epoch'),
     field('exit-code'),
+    field('cwd'),
+    field('agent'),
   ])
   if (owner !== '' && sid !== '' && owner !== sid) return null
+  const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
+  const startMs = epochMs(start)
+  const evidence = names.has('result.jsonl') ? 'codex-events' : fullModel
+  const inferred = kindOf(provider, isPanel, evidence)
+  const providerLabel = provider || (inferred === 'gpt' ? 'gpt' : '?')
+  const modelLabel = model || fullModel.replace(/^gpt-/, '') || '?'
   const hasDone = names.has('done')
-  const startedAt = epochMs(start) ?? (pidEntry.mtimeMs || null)
-  // end-epoch survives a resume; only a present `done` makes it this run's end.
-  const endedAt = hasDone ? (epochMs(end) ?? (names.get('done')?.mtimeMs || null)) : null
+  const startedAt = startMs ?? (pidEntry.mtimeMs || null)
+  const endedAt = epochMs(end) ?? (lastMtime || null)
   return {
     pid,
     hasDone,
     exitCode,
+    unowned: owner === '',
+    startMs,
+    lastMtime,
     run: {
       dir,
-      kind: kindOf(provider, isPanel),
+      kind: inferred,
       label: labelOf(dir, isPanel),
-      model: [provider || '?', model || '?'].join('/'),
+      cwd,
+      isReviewer: isPanel || agent === 'reviewer',
+      model: [providerLabel, modelLabel].join('/'),
       status: 'running',
       startedAt,
       endedAt,
@@ -123,17 +186,20 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const found: Probe[] = []
   const seen = new Set<string>()
   for (const root of await resolveRoots($, options)) {
-    for (const dir of await runDirs($, root)) {
+    for (const { dir, mtimeMs } of await runDirs($, root)) {
       seen.add(dir)
-      const entries = await listDir($, dir)
-      const key = entries
-        .map(entry => entry.name)
-        .sort()
-        .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
-        .join('/')
       let cached = probes.get(dir)
-      if (cached?.key !== key) {
-        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid) }
+      if (!(cached?.done && cached.mtimeMs === mtimeMs)) {
+        const entries = await listDir($, dir)
+        const key = entries
+          .map(entry => entry.name)
+          .sort()
+          .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
+          .join('/')
+        if (cached?.key !== key) {
+          const done = entries.some(entry => entry.name === 'done')
+          cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
+        } else cached.mtimeMs = mtimeMs
         probes.set(dir, cached)
       }
       if (cached.probe) found.push(cached.probe)
@@ -146,17 +212,18 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
+    if (one.unowned && now - Math.max(one.startMs ?? 0, one.lastMtime) > LIVE_WINDOW_MS) continue
     const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, recent(one) && alive.has(one.pid)) }
     ;(run.status === 'running' ? running : done).push(run)
   }
   const when = (run: Run) => run.endedAt ?? run.startedAt ?? 0
   done.sort((a, b) => when(b) - when(a))
   running.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-  return [...running, ...done.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
+  return [...running, ...done]
 }
 
 function runElapsed(run: Run, now: number): string {
-  return run.startedAt === null ? '?' : elapsed((run.endedAt ?? now) - run.startedAt)
+  return run.startedAt === null ? '?' : elapsed(((run.status === 'running' ? now : run.endedAt) ?? now) - run.startedAt)
 }
 
 // GPT runs stream codex events to result.jsonl; Claude and Kimi runs only stderr.log.
@@ -176,18 +243,195 @@ async function readTail($: $, run: Run): Promise<Tail> {
   return { lines: tail, lastMessage }
 }
 
+async function readNativeTail($: $, agentId: string): Promise<Tail> {
+  const messages = await $.session.messages({ agentId }).catch(() => [])
+  if (!Array.isArray(messages)) return { lines: [], lastMessage: '' }
+  const linesOut = messages.flatMap(message => lines(message.text)).slice(-TAIL_LINES)
+  return { lines: linesOut, lastMessage: '' }
+}
+
+type PrState = { prs: PrRow[]; gates: Map<number, Record<string, unknown> | null> }
+
+async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
+  const dir = await resolveGhStatusDir($, options)
+  if (!dir) return { prs: [], gates: new Map() }
+  const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
+  const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
+  const cache = prCache
+  if (cache.key !== key) {
+    const current = new Set(entries.map(entry => entry.name))
+    for (const name of cache.files.keys()) if (!current.has(name)) cache.files.delete(name)
+    const changed = entries.filter(entry => cache.files.get(entry.name)?.mtimeMs !== entry.mtimeMs)
+    const parsed = await Promise.all(changed.map(async entry => {
+      const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
+      const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
+        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', head: typeof value.headOid === 'string' ? value.headOid : '' }
+        : null
+      return [entry.name, { mtimeMs: entry.mtimeMs, pr }] as const
+    }))
+    for (const [name, file] of parsed) cache.files.set(name, file)
+    cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
+    cache.key = key
+  }
+  const prs = [...cache.open.values()]
+  const gates = new Map<number, Record<string, unknown> | null>()
+  await Promise.all(prs.map(async pr => {
+    const path = `${parentDir(dir)}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
+    gates.set(pr.number, jsonObject(await readText($, path)))
+  }))
+  const rank = (pr: PrRow) => {
+    const gate = gates.get(pr.number)
+    return gate?.green === true ? 0 : gate === null ? 1 : 2
+  }
+  prs.sort((a, b) => rank(a) - rank(b) || a.number - b.number)
+  return { prs, gates }
+}
+
+async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: number } | null> {
+  const ghDir = await resolveGhStatusDir($, options)
+  if (!ghDir) return null
+  const root = parentDir(ghDir)
+  const stateText = await readText($, `${root}/main-ci/state.json`)
+  const state = jsonObject(stateText)
+  if (!state || typeof state.sha !== 'string') return null
+  const main8 = state.sha.slice(0, 8)
+  const logPath = `${root}/main-ci/run.log`
+  const logStat = (await listDir($, `${root}/main-ci`)).find(entry => entry.name === 'run.log' && entry.kind === 'file')
+  let queue = 0
+  if (logStat) {
+    const key = `${logStat.mtimeMs}:${logStat.size}`
+    if (mainLog.key === key && mainLog.sha === main8) queue = mainLog.queue
+    else {
+      queue = previewQueue(await readText($, logPath), main8)
+      mainLog = { key, sha: main8, queue }
+    }
+  }
+  return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue }
+}
+
+const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
+
+function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
+  const disk: Row[] = runs.map(run => ({ key: `disk:${run.dir}`, kind: run.kind, label: run.label, status: run.status, avatar: avatarOf(run.kind), model: run.model, duration: runElapsed(run, now), diskRun: run, children: [] }))
+  const native: Row[] = agents.map(agent => {
+    const run = asNative(agent)
+    const parent = agents.some(other => other.id === agent.parentId) ? `native:${agent.parentId}` : undefined
+    return { key: `native:${run.id}`, kind: run.kind, label: run.label, status: run.status, avatar: 'claude', agentId: run.id, parent, children: [] }
+  })
+  // A disk reviewer joins the newest worker that started before it in the same worktree.
+  const workers = disk.filter(row => row.diskRun && !row.diskRun.isReviewer && row.diskRun.cwd.startsWith('/'))
+  for (const row of disk) {
+    const run = row.diskRun
+    if (!run?.isReviewer || !run.cwd.startsWith('/')) continue
+    row.parent = workers.filter(w => w.diskRun?.cwd === run.cwd && startOf(w) <= (run.startedAt ?? Infinity)).sort((a, b) => startOf(b) - startOf(a))[0]?.key
+  }
+  const all = [...disk, ...native]
+  const byKey = new Map(all.map(row => [row.key, row]))
+  const rootOf = (row: Row) => {
+    let root = row
+    for (let hops = 0; root.parent && hops < 8; hops++) root = byKey.get(root.parent) ?? root
+    return root
+  }
+  const nested = new Set<Row>()
+  for (const row of all) {
+    const root = rootOf(row)
+    if (root !== row) { root.children.push(row); nested.add(row) }
+  }
+  const top = all.filter(row => !nested.has(row))
+  const running = top.filter(row => row.status === 'running')
+  const finishedDisk = top.filter(row => row.diskRun && row.status !== 'running').slice(0, RECENT_DONE)
+  const finishedNative = top.filter(row => !row.diskRun && row.status !== 'running').slice(-RECENT_DONE).reverse()
+  // MAX_ROWS caps the finished rows only: a running row is never dropped
+  const shown = [...running, ...[...finishedDisk, ...finishedNative].slice(0, Math.max(0, MAX_ROWS - running.length))]
+  // a running child whose worker rolled off the list stays visible at the top
+  const orphans = all.filter(row => nested.has(row) && row.status === 'running' && !shown.includes(rootOf(row)))
+  return [...shown, ...orphans]
+}
+
+async function localMdOf($: $): Promise<string> {
+  const main = (await gitCommonDir($))?.replace(/\/\.git$/, '')
+  return main ? readText($, `${main}/.agent/orchestrate.local.md`) : ''
+}
+
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
-  if (stateDir !== undefined) return stateDir
-  const configured = String(options.stateDir ?? '')
-  if (configured) return (stateDir = configured.replace(/\/+$/, ''))
-  const common = await gitCommonDir($)
-  const main = common?.replace(/\/\.git$/, '')
-  const localMd = main ? await readText($, `${main}/.agent/orchestrate.local.md`) : ''
-  stateDir = busStateDir(localMd, (await $.env.get('HOME')) ?? '')
-  return stateDir
+  return perCwd($, 'state', async () => {
+    const configured = String(options.stateDir ?? '')
+    if (configured) return configured.replace(/\/+$/, '')
+    return busStateDir(await localMdOf($), (await $.env.get('HOME')) ?? '')
+  })
+}
+
+async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string | null> {
+  return perCwd($, 'gh-status', async () => {
+    const configured = String(options.stateDir ?? '')
+    if (configured) return `${configured.replace(/\/+$/, '')}/gh-status`
+    const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(await localMdOf($))
+    const value = match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '')
+    return value ? value.replace(/\/+$/, '') : null
+  })
 }
 
 type Ask = { n: number; text: string }
+
+function jsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text)
+    return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function issueNumber(text: string): string | null {
+  return /#(\d+)/.exec(text)?.[1] ?? /\/issues\/(\d+)/.exec(text)?.[1] ?? /\/pull\/(\d+)/.exec(text)?.[1] ?? null
+}
+
+function trailingLink(text: string): string | null {
+  return /https?:\/\/\S+$/.exec(text)?.[0] ?? null
+}
+
+function linkLabel(href: string): string {
+  const issue = issueNumber(href)
+  if (issue) return `#${issue}`
+  try {
+    const url = new URL(href)
+    return url.pathname.split('/').filter(Boolean).at(-1) || url.host
+  } catch {
+    return href
+  }
+}
+
+function labeledLine(line: string): { label: string; value: string } | null {
+  if (/^https?:\/\//i.test(line.trim())) return null
+  const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
+  return match ? { label: match[1] ?? '', value: match[2] ?? '' } : null
+}
+
+function safeHref(href: string): string | null {
+  if (href.length > 2048 || /[^\x20-\x7E]/.test(href)) return null
+  if (!href.startsWith('https://') && !/^http:\/\/localhost(?::\d+)?(?:\/|$|[?#])/i.test(href)) return null
+  try {
+    const url = new URL(href)
+    return url.href === href && (url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost')) ? href : null
+  } catch {
+    return null
+  }
+}
+
+function repoSlug(options: PluginOptions): string {
+  const configured = String(options.repoSlug ?? '').trim()
+  return (configured || 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+}
+
+function asNative(agent: AgentInfo): NativeRun {
+  const status = agent.status === 'completed' ? 'done' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'dead' : 'running'
+  return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
+}
+
+function askOptions(detail: string): string[] {
+  const line = detail.split('\n').find(text => /^options?:/i.test(text.trim()))
+  return line ? line.replace(/^options?:/i, '').split(/\s*[|;]\s*/).map(text => text.trim()).filter(Boolean).slice(0, 4) : []
+}
 
 // `n` is the ask's 1-based line number in the file: its detail file is `<n>.md`.
 async function readAsks($: $, options: PluginOptions): Promise<{ asks: Ask[]; detailDir: string }> {
@@ -206,8 +450,38 @@ async function readAskDetail($: $, detailDir: string, n: number): Promise<string
 }
 
 const PANE = 'workers'
+const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
+
+const FRAME_MS = 250
+const MAX_ANIMATED = 20
+const CHILD_CAP = 8
+
+// Only running rows animate: one timer, one keyed blit per row a frame (no pane redraw).
+// A render lists the rows to animate; the timer cancels itself once the list is empty.
+let frameTimer: Timer | null = null
+let frameTick = 0
+let animating: { key: string; avatar: Avatar }[] = []
+
+function syncFrames($: $): void {
+  if (animating.length === 0) {
+    frameTimer?.cancel()
+    frameTimer = null
+    return
+  }
+  if (frameTimer) return
+  frameTimer = $.clock.every(FRAME_MS, async () => {
+    frameTick++
+    const batch = animating
+    const results = await Promise.all(
+      batch.map(row => $.ui.blit({ requestId: PANE, key: `avatar:${row.key}`, cells: avatarCells(row.avatar, 'running', frameTick) }).catch(() => ({ deny: 'blit failed' }))),
+    )
+    // nothing of ours is mounted any more (the pane closed): wait for the next render
+    if (results.every(result => result.deny)) animating = []
+    syncFrames($)
+  })
+}
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
@@ -239,24 +513,77 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : null
     const now = await $.clock.now()
-    const runs = await scanRuns($, options, now)
-    const chosen = await read($, selectedRun)
-    const shown = runs.find(run => run.dir === chosen) ?? null
-    const tail = shown ? await readTail($, shown) : null
+    const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
+    const rows = rowsFor(runs, agents, now)
+    const prState = await readReadyPrs($, options, main?.sha ?? '')
+    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
+    const visible = rows.flatMap(row => [
+      { row, isChild: false },
+      ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+    ])
+    const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
+    animating = Raster
+      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
+      : []
+    syncFrames($)
+    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
+    const repo = repoSlug(options)
+    const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
+    const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
       <Box flexDirection="column">
-        {runs.length === 0 && <Text dimColor>No child runs for this session.</Text>}
-        {runs.map(run => (
-          <Button
-            key={`run:${run.dir}`}
-            plain
-            dimColor={run.status !== 'running'}
-            label={`${MARK[run.status]} ${run.kind} ${run.label}  ${run.model}  ${runElapsed(run, now)}  ${run.status}`}
-            onPress={() => update($, selectedRun, dir => (dir === run.dir ? null : run.dir))}
-          />
+        {main && (
+          <Box key="main-strip" flexDirection="row">
+            <Text dimColor>{`main ${main.sha} · `}</Text>
+            <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
+            <Text dimColor>{` · preview queue ${main.queue}`}</Text>
+          </Box>
+        )}
+        {prState.prs.length > 0 && (
+          <Box key="needs-you" flexDirection="column" marginBottom={1}>
+            <Text bold>Needs you</Text>
+            {prState.prs.map(pr => {
+              const gate = prState.gates.get(pr.number) ?? null
+              const result = gate == null ? '…' : gate.green === true ? '✓' : '✗'
+              const href = safeHref(`https://github.com/${repo}/pull/${pr.number}`)
+              return (
+                <Box key={`pr:${pr.number}`}>
+                  {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
+                  <Text>{` ${pr.title} ${result}${gate?.conflict === true ? ' ⚡ conflict' : ''}`}</Text>
+                </Box>
+              )
+            })}
+          </Box>
+        )}
+        <Text bold>Workers</Text>
+        {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
+        {visible.map(({ row, isChild }) => (
+          <Box key={`row:${row.key}`} flexDirection="row">
+            {isChild && <Text dimColor>{'  └ '}</Text>}
+            {Raster && row.avatar ? (
+              <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
+            ) : (
+              <Box key={`mark:${row.key}`}>
+                <Text dimColor={row.status !== 'running'}>{`${MARK[row.status]} `}</Text>
+              </Box>
+            )}
+            <Text>{' '}</Text>
+            <Button
+              key={row.key}
+              plain
+              dimColor={row.status !== 'running'}
+              label={`${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
+              onPress={async () => {
+                const wasShown = (await read($, selectedRun)) === row.key
+                await update($, selectedRun, () => (wasShown ? null : row.key))
+                if (row.children.length > 0) await update($, expanded, keys => (wasShown ? keys.filter(key => key !== row.key) : [...keys, row.key]))
+              }}
+            />
+          </Box>
         ))}
         {shown && tail && (
           <Box key="tail" flexDirection="column" marginTop={1}>
@@ -281,29 +608,98 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    const issueUrl = (n: number) => `https://github.com/${repoSlug(options)}/issues/${n}`
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
+    // Three text lines (options: among them) plus one link: line, whatever the file holds.
+    const rows = detail.split('\n').map(line => line.trim()).filter(Boolean)
+    const isLink = (line: string) => /^link:/i.test(line)
+    const textLines = rows.filter(line => !isLink(line)).slice(0, 3)
+    const detailLines = [...textLines.filter(line => !/^options?:/i.test(line)), ...rows.filter(isLink).slice(0, 1)]
+    const askViews = asks.map(ask => {
+      const issue = issueNumber(ask.text)
+      const trailing = trailingLink(ask.text)
+      return {
+        ask,
+        issue,
+        issueHref: issue ? safeHref(issueUrl(Number(issue))) : null,
+        trailing,
+        trailingHref: trailing ? safeHref(trailing) : null,
+        askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),
+      }
+    })
 
     return (
       <Box flexDirection="column">
-        {asks.map(ask => (
+        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
+          const body = (trailingHref && !issue ? ask.text.replace(/\s*https?:\/\/\S+$/, '') : ask.text).replace(/#\d+\s*/, '')
+          return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
-            <Button
-              key={`ask-${ask.n}`}
-              plain
-              label={`${ask === shown ? '▾' : '▸'} ${ask.text}`}
-              onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
-            />
+            <Box key={`ask-line-${ask.n}`} flexDirection="row">
+              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
+              {!issue && trailingHref ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
+              <Button
+                key={`ask-${ask.n}`}
+                plain
+                label={`${ask === shown ? '▾' : '▸'} ${body}`}
+                onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
+              />
+            </Box>
             {ask === shown &&
               (detail ? (
-                <Markdown key={`ask-detail-${ask.n}`} text={detail} />
+                <Box key={`ask-detail-${ask.n}`} flexDirection="column" marginLeft={2}>
+                  <Box key="ask-detail-border" flexDirection="row">
+                    <Text color={ASK_ACCENT}>│</Text>
+                    <Box flexDirection="column" marginLeft={1}>
+                      {detailLines.map((line, i) => {
+                        const labeled = labeledLine(line)
+                        const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
+                        if (link) {
+                          const href = link[1] ?? link[2] ?? ''
+                          const safe = safeHref(href)
+                          if (!safe) return <Text key={`ask-context-${i}`}>{line}</Text>
+                          return (
+                            <Text key={`ask-context-${i}`} color={ASK_ACCENT} underline>
+                              <Link href={safe} label={linkLabel(safe)} />
+                            </Text>
+                          )
+                        }
+                        if (labeled) {
+                          return (
+                            <Box key={`ask-context-${i}`} flexDirection="row">
+                              <Text dimColor bold>{`${labeled.label}: `}</Text>
+                              <Text>{labeled.value}</Text>
+                            </Box>
+                          )
+                        }
+                        return <Text key={`ask-context-${i}`}>{line}</Text>
+                      })}
+                    </Box>
+                  </Box>
+                  {askOpts.length > 0 && (
+                    <Box key="ask-options" flexDirection="row" marginTop={1}>
+                      {askOpts.map((option, i) => (
+                        <Button
+                          key={`ask-option-${ask.n}-${i}`}
+                          plain
+                          label={option}
+                          onPress={() => {
+                            const prefix = issue ? `#${issue}` : trailing ?? ''
+                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'insert' })
+                          }}
+                        />
+                      ))}
+                    </Box>
+                  )}
+                </Box>
               ) : (
                 <Text dimColor>no context recorded</Text>
               ))}
           </Box>
-        ))}
+          )
+        })}
       </Box>
     )
   })

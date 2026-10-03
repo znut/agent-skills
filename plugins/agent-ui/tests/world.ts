@@ -50,15 +50,59 @@ export const RUN_FILES: Record<string, string> = {
 
 export const ALIVE = ['101', '106']
 
-export type World = { files: Record<string, string>; alive: Set<string>; reads: string[]; clock: MockClock }
+export type World = {
+  files: Record<string, string>
+  alive: Set<string>
+  reads: string[]
+  clock: MockClock
+  mtimes: Record<string, number>
+  agents: { id: string; description: string; type: string; status: string; parentId?: string }[]
+  transcripts: Record<string, { role: 'user' | 'assistant'; text: string; toolUses: [] }[]>
+  filled: string[]
+  modes: string[]
+  lists: string[]
+  blits: { key: string; cells: string }[]
+  // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
+  blitOk: boolean
+  denied: number
+  // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
+  cwd: string
+  repos: Set<string>
+  gitRuns: number
+}
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
 // The test mutates the returned world (files, alive pids) to stage a change.
-export function world(on: On, files: Record<string, string>, alive: readonly string[] = ALIVE): World {
+export function world(
+  on: On,
+  files: Record<string, string>,
+  alive: readonly string[] = ALIVE,
+  fixtures: { mtimes?: Record<string, number>; agents?: World['agents']; transcripts?: World['transcripts'] } = {},
+): World {
   mock.env(on, { TMPDIR: '/fx/tmp/', HOME: '/fx/home' })
   const clock = mock.clock(on, { now: NOW })
-  const w: World = { files: { ...files }, alive: new Set(alive), reads: [], clock }
+  const w: World = {
+    files: { ...files }, alive: new Set(alive), reads: [], clock,
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0,
+    cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
+  }
+  on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: SID }))
+  on('agent.list', () => ({ value: w.agents }))
+  on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
+  on('ui.blit', ($, e) => {
+    if (!w.blitOk) {
+      w.denied++
+      return { value: { deny: 'not mounted' } }
+    }
+    if ('cells' in e) w.blits.push({ key: e.key, cells: e.cells })
+    return { value: {} }
+  })
+  on('prompt.fill', ($, e) => {
+    w.filled.push(e.text)
+    w.modes.push(String(e.mode))
+    return { isFilled: true }
+  })
   on('fs.read', ($, e) => {
     w.reads.push(e.path)
     const text = w.files[e.path]
@@ -66,12 +110,20 @@ export function world(on: On, files: Record<string, string>, alive: readonly str
     return { value: text }
   })
   on('fs.list', ($, e) => {
+    w.lists.push(e.path)
     const seen = new Map<string, FsEntry>()
     for (const [path, text] of Object.entries(w.files)) {
       if (!path.startsWith(`${e.path}/`)) continue
       const [name = '', ...rest] = path.slice(e.path.length + 1).split('/')
       const kind = rest.length > 0 ? 'dir' : 'file'
-      seen.set(name, { name, kind, size: kind === 'file' ? text.length : 0, mtimeMs: 0, isLink: false })
+      const old = seen.get(name)
+      seen.set(name, {
+        name,
+        kind,
+        size: kind === 'file' ? text.length : 0,
+        mtimeMs: Math.max(old?.mtimeMs ?? 0, w.mtimes[path] ?? 0),
+        isLink: false,
+      })
     }
     if (seen.size === 0) return { deny: `ENOENT: ${e.path}` }
     return { value: [...seen.values()] }
@@ -81,7 +133,10 @@ export function world(on: On, files: Record<string, string>, alive: readonly str
     const ok = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
-    if (command === 'git') return ok('/fx/repo/.git\n')
+    if (command === 'git') {
+      w.gitRuns++
+      return w.repos.has(w.cwd) ? ok('/fx/repo/.git\n') : ok('', 128)
+    }
     if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => w.alive.has(pid)).join('\n'))
     if (command === 'tail') {
       const text = w.files[args.at(-1) ?? '']
