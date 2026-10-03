@@ -18,18 +18,17 @@ set -u
 
 PIN_MIN=0.6      # yes-probability that the final question is a decision
 CLEAR_MIN=0.6    # yes-probability that a message answers an ask
-PICK_MIN=0.6     # confidence to keep a context-line pick
-OPTIONS_MIN=0.4  # lower for options: sibling lines split the confidence, the block is kept whole
+PICK_MIN=0.4     # confidence to keep a context-line pick
+OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
 TOKEN_FILE=${ASKS_TOKEN_FILE:-$HOME/.config/typesafe.token}
 DRY=${ASKS_DRY_RUN:-}
 
-# Inline work uses builtins and one jq: each fork costs ~5 ms of every turn and prompt.
+# Inline work: builtins and one jq (a fork costs ~5 ms of every turn and prompt).
 input=$(</dev/stdin)
-field() { printf '%s' "$input" | jq -r "$1 // empty"; }
 
-eval "$(printf '%s' "$input" | jq -r '@sh "sid=\(.session_id // "") event=\(.hook_event_name // "") cwd=\(.cwd // "") msg=\(.last_assistant_message // "") prompt=\(.prompt // "")"')"
+eval "$(printf '%s' "$input" | jq -r '@sh "sid=\(.session_id // "") event=\(.hook_event_name // "") cwd=\(.cwd // "") msg=\(.last_assistant_message // "") prompt=\(.prompt // "") tp=\(.transcript_path // "")"')"
 case "$sid" in ""|*/*|*..*) exit 0 ;; esac
 read -r role <"$ROLE_DIR/$sid" 2>/dev/null
 case "$role" in pm|tl-product|tl-platform) ;; *) exit 0 ;; esac
@@ -89,7 +88,8 @@ log() { # log <hook> <candidate> <decision> [scores-json]
 		"$ts" "$sid" "$1" "$line" "$3" "${4:-null}" >>"$logfile"
 }
 
-# jev <questions-json-file> <state-json-file>: prints the answers object, or fails.
+# jev <questions-json-file> <state-json-file>: prints the answers object; curl's exit
+# status decides (a body is parsed only after curl succeeded), else it fails.
 jev() {
 	[ -r "$TOKEN_FILE" ] || return 1
 	jq -n --slurpfile q "$1" --slurpfile s "$2" \
@@ -97,16 +97,19 @@ jev() {
 	# The token goes in through curl's config on stdin, never on argv.
 	printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '[:space:]' <"$TOKEN_FILE")" |
 		curl -sS -f --max-time "$JEV_TIMEOUT" -K - -H 'Content-Type: application/json' \
-			--data-binary "@$tmp/req.json" https://api.typesafe.ai/v1/systemone |
-		jq -e '.answers'
+			--data-binary "@$tmp/req.json" -o "$tmp/resp.json" https://api.typesafe.ai/v1/systemone || return 1
+	jq -e '.answers' "$tmp/resp.json"
+}
+
+# judge <hook> <label>: Jev's answers into $ans, or log jev-failed and fail.
+judge() {
+	ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
 }
 
 # ---------- Stop: pin the final question ----------
 capture() {
 	resolve_state && job_init || return 0
-	local tp
 	if [ -z "$msg" ]; then
-		tp=$(field .transcript_path)
 		[ -r "$tp" ] || return 0
 		msg=$(tail -n 200 "$tp" | jq -R 'fromjson? // empty' | jq -rs '
 			[ .[] | select(.type == "assistant" and (.isSidechain | not))
@@ -115,13 +118,13 @@ capture() {
 	fi
 	[ -n "$msg" ] || return 0
 
-	# Last line ending in "?" (markdown closers allowed), cleaned of bullets and bold.
+	# Last line ending in "?" (markdown closers allowed).
 	printf '%s\n' "$msg" | awk '
 		{ l = $0; sub(/[ \t]+$/, "", l); t = l; sub(/[*_`)"\047\342\200\235]+$/, "", t) }
 		t ~ /\?$/ { idx = NR; line = l }
 		END { if (idx) { print idx "\t" line } }' >"$tmp/cand.tsv"
 	[ -s "$tmp/cand.tsv" ] || return 0
-	local idx cand clause tail_msg
+	local idx cand clause
 	idx=$(cut -f1 "$tmp/cand.tsv")
 	cand=$(cut -f2- "$tmp/cand.tsv" | sed -E 's/^[[:space:]]*([-*>]|[0-9]+[.)]|#+)[[:space:]]+//; s/\*\*//g; s/^[[:space:]]+//')
 	if [ "${#cand}" -gt 110 ]; then # keep the last clause, else the last 100 chars from a word start
@@ -132,15 +135,12 @@ capture() {
 	[ -n "$cand" ] || return 0
 	if [ -z "$DRY" ] && grep -qxF -- "$cand" "$asks" 2>/dev/null; then return 0; fi
 
-	# Preceding non-empty lines (at most 30) become the choices for the context picks.
+	# Jev sees the candidate and the 12 non-empty lines before it (the choices), nothing else.
 	printf '%s\n' "$msg" | awk -v idx="$idx" '
 		NR < idx && $0 ~ /[^ \t]/ { n++; i[n] = NR; t[n] = $0 }
-		END { s = n > 30 ? n - 29 : 1
-		      for (k = s; k <= n; k++) { gsub(/\t/, " ", t[k]); print i[k] "\t" substr(t[k], 1, 200) } }' >"$tmp/prev.tsv"
+		END { for (k = n > 12 ? n - 11 : 1; k <= n; k++) { gsub(/\t/, " ", t[k]); print i[k] "\t" substr(t[k], 1, 200) } }' >"$tmp/prev.tsv"
 
-	tail_msg=$msg
-	[ "${#msg}" -le 3000 ] || tail_msg=${msg:$((${#msg} - 3000))}
-	jq -n --arg msg "$tail_msg" --arg cand "$cand" '{final_message:$msg,final_question:$cand}' >"$tmp/state.json"
+	jq -n --arg cand "$cand" '{final_question:$cand}' >"$tmp/state.json"
 	jq -n --rawfile prev "$tmp/prev.tsv" '
 		($prev | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries
 		 + {none: "No line fits."}) as $lines
@@ -148,16 +148,13 @@ capture() {
 		{
 		  decision: {type:"noul",
 		    instructions: "Is `final_question` a decision or question the user must answer before work can continue (not rhetorical, not a status line, not an offer that needs no reply)?"},
-		  problem: pick("Which numbered line of `final_message` best states the problem or situation behind `final_question`?"),
-		  options: pick("Which numbered line of `final_message` best lists the options or alternatives offered for `final_question`?"),
-		  rec: pick("Which numbered line of `final_message` best states the recommendation for `final_question`?")
+		  problem: pick("Which listed line states the problem or situation that `final_question` is about? Choose none if no line does."),
+		  options: pick("Which listed line states one of the options or alternatives offered by `final_question`? Choose none if no line does."),
+		  rec: pick("Which listed line states the recommendation behind `final_question`? Choose none if no line does.")
 		}' >"$tmp/q.json"
 
-	local ans score
-	if ! ans=$(jev "$tmp/q.json" "$tmp/state.json") || [ -z "$ans" ]; then
-		log capture "$cand" jev-failed
-		return 0
-	fi
+	local score
+	judge capture "$cand" || return 0
 	score=$(printf '%s' "$ans" | jq -r '.decision.noul')
 	local scores
 	scores=$(printf '%s' "$ans" | jq -c '{decision:.decision.noul,
@@ -168,7 +165,6 @@ capture() {
 		return 0
 	fi
 
-	# Context: Problem, Options, Rec in that order; none, low-confidence or repeated picks dropped.
 	local ctx="" seen=" " key label conf pick text min
 	for key in problem options rec; do
 		pick=$(printf '%s' "$ans" | jq -r ".$key.choice")
@@ -203,12 +199,11 @@ capture() {
 		esac
 		ctx="$ctx$label ${text:0:200}"$'\n'
 	done
-	local num link slug
+	local num slug
 	num=$(printf '%s' "$cand" | grep -oE '#[0-9]+' | head -n 1)
 	if [ -n "$num" ]; then
 		slug=$(git -C "$cwd" remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')
-		link="link: https://github.com/${slug:-EZ-OPD/ez-opd-services}/issues/${num#\#}"
-		ctx="$ctx$link"$'\n'
+		ctx="${ctx}link: https://github.com/${slug:-EZ-OPD/ez-opd-services}/issues/${num#\#}"$'\n'
 	fi
 
 	if [ -n "$DRY" ]; then
@@ -268,7 +263,7 @@ apply_clear() {
 # The Jev part: one yes/no per open ask, judged over a snapshot of the file.
 clear_jev() {
 	resolve_state && job_init || return 0
-	local n=0 line ans k v scores texts=()
+	local n=0 line k v scores texts=()
 	printf '{}' >"$tmp/q.json"
 	jq -n --arg prompt "$prompt" '{user_message:$prompt}' >"$tmp/state.json"
 	while IFS= read -r line; do
@@ -280,10 +275,7 @@ clear_jev() {
 			question:"Does `user_message` answer `open_ask`? A reply that says yes or no to it, approves or declines it, or picks one of its options answers it; a message about something else does not."}}}' "$tmp/q.json" >"$tmp/q2.json" &&
 			mv "$tmp/q2.json" "$tmp/q.json"
 	done <"$asks"
-	if ! ans=$(jev "$tmp/q.json" "$tmp/state.json") || [ -z "$ans" ]; then
-		log clear "-" jev-failed
-		return 0
-	fi
+	judge clear - || return 0
 	scores=$(printf '%s' "$ans" | jq -c 'map_values(.noul)')
 	local drop=()
 	while IFS=$'\t' read -r k v; do

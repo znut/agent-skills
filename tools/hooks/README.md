@@ -41,7 +41,12 @@ TypeSafe token in `~/.config/typesafe.token`.
   once. Writers hold a lock file and rewrite by temp file plus `mv`; a clear
   matches ask text, not line numbers. A prompt that lands while a capture is
   still judging cancels that pin.
-- **Failure.** Each Jev call has a 3 s cap. Any failure pins and clears nothing.
+- **Failure.** Each Jev call has a 3 s cap; curl's exit status decides, and the
+  body is parsed only after curl succeeded. A non-zero exit or HTTP error pins
+  and clears nothing and logs `jev-failed`.
+- **Data sent to Jev.** Capture: the candidate line and the at most 12 non-empty
+  lines before it, each cut to 200 chars. Clear: the user's message, each open
+  ask line and its `<n>.md`. Nothing else leaves the machine.
 - **Shadow log.** `<state>/asks/jev-log.jsonl`: one line per decision with the
   candidate line and the scores, never the user's message.
 
