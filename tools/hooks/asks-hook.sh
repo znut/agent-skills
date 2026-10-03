@@ -67,18 +67,15 @@ job_init() {
 	trap '[ -n "${ASKS_KEEP:-}" ] || rm -rf "$tmp" "${stamp:-}"' EXIT
 }
 
-# Writers of the asks file and its details hold a lock file (O_EXCL create); rewrites are temp + mv.
+# Writers of the asks file and its details hold a kernel flock on fd 9 (perl, as macOS has no
+# flock(1)): the kernel drops it when the holder dies, so no stale lock exists to break.
+# Rewrites are temp + mv.
 lock() {
-	local i=0
 	[ -d "$state/asks" ] || mkdir -p "$state/asks" || return 1
-	until (set -o noclobber; : >"$asks.lock") 2>/dev/null; do
-		[ -z "$(find "$asks.lock" -mmin +1 2>/dev/null)" ] || rm -f "$asks.lock"
-		i=$((i + 1))
-		[ "$i" -le 100 ] || return 1
-		sleep 0.05
-	done
+	{ exec 9>>"$asks.lock"; } 2>/dev/null || return 1
+	perl -e 'open(F, "<&=9") or exit 1; alarm 5; flock(F, 2) or exit 1' || { exec 9>&-; return 1; }
 }
-unlock() { rm -f "$asks.lock"; }
+unlock() { exec 9>&-; }
 
 log() { # log <hook> <candidate> <decision> [scores-json]
 	local line=${2//\\/\\\\} ts
@@ -294,7 +291,55 @@ clear_jev() {
 	apply_clear "$scores" "${drop[@]}"
 }
 
-BARE='^[[:space:][:punct:]]*(go|yes|no|y|n|ok|okay|yep|nope|approved?|do it|go ahead|sure|agreed?)[[:space:][:punct:]]*$'
+# The fixed short replies that clear an ask without a Jev call, one per line. A reply matches
+# whole (case-insensitive, edge punctuation ignored); anything else goes to Jev.
+SHORT_REPLIES='go
+go ahead
+do it
+yes
+y
+yep
+sure
+ok
+okay
+approve
+approved
+agree
+agreed
+ship
+merge
+no
+n
+nope'
+TRIM_RE='^[[:space:][:punct:]]*(.*[^[:space:][:punct:]])[[:space:][:punct:]]*$'
+NUM_RE='(^|[^[:alnum:]])#?([0-9]+)([^[:alnum:]]|$)'
+
+# short_clear: a reply that is only one short reply plus optional ticket numbers (`1111`, `#1111`)
+# clears without Jev: no number = the newest ask; numbers = the asks with those #N, and every number
+# must match an open ask. Returns 1 to hand the reply to Jev.
+short_clear() {
+	local rest=$prompt reply= line n found targets=() nums=()
+	[ "${#prompt}" -le 120 ] || return 1
+	while [[ $rest =~ $NUM_RE ]]; do
+		nums+=("${BASH_REMATCH[2]}")
+		rest=${rest/"${BASH_REMATCH[0]}"/ }
+	done
+	[[ $rest =~ $TRIM_RE ]] && reply=${BASH_REMATCH[1]}
+	[[ -n $reply && $reply != *$'\n'* && $'\n'$SHORT_REPLIES$'\n' == *$'\n'"$reply"$'\n'* ]] || return 1
+	if [ "${#nums[@]}" -eq 0 ]; then
+		while IFS= read -r line; do [ -z "$line" ] || targets=("$line"); done <"$asks"
+		[ "${#targets[@]}" -gt 0 ] || return 0
+	else
+		for n in "${nums[@]}"; do
+			found=
+			while IFS= read -r line; do
+				[[ $line =~ \#([0-9]+) && ${BASH_REMATCH[1]} == "$n" ]] && { targets+=("$line"); found=1; }
+			done <"$asks"
+			[ -n "$found" ] || return 1
+		done
+	fi
+	apply_clear '"deterministic"' "${targets[@]}"
+}
 
 case "$event" in
 Stop)
@@ -311,14 +356,7 @@ UserPromptSubmit)
 	[ -n "$prompt" ] && [ -s "$asks" ] || exit 0
 	case "$prompt" in /*) exit 0 ;; esac
 	shopt -s nocasematch
-	if [[ $prompt =~ $BARE ]]; then
-		# A bare reply answers the newest ask only, with no Jev call.
-		newest=
-		while IFS= read -r line; do [ -z "$line" ] || newest=$line; done <"$asks"
-		[ -n "$newest" ] && apply_clear '"deterministic"' "$newest"
-	else
-		job clear_jev
-	fi
+	short_clear || job clear_jev
 	;;
 esac
 exit 0
