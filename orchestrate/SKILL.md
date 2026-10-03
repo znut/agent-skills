@@ -76,9 +76,11 @@ the ask near the prompt where its own UI allows. Delete the line the moment
 the user answers; on wrap, empty the file
 ([session-bus.md §Wrap](session-bus.md#wrap)).
 Name the GitHub ticket as `#N` in each ask line, or end the line with a link.
-Keep each `<state>/asks/<session-id>.d/<n>.md` detail file to at most three
-short lines plus an optional `link: <url>` to a GitHub ticket or PR, image, or
-SSOT mock HTML; put longer context behind that link. `<n>` is the line's
+With each ask, MUST write its context (what it is about, its options and
+recommendation) to `<state>/asks/<session-id>.d/<n>.md` in at most three short
+lines. An optional `link: <url>` to a GitHub ticket or PR, image, or SSOT mock
+HTML and an optional `options: a | b` line each count toward the three lines;
+put longer context behind the link. `<n>` is the line's
 1-based number. Delete `<n>.md` with its line, then rename each later
 `<m>.md` to `<m-1>.md` in ascending order — stale detail files point at the
 wrong ask.

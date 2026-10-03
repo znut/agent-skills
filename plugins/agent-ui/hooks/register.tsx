@@ -19,9 +19,12 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
-type NativeRun = { id: string; label: string; kind: string; status: Run['status']; model: string }
-type Row = { key: string; run: Run | NativeRun; native: boolean }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; unowned: boolean; startMs: number | null; lastMtime: number }
+type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
+type Row = { key: string; kind: string; label: string; status: Run['status']; model?: string; duration?: string; diskRun?: Run; agentId?: string }
+type PrRow = { number: number; title: string; head: string }
+type PrFile = { mtimeMs: number; pr: PrRow | null }
+type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
@@ -36,6 +39,8 @@ const probes = new Map<string, { key: string; probe: Probe | null }>()
 let roots: Root[] | null = null
 let stateDir: string | null | undefined
 let ghStatusDir: string | null | undefined
+const prCaches = new Map<string, PrCache>()
+const mainLogCaches = new Map<string, { key: string; sha: string; queue: number }>()
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -81,7 +86,7 @@ async function runDirs($: $, root: Root): Promise<string[]> {
   return nested.flat()
 }
 
-async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string, now: number): Promise<Probe | null> {
+async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
   const pidEntry = names.get('pid')
   if (!pidEntry) return null
@@ -99,7 +104,6 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
   if (owner !== '' && sid !== '' && owner !== sid) return null
   const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
   const startMs = epochMs(start)
-  if (owner === '' && (lastMtime || startMs) && now - (lastMtime || startMs || 0) > LIVE_WINDOW_MS) return null
   const evidence = names.has('result.jsonl') ? 'codex-events' : fullModel
   const inferred = kindOf(provider, isPanel, evidence)
   const providerLabel = provider || (inferred === 'gpt' ? 'gpt' : '?')
@@ -111,6 +115,9 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     pid,
     hasDone,
     exitCode,
+    unowned: owner === '',
+    startMs,
+    lastMtime,
     run: {
       dir,
       kind: inferred,
@@ -145,7 +152,7 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
         .join('/')
       let cached = probes.get(dir)
       if (cached?.key !== key) {
-        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid, now) }
+        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid) }
         probes.set(dir, cached)
       }
       if (cached.probe) found.push(cached.probe)
@@ -158,6 +165,7 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
+    if (one.unowned && now - Math.max(one.startMs ?? 0, one.lastMtime) > LIVE_WINDOW_MS) continue
     const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, recent(one) && alive.has(one.pid)) }
     ;(run.status === 'running' ? running : done).push(run)
   }
@@ -195,30 +203,42 @@ async function readNativeTail($: $, run: NativeRun): Promise<Tail> {
   return { lines: linesOut, lastMessage: '' }
 }
 
-type PrRow = { number: number; title: string; head: string; readyAt: string }
 type PrState = { prs: PrRow[]; gates: Map<number, Record<string, unknown> | null> }
 
 async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
   const dir = await resolveGhStatusDir($, options)
   if (!dir) return { prs: [], gates: new Map() }
-  const entries = await listDir($, `${dir}/status`)
-  const statusFiles = entries.filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
-  const prs = (await Promise.all(statusFiles.map(async entry => {
-    const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
-    if (!value || value.state !== 'OPEN' || value.isDraft !== false || typeof value.number !== 'number') return null
-    return {
-      number: value.number,
-      title: typeof value.title === 'string' ? value.title : '',
-      head: typeof value.headOid === 'string' ? value.headOid : '',
-      readyAt: String(value.approvedAt ?? value.readyAt ?? value.createdAt ?? value.updatedAt ?? ''),
-    }
-  }))).filter((pr): pr is PrRow => pr !== null)
-  prs.sort((a, b) => a.readyAt.localeCompare(b.readyAt) || a.number - b.number)
+  const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
+  const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
+  let cache = prCaches.get(dir)
+  if (!cache) cache = { key: '', files: new Map(), open: new Map() }
+  if (cache.key !== key) {
+    const current = new Set(entries.map(entry => entry.name))
+    for (const name of cache.files.keys()) if (!current.has(name)) cache.files.delete(name)
+    const changed = entries.filter(entry => cache.files.get(entry.name)?.mtimeMs !== entry.mtimeMs)
+    const parsed = await Promise.all(changed.map(async entry => {
+      const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
+      const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
+        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', head: typeof value.headOid === 'string' ? value.headOid : '' }
+        : null
+      return [entry.name, { mtimeMs: entry.mtimeMs, pr }] as const
+    }))
+    for (const [name, file] of parsed) cache.files.set(name, file)
+    cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
+    cache.key = key
+    prCaches.set(dir, cache)
+  }
+  const prs = [...cache.open.values()]
   const gates = new Map<number, Record<string, unknown> | null>()
   await Promise.all(prs.map(async pr => {
     const path = `${parentDir(dir)}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
     gates.set(pr.number, jsonObject(await readText($, path)))
   }))
+  const rank = (pr: PrRow) => {
+    const gate = gates.get(pr.number)
+    return gate?.green === true ? 0 : gate === null ? 1 : 2
+  }
+  prs.sort((a, b) => rank(a) - rank(b) || a.number - b.number)
   return { prs, gates }
 }
 
@@ -226,35 +246,41 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
   const ghDir = await resolveGhStatusDir($, options)
   if (!ghDir) return null
   const root = parentDir(ghDir)
-  const [stateText, log] = await Promise.all([readText($, `${root}/main-ci/state.json`), readText($, `${root}/main-ci/run.log`)] )
+  const stateText = await readText($, `${root}/main-ci/state.json`)
   const state = jsonObject(stateText)
-  if (!state || typeof state.sha !== 'string' || log === '') return null
+  if (!state || typeof state.sha !== 'string') return null
   const main8 = state.sha.slice(0, 8)
-  const linesIn = log.split('\n')
-  const active = new Map<string, boolean>()
-  for (const line of linesIn) {
-    if (line.includes(`-${main8}: queued`)) {
-      const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): queued/.exec(line)
-      if (match) active.set(match[0].split(' ')[1].split(':')[0], true)
-    } else {
-      const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): (?:green|red|conflict)/.exec(line)
-      if (match && match[2] === main8) active.delete(`${match[1]}-${match[2]}`)
+  const logPath = `${root}/main-ci/run.log`
+  const logStat = (await listDir($, `${root}/main-ci`)).find(entry => entry.name === 'run.log' && entry.kind === 'file')
+  let queue = 0
+  if (logStat) {
+    const key = `${logStat.mtimeMs}:${logStat.size}`
+    const cached = mainLogCaches.get(logPath)
+    if (cached?.key === key && cached.sha === main8) queue = cached.queue
+    else {
+      const active = new Set<string>()
+      const log = await readText($, logPath)
+      for (const line of log.split('\n')) {
+        const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): (queued|start|green|red|conflict|cancelled|canceled)/i.exec(line)
+        if (!match || match[2] !== main8) continue
+        const pair = `${match[1]}-${match[2]}`
+        if (/^(queued|start)$/i.test(match[3])) active.add(pair)
+        else active.delete(pair)
+      }
+      queue = active.size
+      mainLogCaches.set(logPath, { key, sha: main8, queue })
     }
   }
-  return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue: active.size }
+  return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue }
 }
 
-function rowsFor(runs: Run[], agents: AgentInfo[]): Row[] {
-  const disk = runs.map(run => ({ key: `disk:${run.dir}`, run, native: false }))
-  const native = agents.map(asNative).map(run => ({ key: `native:${run.id}`, run, native: true }))
-  const all = [...disk, ...native]
-  const running = all.filter(row => row.run.status === 'running')
-  const finished = all.filter(row => row.run.status !== 'running').sort((a, b) => {
-    const at = a.native ? 0 : (a.run as Run).endedAt ?? (a.run as Run).startedAt ?? 0
-    const bt = b.native ? 0 : (b.run as Run).endedAt ?? (b.run as Run).startedAt ?? 0
-    return bt - at
-  })
-  return [...running, ...finished.slice(0, RECENT_DONE)].slice(0, MAX_ROWS)
+function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
+  const disk = runs.map(run => ({ key: `disk:${run.dir}`, kind: run.kind, label: run.label, status: run.status, model: run.model, duration: runElapsed(run, now), diskRun: run }))
+  const native = agents.map(asNative).map(run => ({ key: `native:${run.id}`, kind: run.kind, label: run.label, status: run.status, agentId: run.id }))
+  const running = [...disk, ...native].filter(row => row.status === 'running')
+  const finishedDisk = disk.filter(row => row.status !== 'running').slice(0, RECENT_DONE)
+  const finishedNative = native.filter(row => row.status !== 'running').slice(-RECENT_DONE).reverse()
+  return [...running, ...finishedDisk, ...finishedNative].slice(0, MAX_ROWS)
 }
 
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
@@ -312,8 +338,20 @@ function linkLabel(href: string): string {
 }
 
 function labeledLine(line: string): { label: string; value: string } | null {
+  if (/^https?:\/\//i.test(line.trim())) return null
   const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
   return match ? { label: match[1], value: match[2] } : null
+}
+
+function safeHref(href: string): string | null {
+  if (href.length > 2048 || /[^\x20-\x7E]/.test(href)) return null
+  if (!href.startsWith('https://') && !/^http:\/\/localhost(?::\d+)?(?:\/|$|[?#])/i.test(href)) return null
+  try {
+    const url = new URL(href)
+    return url.href === href && (url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost')) ? href : null
+  } catch {
+    return null
+  }
 }
 
 function repoSlug(options: PluginOptions): string {
@@ -322,8 +360,8 @@ function repoSlug(options: PluginOptions): string {
 }
 
 function asNative(agent: AgentInfo): NativeRun {
-  const status = agent.status === 'running' ? 'running' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'dead' : 'done'
-  return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status, model: '?' }
+  const status = agent.status === 'completed' ? 'done' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'dead' : 'running'
+  return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
 }
 
 function askOptions(detail: string): string[] {
@@ -384,15 +422,11 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const now = await $.clock.now()
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
-    const rows = rowsFor(runs, agents)
+    const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
     const chosen = await read($, selectedRun)
     const shown = rows.find(row => row.key === chosen) ?? null
-    const tail = shown
-      ? shown.native
-        ? await readNativeTail($, shown.run as NativeRun)
-        : await readTail($, shown.run as Run)
-      : null
+    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, { id: shown.agentId ?? '', label: shown.label, kind: shown.kind, status: shown.status })) : null
     const repo = repoSlug(options)
     const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
 
@@ -407,7 +441,7 @@ export const register: Register = (on, options) => {
               const result = gate === null ? '…' : gate.green === true ? '✓' : '✗'
               return (
                 <Box key={`pr:${pr.number}`}>
-                  <Link key={`pr-link-${pr.number}`} href={issueUrl(pr.number)} label={`#${pr.number}`} />
+                  {safeHref(issueUrl(pr.number)) ? <Link key={`pr-link-${pr.number}`} href={safeHref(issueUrl(pr.number)) ?? ''} label={`#${pr.number}`} /> : <Text>{`#${pr.number}`}</Text>}
                   <Text>{` ${pr.title} ${result}${gate?.conflict === true ? ' ⚡ conflict' : ''}`}</Text>
                 </Box>
               )
@@ -417,23 +451,19 @@ export const register: Register = (on, options) => {
         <Text bold>Workers</Text>
         {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
         {rows.map(row => {
-          const run = row.run
-          const duration = row.native ? '?' : runElapsed(run as Run, now)
-          const label = row.native ? (run as NativeRun).label : (run as Run).label
-          const kind = row.native ? (run as NativeRun).kind : (run as Run).kind
           return (
           <Button
             key={row.key}
             plain
-            dimColor={run.status !== 'running'}
-            label={`${MARK[run.status]} ${kind} ${label}  ${run.model}  ${duration}  ${run.status}`}
+            dimColor={row.status !== 'running'}
+            label={`${MARK[row.status]} ${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}`}
             onPress={() => update($, selectedRun, key => (key === row.key ? null : row.key))}
           />
           )
         })}
         {shown && tail && (
           <Box key="tail" flexDirection="column" marginTop={1}>
-            <Text bold>{`${shown.native ? (shown.run as NativeRun).label : (shown.run as Run).label} (${shown.run.status})`}</Text>
+            <Text bold>{`${shown.label} (${shown.status})`}</Text>
             {tail.lines.length === 0 && <Text dimColor>No output yet.</Text>}
             {tail.lines.map(line => (
               <Text wrap="truncate-end">{line}</Text>
@@ -455,29 +485,37 @@ export const register: Register = (on, options) => {
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    const issueUrl = (n: number) => `https://github.com/${repoSlug(options)}/issues/${n}`
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
-    const detailLines = detail.split('\n').filter(line => line.trim() !== '')
+    const detailLines = detail.split('\n').filter(line => line.trim() !== '' && !/^options?:/i.test(line.trim()))
+    const askViews = asks.map(ask => {
+      const issue = issueNumber(ask.text)
+      const trailing = trailingLink(ask.text)
+      return {
+        ask,
+        issue,
+        issueHref: issue ? safeHref(issueUrl(Number(issue))) : null,
+        trailing,
+        trailingHref: trailing ? safeHref(trailing) : null,
+        options: askOptions(ask === shown ? detail : ''),
+      }
+    })
 
     return (
       <Box flexDirection="column">
-        {asks.map(ask => (
+        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, options }) => {
+          const body = ask.text.replace(/#\d+\s*/, '').replace(/\s*https?:\/\/\S+$/, match => !issue && trailingHref ? '' : match)
+          return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              {issueNumber(ask.text) ? (
-                <Text color={ASK_ACCENT}>
-                  <Link href={`https://github.com/${repoSlug(options)}/issues/${issueNumber(ask.text)}`} label={`#${issueNumber(ask.text)}`} />
-                </Text>
-              ) : trailingLink(ask.text) ? (
-                <Text color={ASK_ACCENT} underline>
-                  <Link href={trailingLink(ask.text) ?? ''} label={linkLabel(trailingLink(ask.text) ?? '')} />
-                </Text>
-              ) : null}
+              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
+              {!issue && trailingHref && trailing ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
               <Button
                 key={`ask-${ask.n}`}
                 plain
-                label={`${ask === shown ? '▾' : '▸'} ${ask.text.replace(/#\d+\s*/, '').replace(/\s*https?:\/\/\S+$/, '')}`}
+                label={`${ask === shown ? '▾' : '▸'} ${body}`}
                 onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
               />
             </Box>
@@ -492,9 +530,11 @@ export const register: Register = (on, options) => {
                         const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
                         if (link) {
                           const href = link[1] ?? link[2]
+                          const safe = safeHref(href)
+                          if (!safe) return <Text key={`ask-context-${i}`}>{line}</Text>
                           return (
                             <Text key={`ask-context-${i}`} color={ASK_ACCENT} underline>
-                              <Link href={href} label={linkLabel(href)} />
+                              <Link href={safe} label={linkLabel(safe)} />
                             </Text>
                           )
                         }
@@ -510,16 +550,16 @@ export const register: Register = (on, options) => {
                       })}
                     </Box>
                   </Box>
-                  {askOptions(detail).length > 0 && (
+                  {options.length > 0 && (
                     <Box key="ask-options" flexDirection="row" marginTop={1}>
-                      {askOptions(detail).map((option, i) => (
+                      {options.map((option, i) => (
                         <Button
                           key={`ask-option-${ask.n}-${i}`}
                           plain
                           label={option}
                           onPress={() => {
-                            const prefix = issueNumber(ask.text) ? `#${issueNumber(ask.text)}` : trailingLink(ask.text) ?? ''
-                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'replace' })
+                            const prefix = issue ? `#${issue}` : trailing ?? ''
+                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'insert' })
                           }}
                         />
                       ))}
@@ -530,7 +570,8 @@ export const register: Register = (on, options) => {
                 <Text dimColor>no context recorded</Text>
               ))}
           </Box>
-        ))}
+          )
+        })}
       </Box>
     )
   })

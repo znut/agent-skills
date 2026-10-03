@@ -106,6 +106,18 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
+  test('keeps up to five finished rows from each source', async ($, on) => {
+    const files: Record<string, string> = {}
+    for (let i = 1; i <= 6; i++) Object.assign(files, under(`${KIDS}/disk-done-${i}`, { ...run('openai', `${800 + i}`), done: '', 'exit-code': '0', 'end-epoch': epoch(i) }))
+    const agents = Array.from({ length: 6 }, (_, i) => ({ id: `finished-${i}`, description: `finished ${i}`, type: 'Explore', status: 'completed' }))
+    world(on, files, [], { agents })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const keys = (await ui.findAll({})).map(node => node.key).filter((key): key is string => !!key)
+    expect(keys.filter(key => key.includes('/disk-done-'))).toHaveLength(5)
+    expect(keys.filter(key => key.startsWith('native:finished-'))).toHaveLength(5)
+    await ui.unmount()
+  })
+
   test('an old run without done reads dead even if its pid is alive', async ($, on) => {
     const dir = `${KIDS}/old`
     world(on, under(dir, { ...run('openai', '401'), 'start-epoch': epoch(25 * 60) }), ['401'])
@@ -152,13 +164,26 @@ describe('workers pane', () => {
     await ui.unmount()
   })
 
-  test('native agents use their transcript for detail', async ($, on) => {
+  test('checks an unowned run age against the current clock after probe caching', async ($, on) => {
+    const dir = `${KIDS}/ages-out`
+    const w = world(on, under(dir, { pid: '702', provider: 'kimi', 'start-epoch': epoch(20 * 60) }), ['702'])
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await first.find({ key: `disk:${dir}` })).toBeDefined()
+    await first.unmount()
+    await w.clock.advance(5 * 3_600_000)
+    const later = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await later.find({ key: `disk:${dir}` })).toBeUndefined()
+    await later.unmount()
+  })
+
+  test('native agents use their transcript for detail and omit unknown model and time', async ($, on) => {
     world(on, {}, [], {
-      agents: [{ id: 'agent-1', description: 'inspect sidebar', type: 'Explore', status: 'running' }],
+      agents: [{ id: 'agent-1', description: 'inspect sidebar', type: 'Explore', status: 'running' }, { id: 'agent-2', description: 'finished inspect', type: 'Explore', status: 'completed' }],
       transcripts: { 'agent-1': [{ role: 'assistant', text: 'native transcript tail', toolUses: [] }] },
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ key: 'native:agent-1' }))?.text).toContain('◐ Explore inspect sidebar  ?  ?  running')
+    expect((await ui.find({ key: 'native:agent-1' }))?.text).toBe('◐ Explore inspect sidebar  running')
+    expect((await ui.find({ key: 'native:agent-2' }))?.text).toContain('✓ Explore finished inspect')
     await ui.press({ key: 'native:agent-1' })
     expect(await ui.find({ type: 'Text', text: 'native transcript tail' })).toBeDefined()
     await ui.unmount()
@@ -172,15 +197,43 @@ describe('workers pane', () => {
       ...RUN_FILES,
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: mainSha, green: true, phase: 'done' }),
-      [`${root}/main-ci/run.log`]: `preview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: queued (ready)\n`,
+      [`${root}/main-ci/run.log`]: `preview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: queued (ready)\npreview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: green\n`,
       [`${root}/gh-status/status/pr-4390.json`]: JSON.stringify({ number: 4390, state: 'OPEN', isDraft: false, title: 'Sidebar work', headOid: head, createdAt: '2026-01-01' }),
       [`${root}/gate/pr-4390/${head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`]: JSON.stringify({ green: false, conflict: true }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(node => node.text).join(' ')).toContain('main abcdef01 · green · preview queue 1')
+    expect((await ui.findAll({ type: 'Text' })).map(node => node.text).join(' ')).toContain('main abcdef01 · green · preview queue 0')
     expect((await ui.find({ type: 'Link', text: '#4390' }))?.text).toBe('#4390')
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
     await ui.unmount()
+  })
+
+  test('main strip uses state with an empty log; status cache reads only changed PR files', async ($, on) => {
+    const root = '/fx/home/state'
+    const p1 = `${root}/gh-status/status/pr-4420.json`
+    const p2 = `${root}/gh-status/status/pr-4421.json`
+    const w = world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'feedbeef12345678', phase: 'running' }),
+      [`${root}/main-ci/run.log`]: '',
+      [p1]: JSON.stringify({ number: 4420, state: 'OPEN', isDraft: false, title: 'one', headOid: '11111111abcdef' }),
+      [p2]: JSON.stringify({ number: 4421, state: 'OPEN', isDraft: false, title: 'two', headOid: '22222222abcdef' }),
+    })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(node => node.text).join(' ')).toContain('main feedbeef · running · preview queue 0')
+    await ui.unmount()
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await again.unmount()
+    expect(w.reads.filter(path => path === p1)).toHaveLength(1)
+    expect(w.reads.filter(path => path === p2)).toHaveLength(1)
+
+    w.files[p1] = JSON.stringify({ number: 4420, state: 'OPEN', isDraft: false, title: 'updated', headOid: '11111111abcdef' })
+    w.mtimes[p1] = 1
+    const changed = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await changed.find({ key: 'pr:4420' }))?.text).toContain('updated')
+    await changed.unmount()
+    expect(w.reads.filter(path => path === p1)).toHaveLength(2)
+    expect(w.reads.filter(path => path === p2)).toHaveLength(1)
   })
 
   test('no runs for the session draws the empty line', async ($, on) => {
@@ -235,6 +288,20 @@ describe('asks band', () => {
     await ui.press({ key: 'ask-2' })
     await ui.press({ key: 'ask-option-2-0' })
     expect(w.filled).toEqual(['#4390 go', 'https://example.com/brief inspect'])
+    await ui.unmount()
+  })
+
+  test('unsafe http links render the asks band as plain text', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: 'Read this http://example.com/brief\n',
+      [`${ASKS}.d/1.md`]: 'link: http://example.com/context',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ key: 'ask-1' })).toBeDefined()
+    await ui.press({ key: 'ask-1' })
+    expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
+    expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('http://example.com/context')
     await ui.unmount()
   })
 
