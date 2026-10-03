@@ -12,6 +12,7 @@ import {
   labelOf,
   lines,
   parentDir,
+  previewQueue,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -19,6 +20,8 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
+type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
+type RunDir = { dir: string; mtimeMs: number }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; unowned: boolean; startMs: number | null; lastMtime: number }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
 type Row = { key: string; kind: string; label: string; status: Run['status']; model?: string; duration?: string; diskRun?: Run; agentId?: string }
@@ -35,12 +38,14 @@ const ASK_ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-const probes = new Map<string, { key: string; probe: Probe | null }>()
+// A run with `done` is immutable: it is not re-listed while its parent's entry mtime holds.
+const probes = new Map<string, Cached>()
+const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let roots: Root[] | null = null
 let stateDir: string | null | undefined
 let ghStatusDir: string | null | undefined
-const prCaches = new Map<string, PrCache>()
-const mainLogCaches = new Map<string, { key: string; sha: string; queue: number }>()
+let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
+let mainLog = { key: '', sha: '', queue: 0 }
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -75,13 +80,22 @@ async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   return roots
 }
 
-async function runDirs($: $, root: Root): Promise<string[]> {
-  const top = (await listDir($, root.dir)).filter(entry => entry.kind === 'dir').map(entry => `${root.dir}/${entry.name}`)
+const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
+  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}`, mtimeMs: entry.mtimeMs }))
+
+// A sha dir is re-listed only when its own mtime moves (a new panel run dir appears).
+async function runDirs($: $, root: Root): Promise<RunDir[]> {
+  const top = subDirs(await listDir($, root.dir), root.dir)
   if (!root.isPanel) return top
   const nested = await Promise.all(
-    top.map(async shaDir =>
-      (await listDir($, shaDir)).filter(entry => entry.kind === 'dir').map(entry => `${shaDir}/${entry.name}`),
-    ),
+    top.map(async sha => {
+      let cached = shaRuns.get(sha.dir)
+      if (cached?.mtimeMs !== sha.mtimeMs) {
+        cached = { mtimeMs: sha.mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
+        shaRuns.set(sha.dir, cached)
+      }
+      return cached.runs
+    }),
   )
   return nested.flat()
 }
@@ -142,17 +156,20 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const found: Probe[] = []
   const seen = new Set<string>()
   for (const root of await resolveRoots($, options)) {
-    for (const dir of await runDirs($, root)) {
+    for (const { dir, mtimeMs } of await runDirs($, root)) {
       seen.add(dir)
-      const entries = await listDir($, dir)
-      const key = entries
-        .map(entry => entry.name)
-        .sort()
-        .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
-        .join('/')
       let cached = probes.get(dir)
-      if (cached?.key !== key) {
-        cached = { key, probe: await probe($, dir, entries, root.isPanel, sid) }
+      if (!(cached?.done && cached.mtimeMs === mtimeMs)) {
+        const entries = await listDir($, dir)
+        const key = entries
+          .map(entry => entry.name)
+          .sort()
+          .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
+          .join('/')
+        if (cached?.key !== key) {
+          const done = entries.some(entry => entry.name === 'done')
+          cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
+        } else cached.mtimeMs = mtimeMs
         probes.set(dir, cached)
       }
       if (cached.probe) found.push(cached.probe)
@@ -196,8 +213,8 @@ async function readTail($: $, run: Run): Promise<Tail> {
   return { lines: tail, lastMessage }
 }
 
-async function readNativeTail($: $, run: NativeRun): Promise<Tail> {
-  const messages = await $.session.messages({ agentId: run.id }).catch(() => [])
+async function readNativeTail($: $, agentId: string): Promise<Tail> {
+  const messages = await $.session.messages({ agentId }).catch(() => [])
   if (!Array.isArray(messages)) return { lines: [], lastMessage: '' }
   const linesOut = messages.flatMap(message => lines(message.text)).slice(-TAIL_LINES)
   return { lines: linesOut, lastMessage: '' }
@@ -210,8 +227,7 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   if (!dir) return { prs: [], gates: new Map() }
   const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
   const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
-  let cache = prCaches.get(dir)
-  if (!cache) cache = { key: '', files: new Map(), open: new Map() }
+  const cache = prCache
   if (cache.key !== key) {
     const current = new Set(entries.map(entry => entry.name))
     for (const name of cache.files.keys()) if (!current.has(name)) cache.files.delete(name)
@@ -226,7 +242,6 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
     for (const [name, file] of parsed) cache.files.set(name, file)
     cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
     cache.key = key
-    prCaches.set(dir, cache)
   }
   const prs = [...cache.open.values()]
   const gates = new Map<number, Record<string, unknown> | null>()
@@ -255,20 +270,10 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
   let queue = 0
   if (logStat) {
     const key = `${logStat.mtimeMs}:${logStat.size}`
-    const cached = mainLogCaches.get(logPath)
-    if (cached?.key === key && cached.sha === main8) queue = cached.queue
+    if (mainLog.key === key && mainLog.sha === main8) queue = mainLog.queue
     else {
-      const active = new Set<string>()
-      const log = await readText($, logPath)
-      for (const line of log.split('\n')) {
-        const match = /preview #\d+ ([0-9a-f]+)-([0-9a-f]+): (queued|start|green|red|conflict|cancelled|canceled)/i.exec(line)
-        if (!match || match[2] !== main8) continue
-        const pair = `${match[1]}-${match[2]}`
-        if (/^(queued|start)$/i.test(match[3])) active.add(pair)
-        else active.delete(pair)
-      }
-      queue = active.size
-      mainLogCaches.set(logPath, { key, sha: main8, queue })
+      queue = previewQueue(await readText($, logPath), main8)
+      mainLog = { key, sha: main8, queue }
     }
   }
   return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue }
@@ -340,7 +345,7 @@ function linkLabel(href: string): string {
 function labeledLine(line: string): { label: string; value: string } | null {
   if (/^https?:\/\//i.test(line.trim())) return null
   const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
-  return match ? { label: match[1], value: match[2] } : null
+  return match ? { label: match[1] ?? '', value: match[2] ?? '' } : null
 }
 
 function safeHref(href: string): string | null {
@@ -426,22 +431,30 @@ export const register: Register = (on, options) => {
     const prState = await readReadyPrs($, options, main?.sha ?? '')
     const chosen = await read($, selectedRun)
     const shown = rows.find(row => row.key === chosen) ?? null
-    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, { id: shown.agentId ?? '', label: shown.label, kind: shown.kind, status: shown.status })) : null
+    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
     const repo = repoSlug(options)
     const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
+    const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
       <Box flexDirection="column">
-        {main && <Text dimColor>{`main ${main.sha} · ${main.state} · preview queue ${main.queue}`}</Text>}
+        {main && (
+          <Box key="main-strip" flexDirection="row">
+            <Text dimColor>{`main ${main.sha} · `}</Text>
+            <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
+            <Text dimColor>{` · preview queue ${main.queue}`}</Text>
+          </Box>
+        )}
         {prState.prs.length > 0 && (
           <Box key="needs-you" flexDirection="column" marginBottom={1}>
             <Text bold>Needs you</Text>
             {prState.prs.map(pr => {
-              const gate = prState.gates.get(pr.number)
-              const result = gate === null ? '…' : gate.green === true ? '✓' : '✗'
+              const gate = prState.gates.get(pr.number) ?? null
+              const result = gate == null ? '…' : gate.green === true ? '✓' : '✗'
+              const href = safeHref(`https://github.com/${repo}/pull/${pr.number}`)
               return (
                 <Box key={`pr:${pr.number}`}>
-                  {safeHref(issueUrl(pr.number)) ? <Link key={`pr-link-${pr.number}`} href={safeHref(issueUrl(pr.number)) ?? ''} label={`#${pr.number}`} /> : <Text>{`#${pr.number}`}</Text>}
+                  {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
                   <Text>{` ${pr.title} ${result}${gate?.conflict === true ? ' ⚡ conflict' : ''}`}</Text>
                 </Box>
               )
@@ -450,8 +463,7 @@ export const register: Register = (on, options) => {
         )}
         <Text bold>Workers</Text>
         {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
-        {rows.map(row => {
-          return (
+        {rows.map(row => (
           <Button
             key={row.key}
             plain
@@ -459,8 +471,7 @@ export const register: Register = (on, options) => {
             label={`${MARK[row.status]} ${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}`}
             onPress={() => update($, selectedRun, key => (key === row.key ? null : row.key))}
           />
-          )
-        })}
+        ))}
         {shown && tail && (
           <Box key="tail" flexDirection="column" marginTop={1}>
             <Text bold>{`${shown.label} (${shown.status})`}</Text>
@@ -489,7 +500,11 @@ export const register: Register = (on, options) => {
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
-    const detailLines = detail.split('\n').filter(line => line.trim() !== '' && !/^options?:/i.test(line.trim()))
+    // Three text lines (options: among them) plus one link: line, whatever the file holds.
+    const rows = detail.split('\n').map(line => line.trim()).filter(Boolean)
+    const isLink = (line: string) => /^link:/i.test(line)
+    const textLines = rows.filter(line => !isLink(line)).slice(0, 3)
+    const detailLines = [...textLines.filter(line => !/^options?:/i.test(line)), ...rows.filter(isLink).slice(0, 1)]
     const askViews = asks.map(ask => {
       const issue = issueNumber(ask.text)
       const trailing = trailingLink(ask.text)
@@ -499,19 +514,19 @@ export const register: Register = (on, options) => {
         issueHref: issue ? safeHref(issueUrl(Number(issue))) : null,
         trailing,
         trailingHref: trailing ? safeHref(trailing) : null,
-        options: askOptions(ask === shown ? detail : ''),
+        askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),
       }
     })
 
     return (
       <Box flexDirection="column">
-        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, options }) => {
-          const body = ask.text.replace(/#\d+\s*/, '').replace(/\s*https?:\/\/\S+$/, match => !issue && trailingHref ? '' : match)
+        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
+          const body = (trailingHref && !issue ? ask.text.replace(/\s*https?:\/\/\S+$/, '') : ask.text).replace(/#\d+\s*/, '')
           return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Box key={`ask-line-${ask.n}`} flexDirection="row">
               {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
-              {!issue && trailingHref && trailing ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
+              {!issue && trailingHref ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
               <Button
                 key={`ask-${ask.n}`}
                 plain
@@ -529,7 +544,7 @@ export const register: Register = (on, options) => {
                         const labeled = labeledLine(line)
                         const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
                         if (link) {
-                          const href = link[1] ?? link[2]
+                          const href = link[1] ?? link[2] ?? ''
                           const safe = safeHref(href)
                           if (!safe) return <Text key={`ask-context-${i}`}>{line}</Text>
                           return (
@@ -550,9 +565,9 @@ export const register: Register = (on, options) => {
                       })}
                     </Box>
                   </Box>
-                  {options.length > 0 && (
+                  {askOpts.length > 0 && (
                     <Box key="ask-options" flexDirection="row" marginTop={1}>
-                      {options.map((option, i) => (
+                      {askOpts.map((option, i) => (
                         <Button
                           key={`ask-option-${ask.n}-${i}`}
                           plain

@@ -78,9 +78,10 @@ the user answers; on wrap, empty the file
 Name the GitHub ticket as `#N` in each ask line, or end the line with a link.
 With each ask, MUST write its context (what it is about, its options and
 recommendation) to `<state>/asks/<session-id>.d/<n>.md` in at most three short
-lines. An optional `link: <url>` to a GitHub ticket or PR, image, or SSOT mock
-HTML and an optional `options: a | b` line each count toward the three lines;
-put longer context behind the link. `<n>` is the line's
+lines, plus an optional `link: <url>` line to a GitHub ticket or PR, image, or
+SSOT mock HTML; put longer context behind the link. An optional `options: a | b`
+line counts toward the three. The renderer slices the detail text to three
+lines and draws the `link:` line after them. `<n>` is the line's
 1-based number. Delete `<n>.md` with its line, then rename each later
 `<m>.md` to `<m-1>.md` in ascending order — stale detail files point at the
 wrong ask.

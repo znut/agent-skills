@@ -78,6 +78,7 @@ describe('workers pane', () => {
 
     delete w.files[`${dir}/done`]
     delete w.files[`${dir}/exit-code`]
+    w.mtimes[`${dir}/pid`] = NOW
     w.alive.add('102')
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect((await again.find({ key: `disk:${dir}` }))?.text).toContain('5m  running')
@@ -202,8 +203,9 @@ describe('workers pane', () => {
       [`${root}/gate/pr-4390/${head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`]: JSON.stringify({ green: false, conflict: true }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(node => node.text).join(' ')).toContain('main abcdef01 · green · preview queue 0')
-    expect((await ui.find({ type: 'Link', text: '#4390' }))?.text).toBe('#4390')
+    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main abcdef01 · green · preview queue 0')
+    expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/EZ-OPD/ez-opd-services/pull/4390')
+    expect((await ui.find({ type: 'Text', text: 'green' }))?.props.color).toBe('green')
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
     await ui.unmount()
   })
@@ -220,7 +222,8 @@ describe('workers pane', () => {
       [p2]: JSON.stringify({ number: 4421, state: 'OPEN', isDraft: false, title: 'two', headOid: '22222222abcdef' }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(node => node.text).join(' ')).toContain('main feedbeef · running · preview queue 0')
+    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main feedbeef · running · preview queue 0')
+    expect((await ui.find({ type: 'Text', text: 'running' }))?.props.color).toBeUndefined()
     await ui.unmount()
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await again.unmount()
@@ -236,6 +239,74 @@ describe('workers pane', () => {
     expect(w.reads.filter(path => path === p2)).toHaveLength(1)
   })
 
+  describe('preview queue', () => {
+    const root = '/fx/home/state'
+    const MAIN = 'abcdef01'
+    const queued = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: queued (ready)`
+    const start = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: start`
+    const queueFiles = (log: string) => ({
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: `${MAIN}23456789`, green: true }),
+      [`${root}/main-ci/run.log`]: log,
+    })
+    for (const [name, log, expected] of [
+      ['a queued PR counts', [queued(4390)], '1'],
+      ['a start line counts once after queued', [queued(4390), start(4390), queued(4391)], '2'],
+      ['a green result drains it', [queued(4390), `preview #4390 11111110-${MAIN}: green`], '0'],
+      ['a red result drains it', [queued(4390), `preview #4390 11111110-${MAIN}: RED — /x/pr-4390/log`], '0'],
+      ['a conflict drains it', [queued(4390), `preview #4390 11111110-${MAIN}: CONFLICT`], '0'],
+      ['a cancel (no sha pair) drains it', [queued(4390), 'preview #4390: cancelled'], '0'],
+      ['a head move (no sha pair) drains it', [queued(4390), 'preview #4390: head moved 11111110 -> 22222222; cancelling its preview'], '0'],
+      ['a requeue on a new head is one entry', [queued(4390), `preview #4390 22222222-${MAIN}: queued (ready)`], '1'],
+      ['entries for an older main are not counted', ['preview #4390 11111110-ffffffff: queued (ready)'], '0'],
+    ] as const) {
+      test(name, async ($, on) => {
+        world(on, queueFiles(log.join('\n')))
+        const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+        expect(/preview queue (\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe(expected)
+        await ui.unmount()
+      })
+    }
+  })
+
+  test('Needs you sorts green, pending, then red or conflict; oldest number first within a group', async ($, on) => {
+    const root = '/fx/home/state'
+    const main = 'abcdef0123456789'
+    const pr = (n: number) => ({
+      [`${root}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state: 'OPEN', isDraft: false, title: `t${n}`, headOid: `${n}0000abcdef` }),
+    })
+    const gate = (n: number, result: Record<string, boolean>) => ({
+      [`${root}/gate/pr-${n}/${n}0000-${main.slice(0, 8)}.json`]: JSON.stringify(result),
+    })
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: main, green: true }),
+      ...[4404, 4403, 4402, 4401, 4400, 4399].reduce((all, n) => ({ ...all, ...pr(n) }), {}),
+      ...gate(4404, { green: true }),
+      ...gate(4403, { green: false }),
+      ...gate(4402, { green: false, conflict: true }),
+      ...gate(4400, { green: true }),
+    })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const order = (await ui.findAll({})).map(node => /^pr:(\d+)$/.exec(node.key ?? '')?.[1]).filter(Boolean)
+    expect(order).toEqual(['4400', '4404', '4399', '4401', '4402', '4403'])
+    await ui.unmount()
+  })
+
+  test('a done run is not listed or re-probed on the next tick', async ($, on) => {
+    const w = world(on, RUN_FILES)
+    const dir = `${KIDS}/b-done`
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await first.unmount()
+    expect(w.lists.filter(path => path === dir)).toHaveLength(1)
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await again.find({ key: `disk:${dir}` }))?.text).toContain('4m  done')
+    await again.unmount()
+    expect(w.lists.filter(path => path === dir)).toHaveLength(1)
+    expect(w.reads.filter(path => path === `${dir}/pid`)).toHaveLength(1)
+    expect(w.lists.filter(path => path === `${KIDS}/a-run`)).toHaveLength(2)
+  })
+
   test('no runs for the session draws the empty line', async ($, on) => {
     world(on, {})
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -245,7 +316,7 @@ describe('workers pane', () => {
 })
 
 describe('asks band', () => {
-  test('one row per ask; a click expands its context or says none was recorded', async ($, on) => {
+  test('one row per ask; a click expands its context; an ask without a detail file says none was recorded', async ($, on) => {
     world(on, {
       ...RUN_FILES,
       [ASKS]: '#12 merge the DF fold?\n\n#13 pick the panel model?\n',
@@ -264,9 +335,10 @@ describe('asks band', () => {
       await ui.press({ key: 'ask-3' })
       expect(await ui.find({ key: 'ask-detail-1' })).toBeUndefined()
       expect(await ui.find({ key: 'ask-detail-3' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: 'no context recorded' })).toBeDefined()
 
       await ui.press({ key: 'ask-3' })
-      expect(await ui.find({ key: 'ask-detail-3' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: 'no context recorded' })).toBeUndefined()
       await ui.unmount()
     }
   })
@@ -288,6 +360,7 @@ describe('asks band', () => {
     await ui.press({ key: 'ask-2' })
     await ui.press({ key: 'ask-option-2-0' })
     expect(w.filled).toEqual(['#4390 go', 'https://example.com/brief inspect'])
+    expect(w.modes).toEqual(['insert', 'insert'])
     await ui.unmount()
   })
 
@@ -302,6 +375,23 @@ describe('asks band', () => {
     await ui.press({ key: 'ask-1' })
     expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
     expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('http://example.com/context')
+    await ui.unmount()
+  })
+
+  test('the detail shows three text lines (options among them) and the link line', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: '#4390 review the UI?\n',
+      [`${ASKS}.d/1.md`]: 'one\ntwo\noptions: go | wait\nfour\nlink: https://example.com/mock\nsix',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await ui.press({ key: 'ask-1' })
+    const detail = (await ui.find({ key: 'ask-detail-1' }))?.text ?? ''
+    expect(detail).toContain('two')
+    expect(detail).not.toContain('four')
+    expect(detail).not.toContain('six')
+    expect(await ui.find({ type: 'Link', text: 'mock' })).toBeDefined()
+    expect(await ui.find({ key: 'ask-option-1-1' })).toBeDefined()
     await ui.unmount()
   })
 

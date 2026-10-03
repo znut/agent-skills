@@ -59,6 +59,8 @@ export type World = {
   agents: { id: string; description: string; type: string; status: string }[]
   transcripts: Record<string, { role: 'user' | 'assistant'; text: string; toolUses: [] }[]>
   filled: string[]
+  modes: string[]
+  lists: string[]
 }
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
@@ -73,13 +75,14 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [],
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [],
   }
   on('session.id', () => ({ value: SID }))
   on('agent.list', () => ({ value: w.agents }))
   on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
   on('prompt.fill', ($, e) => {
     w.filled.push(e.text)
+    w.modes.push(String(e.mode))
     return { isFilled: true }
   })
   on('fs.read', ($, e) => {
@@ -89,6 +92,7 @@ export function world(
     return { value: text }
   })
   on('fs.list', ($, e) => {
+    w.lists.push(e.path)
     const seen = new Map<string, FsEntry>()
     for (const [path, text] of Object.entries(w.files)) {
       if (!path.startsWith(`${e.path}/`)) continue
