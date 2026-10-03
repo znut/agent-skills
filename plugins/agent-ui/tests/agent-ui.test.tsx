@@ -630,3 +630,48 @@ describe('asks band', () => {
     })
   }
 })
+
+describe('pane auto-open', () => {
+  const ROLE = `/tmp/cc-session-roles/${SID}`
+
+  async function start([$, on]: Parameters<Parameters<typeof test>[1]>, files: Record<string, string>, isInteractive = true) {
+    const w = world(on, { ...RUN_FILES, ...files })
+    const opened: string[] = []
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    on('ui.open', ($, e) => {
+      opened.push(e.id)
+      return { value: {} }
+    })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive })
+    return { w, opened }
+  }
+
+  for (const role of ['pm', 'tl-product', 'tl-platform']) {
+    test(`opens the pane at start for a ${role} session`, async ($, on) => {
+      const { opened } = await start([$, on], { [ROLE]: role })
+      expect(opened).toEqual(['workers'])
+    })
+  }
+
+  test('leaves the pane closed for an unmarked or non-manager session', async ($, on) => {
+    const { w, opened } = await start([$, on], { [ROLE]: 'worker' })
+    await w.clock.advance(3000)
+    expect(opened).toEqual([])
+  })
+
+  test('opens once when the marker is written after start', async ($, on) => {
+    const { w, opened } = await start([$, on], {})
+    expect(opened).toEqual([])
+    w.files[ROLE] = 'tl-platform'
+    await w.clock.advance(3000)
+    await w.clock.advance(3000)
+    expect(opened).toEqual(['workers'])
+  })
+
+  test('a headless session never opens a pane', async ($, on) => {
+    const { opened } = await start([$, on], { [ROLE]: 'pm' }, false)
+    expect(opened).toEqual([])
+  })
+})

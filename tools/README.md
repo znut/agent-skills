@@ -27,7 +27,7 @@ tools/
                               open PRs' merge previews; steps come from the
                               config's mainCi block (main-ci/README.md)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
-  hooks/                      Claude Code Stop hook: watch-guard
+  hooks/                      Claude Code hooks: watch-guard, asks-hook
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 

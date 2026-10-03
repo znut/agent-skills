@@ -63,16 +63,16 @@ review process, so a skill update changes every repo that links these skills.
 `tools/` contains optional local programs: a PR status poller that turns
 GitHub into local files, a board snapshot, a post-merge CI driver with merge
 previews, a per-clone gh identity wrapper, a session boot report,
-a worktree hook, and a Claude Code stop hook. Each
+a worktree hook, and Claude Code hooks (watch-guard, asks). Each
 documents its own setup in `tools/README.md` or its folder.
 
 ## Plugins
 
 `plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
 pane of the session's child runs (GPT, Kimi, Claude review panels) with each
-run's live tail on click, and pins the session's asks
-([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks)) above the prompt,
-each expanding to its recorded context on click. Load it for one session with
+run's live tail on click, opens itself at start in PM and TL sessions, and pins
+the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
+above the prompt, each expanding to its recorded context on click. Load it for one session with
 `claude --plugin-dir <clone>/plugins/agent-ui`, or for every session by adding
 that path to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`. Its paths are `userConfig` options in `/config`;

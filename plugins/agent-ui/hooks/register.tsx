@@ -487,6 +487,22 @@ const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as cons
 
 const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
 
+// boot-report writes the role marker after the session starts, so the pane waits for it a few ticks.
+const MANAGER_ROLES = new Set(['pm', 'tl-product', 'tl-platform'])
+const ROLE_DIR = '/tmp/cc-session-roles'
+const ROLE_WAIT_TICKS = 60
+let roleTicksLeft = 0
+
+async function openForManager($: $): Promise<void> {
+  if (roleTicksLeft <= 0) return
+  roleTicksLeft--
+  const sid = await $.session.id()
+  if (!sid || /[/]|\.\./.test(sid)) return
+  if (!MANAGER_ROLES.has(await readText($, `${ROLE_DIR}/${sid}`))) return
+  roleTicksLeft = 0
+  await $.ui.open({ id: PANE, title: 'Workers' })
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -495,7 +511,10 @@ export const register: Register = (on, options) => {
     })
     // One tick redraws the pane and the band (each re-reads its files while drawn)
     // and drops an expanded ask whose line is gone, so a later ask at that line opens closed.
+    roleTicksLeft = e.isInteractive ? ROLE_WAIT_TICKS : 0
+    await openForManager($)
     $.clock.every(REFRESH_MS, async () => {
+      await openForManager($)
       $.ui.invalidate('ui.render')
       const open = await read($, openAsk)
       if (open === null) return
