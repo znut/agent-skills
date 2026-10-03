@@ -353,6 +353,18 @@ describe('workers pane', () => {
       await settled.unmount()
     })
 
+    test('31 running rows are all listed; animation still stops at 20', async ($, on) => {
+      const files: Record<string, string> = {}
+      for (let i = 0; i < 31; i++) Object.assign(files, under(`${KIDS}/m-${i}`, run('openai', `70${i}`)))
+      const w = world(on, files, Array.from({ length: 31 }, (_, i) => `70${i}`))
+      w.blitOk = true
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect((await ui.findAll({})).filter(node => node.key?.startsWith('disk:'))).toHaveLength(31)
+      await w.clock.advance(1000)
+      expect(new Set(w.blits.map(blit => blit.key)).size).toBe(20)
+      await ui.unmount()
+    })
+
     test('animation stays under the blit limit however many rows run', async ($, on) => {
       const files: Record<string, string> = {}
       for (let i = 0; i < 25; i++) Object.assign(files, under(`${KIDS}/m-${i}`, run('openai', `70${i}`)))

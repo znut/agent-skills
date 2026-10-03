@@ -328,7 +328,8 @@ function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
   const running = top.filter(row => row.status === 'running')
   const finishedDisk = top.filter(row => row.diskRun && row.status !== 'running').slice(0, RECENT_DONE)
   const finishedNative = top.filter(row => !row.diskRun && row.status !== 'running').slice(-RECENT_DONE).reverse()
-  const shown = [...running, ...finishedDisk, ...finishedNative].slice(0, MAX_ROWS)
+  // MAX_ROWS caps the finished rows only: a running row is never dropped
+  const shown = [...running, ...[...finishedDisk, ...finishedNative].slice(0, Math.max(0, MAX_ROWS - running.length))]
   // a running child whose worker rolled off the list stays visible at the top
   const orphans = all.filter(row => nested.has(row) && row.status === 'running' && !shown.includes(rootOf(row)))
   return [...shown, ...orphans]
