@@ -55,7 +55,7 @@ const ASK_ACCENT = '#CBA6F7'
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
-let mainLog = { key: '', sha: '', queue: 0 }
+let mainLog = { key: '', sha: '', queue: { running: 0, queued: 0 } }
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -287,7 +287,7 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   return { prs, gates }
 }
 
-async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: number } | null> {
+async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: { running: number; queued: number } } | null> {
   const ghDir = await resolveGhStatusDir($, options)
   if (!ghDir) return null
   const root = parentDir(ghDir)
@@ -297,7 +297,7 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
   const main8 = state.sha.slice(0, 8)
   const logPath = `${root}/main-ci/run.log`
   const logStat = (await listDir($, `${root}/main-ci`)).find(entry => entry.name === 'run.log' && entry.kind === 'file')
-  let queue = 0
+  let queue = { running: 0, queued: 0 }
   if (logStat) {
     const key = `${logStat.mtimeMs}:${logStat.size}`
     if (mainLog.key === key && mainLog.sha === main8) queue = mainLog.queue
@@ -559,7 +559,10 @@ export const register: Register = (on, options) => {
           <Box key="main-strip" flexDirection="row">
             <Text dimColor>{`main ${main.sha} · `}</Text>
             <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
-            <Text dimColor>{` · preview queue ${main.queue}`}</Text>
+            <Text dimColor>{' · preview '}</Text>
+            <Text color={main.queue.running > 0 ? 'green' : undefined} dimColor={main.queue.running === 0}>{main.queue.running}</Text>
+            <Text dimColor>/</Text>
+            <Text color={main.queue.queued > 0 ? 'red' : undefined} dimColor={main.queue.queued === 0}>{main.queue.queued}</Text>
           </Box>
         )}
         {prState.prs.length > 0 && (
