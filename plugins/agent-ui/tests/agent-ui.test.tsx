@@ -632,6 +632,50 @@ describe('asks band', () => {
   }
 })
 
+describe('asks band: done tickets', () => {
+  const MD = '/fx/repo/.agent/orchestrate.local.md'
+  const CONFIG = '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n- `board_snapshot_file`: `~/state/board-snapshot.md`\n'
+  const pr = (n: number, state: string) => ({ [`${STATE}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state, isDraft: false }) })
+  const board = (...rows: [number, string][]) => ({
+    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Practice | Free | Week 16 | M7 | — |`)].join('\n'),
+  })
+  const shown = async (ui: { find: (query: { key: string }) => Promise<unknown> }, lines: number[]) =>
+    Promise.all(lines.map(async n => (await ui.find({ key: `ask-${n}` })) !== undefined))
+
+  test('hides asks keyed by a merged or closed PR or a Done issue; keeps open, unknown and ticketless asks', async ($, on) => {
+    world(on, {
+      ...RUN_FILES,
+      [MD]: CONFIG,
+      [ASKS]: '#4460 merged pr?\n#4461 closed pr?\n#4462 done issue?\n#4463 open pr?\n#4464 no status file?\n#4465 backlog issue?\nticketless ask?\n',
+      ...pr(4460, 'MERGED'),
+      ...pr(4461, 'CLOSED'),
+      ...pr(4463, 'OPEN'),
+      ...board([4462, 'Done'], [4465, 'Backlog']),
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await shown(ui, [1, 2, 3, 4, 5, 6, 7])).toEqual([false, false, false, true, true, true, true])
+    await ui.unmount()
+  })
+
+  test('a merge after the band was drawn hides the ask on the next render', async ($, on) => {
+    const file = `${STATE}/gh-status/status/pr-4470.json`
+    const w = world(on, { ...RUN_FILES, [MD]: CONFIG, [ASKS]: '#4470 run the bake-off once it merges?\n', ...pr(4470, 'OPEN') })
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>engine band</Text>
+    })
+    const first = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await shown(first, [1])).toEqual([true])
+    await first.unmount()
+    w.files[file] = JSON.stringify({ number: 4470, state: 'MERGED', isDraft: false })
+    w.mtimes[file] = 1
+    const second = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await shown(second, [1])).toEqual([false])
+    expect(await second.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+    await second.unmount()
+  })
+})
+
 describe('pane auto-open', () => {
   const ROLE = `/tmp/cc-session-roles/${SID}`
 

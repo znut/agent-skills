@@ -39,8 +39,8 @@ type Row = {
   children: Row[]
 }
 type PrRow = { number: number; title: string; head: string }
-type PrFile = { mtimeMs: number; pr: PrRow | null }
-type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
+type PrFile = { mtimeMs: number; pr: PrRow | null; done: number | null }
+type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow>; done: Set<number> }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
@@ -54,7 +54,8 @@ const ASK_ACCENT = '#CBA6F7'
 // A run with `done` is immutable: it is not re-listed while its parent's entry mtime holds.
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
-let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
+let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
+let boardCache = { key: '', done: new Set<number>() }
 let mainLog = { key: '', sha: '', queue: { running: 0, queued: 0 } }
 
 async function readText($: $, path: string): Promise<string> {
@@ -252,9 +253,9 @@ async function readNativeTail($: $, agentId: string): Promise<Tail> {
 
 type PrState = { prs: PrRow[]; gates: Map<number, Record<string, unknown> | null> }
 
-async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
-  const dir = await resolveGhStatusDir($, options)
-  if (!dir) return { prs: [], gates: new Map() }
+// The gh-status files, re-read only where a file's mtime moved: the open PRs, and the numbers of
+// PRs that are MERGED or CLOSED.
+async function refreshPrCache($: $, dir: string): Promise<PrCache> {
   const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
   const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
   const cache = prCache
@@ -267,12 +268,21 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
       const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
         ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', head: typeof value.headOid === 'string' ? value.headOid : '' }
         : null
-      return [entry.name, { mtimeMs: entry.mtimeMs, pr }] as const
+      const done = (value?.state === 'MERGED' || value?.state === 'CLOSED') && typeof value.number === 'number' ? value.number : null
+      return [entry.name, { mtimeMs: entry.mtimeMs, pr, done }] as const
     }))
     for (const [name, file] of parsed) cache.files.set(name, file)
     cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
+    cache.done = new Set([...cache.files.values()].flatMap(file => file.done === null ? [] : [file.done]))
     cache.key = key
   }
+  return cache
+}
+
+async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
+  const dir = await resolveGhStatusDir($, options)
+  if (!dir) return { prs: [], gates: new Map() }
+  const cache = await refreshPrCache($, dir)
   const prs = [...cache.open.values()]
   const gates = new Map<number, Record<string, unknown> | null>()
   await Promise.all(prs.map(async pr => {
@@ -371,6 +381,38 @@ async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string 
   })
 }
 
+async function resolveBoardFile($: $, options: PluginOptions): Promise<string | null> {
+  return perCwd($, 'board', async () => {
+    const configured = String(options.stateDir ?? '')
+    if (configured) return `${configured.replace(/\/+$/, '')}/board-snapshot.md`
+    const match = /^- `board_snapshot_file`: `([^`]*)`/m.exec(await localMdOf($))
+    return match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '') || null
+  })
+}
+
+// Tickets that are done, from local files only: a PR MERGED or CLOSED in the gh-status files, or an
+// issue whose board-snapshot row has Status Done. Both are cached on the file's mtime.
+async function readDoneTickets($: $, options: PluginOptions): Promise<Set<number>> {
+  const [ghDir, board] = await Promise.all([resolveGhStatusDir($, options), resolveBoardFile($, options)])
+  const done = new Set<number>(ghDir ? (await refreshPrCache($, ghDir)).done : [])
+  if (board) {
+    const slash = board.lastIndexOf('/')
+    const stat = (await listDir($, board.slice(0, slash))).find(entry => entry.name === board.slice(slash + 1) && entry.kind === 'file')
+    if (stat) {
+      const key = `${stat.mtimeMs}:${stat.size}`
+      if (boardCache.key !== key) {
+        const rows = (await readText($, board)).split('\n').flatMap(line => {
+          const row = /^\| #(\d+) \|.*\| Done \|(?:[^|]*\|){5}$/.exec(line)
+          return row?.[1] ? [Number(row[1])] : []
+        })
+        boardCache = { key, done: new Set(rows) }
+      }
+      for (const n of boardCache.done) done.add(n)
+    }
+  }
+  return done
+}
+
 type Ask = { n: number; text: string }
 
 function jsonObject(text: string): Record<string, unknown> | null {
@@ -438,10 +480,17 @@ async function readAsks($: $, options: PluginOptions): Promise<{ asks: Ask[]; de
   const [state, sid] = await Promise.all([resolveStateDir($, options), $.session.id()])
   if (!state || !sid) return { asks: [], detailDir: '' }
   const file = `${state}/asks/${sid}`
-  const asks = (await readText($, file))
+  const all = (await readText($, file))
     .split('\n')
     .map((text, i) => ({ n: i + 1, text: text.trim() }))
     .filter(ask => ask.text !== '')
+  // An ask keyed by a done ticket is hidden at once; the hook deletes it on its next write.
+  const ticketOf = (ask: Ask) => /#(\d+)/.exec(ask.text)?.[1]
+  const done = all.some(ticketOf) ? await readDoneTickets($, options) : new Set<number>()
+  const asks = all.filter(ask => {
+    const ticket = ticketOf(ask)
+    return ticket === undefined || !done.has(Number(ticket))
+  })
   return { asks, detailDir: `${file}.d` }
 }
 

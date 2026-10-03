@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code hook, one script for two events (picked from hook_event_name):
-#   Stop             pins the final question of the turn as an ask
+#   Stop             pins the final question of the turn as an ask, and clears the open
+#                    asks the message settles
 #   UserPromptSubmit clears the open asks the user's message answers
 # Scope: sessions with a /tmp/cc-session-roles marker (boot-report writes it at
 # every PM and TL boot). Silent and fail-open: any failure pins nothing, clears
@@ -22,6 +23,7 @@ PIN_MIN=0.6      # yes-probability that the final question is a decision
 CLEAR_MIN=0.6    # yes-probability that a message answers an ask
 PICK_MIN=0.4     # confidence to keep a context-line pick
 SAME_MIN=0.7     # yes-probability that a new question is the same decision as an open ask
+SETTLED_MIN=0.7  # yes-probability that the assistant's message settles an open ask
 OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
@@ -39,19 +41,32 @@ read -r role <"$ROLE_DIR/$sid" 2>/dev/null
 case "$role" in pm|tl-product|tl-platform) ;; *) exit 0 ;; esac
 [ -n "$cwd" ] || cwd=$PWD
 
-# The state dir is repo config, constant for a session: cached after the first git lookup.
+# Repo config, constant for a session: cached (three lines) after the first git lookup.
+# With ASKS_STATE_DIR the gh-status dir and the board snapshot sit beside it (the plugin's convention).
+MD_RE='^- `(session_bus_dir|gh_status_dir|board_snapshot_file)`: `([^`]*)`'
 resolve_state() {
-	local cache="${TMPDIR:-/tmp}/asks-hook-state.$sid" common local_md bus
-	state=${ASKS_STATE_DIR:-}
-	[ -n "$state" ] || read -r state <"$cache" 2>/dev/null
-	if [ -z "$state" ]; then
-		common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
-		local_md="${common%/.git}/.agent/orchestrate.local.md"
-		bus=$(sed -n 's/^- `session_bus_dir`: `\([^`]*\)`.*/\1/p' "$local_md" 2>/dev/null | head -n 1)
-		bus=${bus/#\~/$HOME}
-		[ -n "$bus" ] || return 1
-		state=$(dirname "${bus%/}")
-		printf '%s\n' "$state" >"$cache"
+	local cache="${TMPDIR:-/tmp}/asks-hook.$sid" common line v bus=
+	state=${ASKS_STATE_DIR:-} gh_dir= board_file=
+	if [ -n "$state" ]; then
+		gh_dir=$state/gh-status board_file=$state/board-snapshot.md
+	else
+		{ read -r state; read -r gh_dir; read -r board_file; } <"$cache" 2>/dev/null
+		if [ -z "$state" ]; then
+			common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
+			while IFS= read -r line; do
+				[[ $line =~ $MD_RE ]] || continue
+				v=${BASH_REMATCH[2]}
+				v=${v/#\~/${HOME:-}}
+				case ${BASH_REMATCH[1]} in
+				session_bus_dir) bus=$v ;;
+				gh_status_dir) gh_dir=${v%/} ;;
+				*) board_file=$v ;;
+				esac
+			done <"${common%/.git}/.agent/orchestrate.local.md"
+			[ -n "$bus" ] || return 1
+			state=$(dirname "${bus%/}")
+			printf '%s\n%s\n%s\n' "$state" "$gh_dir" "$board_file" >"$cache"
+		fi
 	fi
 	asks="$state/asks/$sid"
 	detail="$asks.d"
@@ -113,90 +128,11 @@ judge() {
 	ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
 }
 
-# ---------- Stop: pin the final question ----------
-capture() {
-	resolve_state && job_init || return 0
-	if [ -z "$msg" ]; then
-		[ -r "$tp" ] || return 0
-		msg=$(tail -n 200 "$tp" | jq -R 'fromjson? // empty' | jq -rs '
-			[ .[] | select(.type == "assistant" and (.isSidechain | not))
-			  | [ .message.content[]? | select(.type == "text") | .text ] | join("\n")
-			  | select(length > 0) ] | last // empty')
-	fi
-	[ -n "$msg" ] || return 0
-
-	# Last line ending in "?" (markdown closers allowed).
-	printf '%s\n' "$msg" | awk '
-		{ l = $0; sub(/[ \t]+$/, "", l); t = l; sub(/[*_`)"\047\342\200\235]+$/, "", t) }
-		t ~ /\?$/ { idx = NR; line = l }
-		END { if (idx) { print idx "\t" line } }' >"$tmp/cand.tsv"
-	[ -s "$tmp/cand.tsv" ] || return 0
-	local idx cand clause
-	idx=$(cut -f1 "$tmp/cand.tsv")
-	cand=$(cut -f2- "$tmp/cand.tsv" | sed -E 's/^[[:space:]]*([-*>]|[0-9]+[.)]|#+)[[:space:]]+//; s/\*\*//g; s/^[[:space:]]+//')
-	if [ "${#cand}" -gt 110 ]; then # keep the last clause, else the last 100 chars from a word start
-		clause=$(printf '%s' "$cand" | sed -E 's/^.*[.:;] ([^.:;]{20,})$/\1/')
-		if [ "${#clause}" -le 110 ] && [ "$clause" != "$cand" ]; then cand=$clause
-		else cand="…$(printf '%s' "${cand: -100}" | sed -E 's/^[^ ]* //')"; fi
-	fi
-	local prev=
-	while [ "$cand" != "$prev" ]; do # a cut at a clause can leave a leading ": "
-		prev=$cand
-		cand=${cand#[[:space:]:;,-]}; cand=${cand#–}; cand=${cand#—}
-	done
-	[ -n "$cand" ] || return 0
-	if [ -z "$DRY" ] && grep -qxF -- "$cand" "$asks" 2>/dev/null; then return 0; fi
-
-	# Jev also gets one same-decision question per open ask, unless the candidate's first #N matches
-	# one: that ask is replaced by the #N rule, with no Jev call.
-	local num= line
-	[[ $cand =~ \#[0-9]+ ]] && num=${BASH_REMATCH[0]}
-	: >"$tmp/open.txt"
-	if [ -s "$asks" ]; then
-		cat "$asks" >"$tmp/open.txt"
-		if [ -n "$num" ]; then
-			while IFS= read -r line; do
-				[[ $line =~ \#[0-9]+ && ${BASH_REMATCH[0]} == "$num" ]] && { : >"$tmp/open.txt"; break; }
-			done <"$asks"
-		fi
-	fi
-
-	# Jev sees the candidate and the 12 non-empty lines before it (the choices), the open ask lines, nothing else.
-	printf '%s\n' "$msg" | awk -v idx="$idx" '
-		NR < idx && $0 ~ /[^ \t]/ { n++; i[n] = NR; t[n] = $0 }
-		END { for (k = n > 12 ? n - 11 : 1; k <= n; k++) { gsub(/\t/, " ", t[k]); print i[k] "\t" substr(t[k], 1, 200) } }' >"$tmp/prev.tsv"
-
-	jq -n --arg cand "$cand" '{final_question:$cand}' >"$tmp/state.json"
-	jq -n --rawfile prev "$tmp/prev.tsv" --rawfile open "$tmp/open.txt" '
-		($prev | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries
-		 + {none: "No line fits."}) as $lines
-		| def pick($q): {type:"choice", instructions:$q, criteria:$lines};
-		{
-		  decision: {type:"noul",
-		    instructions: "Is `final_question` a decision or question the user must answer before work can continue (not rhetorical, not a status line, not an offer that needs no reply)?"},
-		  problem: pick("Which listed line states the problem or situation that `final_question` is about? Choose none if no line does."),
-		  options: pick("Which listed line states one of the options or alternatives offered by `final_question`? Choose none if no line does."),
-		  rec: pick("Which listed line states the recommendation behind `final_question`? Choose none if no line does.")
-		}
-		+ ($open | split("\n") | to_entries | map(select(.value != ""))
-		   | map({key: "same_\(.key + 1)", value: {type:"noul", instructions:{open_ask: .value,
-		     question: "Is `final_question` the same decision as `open_ask`? Answer yes only if one answer settles both, even when worded differently; a different decision on the same ticket or topic is not the same."}}})
-		   | from_entries)' >"$tmp/q.json"
-
-	local score
-	judge capture "$cand" || return 0
-	score=$(printf '%s' "$ans" | jq -r '.decision.noul')
-	local scores
-	scores=$(printf '%s' "$ans" | jq -c '{decision:.decision.noul,
-		problem:[.problem.choice,.problem.confidence], options:[.options.choice,.options.confidence], rec:[.rec.choice,.rec.confidence],
-		same:([to_entries[] | select(.key | startswith("same_")) | {key: (.key | ltrimstr("same_")), value: .value.noul}] | from_entries)}')
-	if ! awk -v s="$score" -v m="$PIN_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
-		log capture "$cand" skip "$scores"
-		[ -z "$DRY" ] || printf 'SKIP %s\n     scores %s\n' "$cand" "$scores"
-		return 0
-	fi
-
-	local ctx="" seen=" " key label conf pick text min
+# ---------- Stop: pin the final question, clear the asks the message settles ----------
+# build_ctx: sets $ctx from Jev's picks in $ans (up to three context lines) and the ticket link.
+build_ctx() {
+	local seen=" " key label conf pick text min slug
+	ctx=""
 	for key in problem options rec; do
 		pick=$(printf '%s' "$ans" | jq -r ".$key.choice")
 		conf=$(printf '%s' "$ans" | jq -r ".$key.confidence")
@@ -230,72 +166,254 @@ capture() {
 		esac
 		ctx="$ctx$label ${text:0:200}"$'\n'
 	done
-	local slug
 	if [ -n "$num" ]; then
 		slug=$(git -C "$cwd" remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')
 		ctx="${ctx}link: https://github.com/${slug:-EZ-OPD/ez-opd-services}/issues/${num#\#}"$'\n'
 	fi
+}
 
-	# The best same-decision score at SAME_MIN or above names the open ask this one replaces.
-	local same_n= same_s= replace= decision=pin
-	if [ -s "$tmp/open.txt" ]; then
-		IFS=$'\t' read -r same_n same_s < <(printf '%s' "$ans" | jq -r '[to_entries[] | select(.key | startswith("same_"))
-			| {n: (.key | ltrimstr("same_")), s: .value.noul}] | max_by(.s) // empty | [.n, .s] | @tsv')
-		if [[ $same_n =~ ^[0-9]+$ ]] && awk -v s="$same_s" -v m="$SAME_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
-			replace=$(sed -n "${same_n}p" "$tmp/open.txt")
-			[ -z "$replace" ] || decision=replace
+# One Jev request per Stop. The final question, if the message has one, is gated as a decision and
+# compared with each open ask; every open ask is also asked whether the message settles it.
+capture() {
+	resolve_state && job_init || return 0
+	tick
+	snap=$now
+	if [ -z "$msg" ]; then
+		[ -r "$tp" ] || return 0
+		msg=$(tail -n 200 "$tp" | jq -R 'fromjson? // empty' | jq -rs '
+			[ .[] | select(.type == "assistant" and (.isSidechain | not))
+			  | [ .message.content[]? | select(.type == "text") | .text ] | join("\n")
+			  | select(length > 0) ] | last // empty')
+	fi
+	[ -n "$msg" ] || return 0
+
+	# Last line ending in "?" (markdown closers allowed); none when the message asks nothing.
+	printf '%s\n' "$msg" | awk '
+		{ l = $0; sub(/[ \t]+$/, "", l); t = l; sub(/[*_`)"\047\342\200\235]+$/, "", t) }
+		t ~ /\?$/ { idx = NR; line = l }
+		END { if (idx) { print idx "\t" line } }' >"$tmp/cand.tsv"
+	local idx cand= prev= num= line have_asks=
+	if [ -s "$tmp/cand.tsv" ]; then
+		idx=$(cut -f1 "$tmp/cand.tsv")
+		cand=$(cut -f2- "$tmp/cand.tsv" | sed -E 's/^[[:space:]]*([-*>]|[0-9]+[.)]|#+)[[:space:]]+//; s/\*\*//g; s/^[[:space:]]+//')
+		# The ask is the question sentence alone: the last full sentence of the line (the boundary is
+		# . ! ? or : plus a space, or the line start); one still over the cap keeps its start, cut at a word.
+		cand=$(printf '%s' "$cand" | sed -E 's/^.*[.!?:] ([^.!?:])/\1/')
+		if [ "${#cand}" -gt 110 ]; then
+			cand=${cand:0:108}
+			case "$cand" in *" "*) cand=${cand% *} ;; esac
+			while [ "${cand%[[:space:],;:-]}" != "$cand" ]; do cand=${cand%[[:space:],;:-]}; done
+			cand="${cand}…?"
+		fi
+		while [ "$cand" != "$prev" ]; do # a cut at a sentence can leave a leading ": "
+			prev=$cand
+			cand=${cand#[[:space:]:;,-]}; cand=${cand#–}; cand=${cand#—}
+		done
+	fi
+	[ -s "$asks" ] && have_asks=1
+	[ -n "$cand" ] || [ -n "$have_asks" ] || return 0
+	if [ -n "$cand" ] && [ -z "$DRY" ] && grep -qxF -- "$cand" "$asks" 2>/dev/null; then return 0; fi
+	[[ $cand =~ \#[0-9]+ ]] && num=${BASH_REMATCH[0]}
+
+	# The open asks, as they were when the request was built. Same-decision questions are skipped
+	# when the candidate's first #N matches one: that ask is replaced by the #N rule, with no Jev call.
+	local gate=false same=false
+	: >"$tmp/asks.txt"
+	[ -z "$have_asks" ] || cat "$asks" >"$tmp/asks.txt"
+	[ -z "$cand" ] || gate=true
+	if [ -n "$cand" ] && [ -n "$have_asks" ]; then
+		same=true
+		if [ -n "$num" ]; then
+			while IFS= read -r line; do
+				[[ $line =~ \#[0-9]+ && ${BASH_REMATCH[0]} == "$num" ]] && { same=false; break; }
+			done <"$tmp/asks.txt"
+		fi
+	fi
+
+	# Jev sees the candidate and the 12 non-empty lines before it (the choices), the message's last
+	# 12 non-empty lines and the open ask lines (each cut to 200 chars), nothing else.
+	: >"$tmp/prev.tsv"
+	[ -z "$cand" ] || printf '%s\n' "$msg" | awk -v idx="$idx" '
+		NR < idx && $0 ~ /[^ \t]/ { n++; i[n] = NR; t[n] = $0 }
+		END { for (k = n > 12 ? n - 11 : 1; k <= n; k++) { gsub(/\t/, " ", t[k]); print i[k] "\t" substr(t[k], 1, 200) } }' >"$tmp/prev.tsv"
+	local tailtxt=
+	[ -z "$have_asks" ] || tailtxt=$(printf '%s\n' "$msg" | awk '
+		$0 ~ /[^ \t]/ { n++; t[n] = substr($0, 1, 200) }
+		END { for (k = n > 12 ? n - 11 : 1; k <= n; k++) print t[k] }')
+
+	jq -n --arg cand "$cand" --arg tail "$tailtxt" '
+		(if $cand != "" then {final_question:$cand} else {} end) + (if $tail != "" then {assistant_message:$tail} else {} end)' >"$tmp/state.json"
+	jq -n --rawfile prev "$tmp/prev.tsv" --rawfile asks "$tmp/asks.txt" --argjson gate "$gate" --argjson same "$same" '
+		($prev | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries
+		 + {none: "No line fits."}) as $lines
+		| def pick($q): {type:"choice", instructions:$q, criteria:$lines};
+		($asks | split("\n") | to_entries | map(select(.value != ""))) as $open
+		| (if $gate then {
+		    decision: {type:"noul",
+		      instructions: "Is `final_question` a decision or question the user must answer before work can continue (not rhetorical, not a status line, not an offer that needs no reply)?"},
+		    problem: pick("Which listed line states the problem or situation that `final_question` is about? Choose none if no line does."),
+		    options: pick("Which listed line states one of the options or alternatives offered by `final_question`? Choose none if no line does."),
+		    rec: pick("Which listed line states the recommendation behind `final_question`? Choose none if no line does.")
+		  } else {} end)
+		+ (if $same then ($open | map({key: "same_\(.key + 1)", value: {type:"noul", instructions:{open_ask: .value,
+		    question: "Is `final_question` the same decision as `open_ask`? Answer yes only if one answer settles both, even when worded differently; a different decision on the same ticket or topic is not the same."}}})
+		   | from_entries) else {} end)
+		+ ($open | map({key: "settled_\(.key + 1)", value: {type:"noul", instructions:{open_ask: .value,
+		    question: "Does `assistant_message` say that `open_ask` is settled, answered or no longer waiting on the user? A statement that nothing is waiting on the user settles every open ask. A message that only mentions the topic, or still waits on the user for it, does not."}}})
+		   | from_entries)' >"$tmp/q.json"
+
+	local score scores
+	judge capture "${cand:--}" || return 0
+	scores=$(printf '%s' "$ans" | jq -c '
+		(if .decision then {decision:.decision.noul,
+		   problem:[.problem.choice,.problem.confidence], options:[.options.choice,.options.confidence], rec:[.rec.choice,.rec.confidence]} else {} end)
+		+ {same:([to_entries[] | select(.key | startswith("same_")) | {key: (.key | ltrimstr("same_")), value: .value.noul}] | from_entries),
+		   settled:([to_entries[] | select(.key | startswith("settled_")) | {key: (.key | ltrimstr("settled_")), value: .value.noul}] | from_entries)}')
+
+	# The asks the message settles, at SETTLED_MIN or above.
+	local drops=() n t
+	while IFS= read -r n; do
+		[[ $n =~ ^[0-9]+$ ]] || continue
+		t=$(sed -n "${n}p" "$tmp/asks.txt")
+		[ -z "$t" ] || drops+=("$t")
+	done < <(printf '%s' "$ans" | jq -r --argjson m "$SETTLED_MIN" '[to_entries[] | select(.key | startswith("settled_"))
+		| select(.value.noul >= $m) | .key | ltrimstr("settled_")] | .[]')
+
+	local skipped=
+	if [ -n "$cand" ]; then
+		score=$(printf '%s' "$ans" | jq -r '.decision.noul')
+		if ! awk -v s="$score" -v m="$PIN_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
+			log capture "$cand" skip "$scores"
+			[ -z "$DRY" ] || printf 'SKIP %s\n     scores %s\n' "$cand" "$scores"
+			skipped=1
+			cand=
+		fi
+	fi
+
+	local ctx="" replace= decision=pin same_n= same_s=
+	if [ -n "$cand" ]; then
+		build_ctx
+		# The best same-decision score at SAME_MIN or above names the open ask this one replaces.
+		if [ "$same" = true ]; then
+			IFS=$'\t' read -r same_n same_s < <(printf '%s' "$ans" | jq -r '[to_entries[] | select(.key | startswith("same_"))
+				| {n: (.key | ltrimstr("same_")), s: .value.noul}] | max_by(.s) // empty | [.n, .s] | @tsv')
+			if [[ $same_n =~ ^[0-9]+$ ]] && awk -v s="$same_s" -v m="$SAME_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
+				replace=$(sed -n "${same_n}p" "$tmp/asks.txt")
+				[ -z "$replace" ] || decision=replace
+			fi
 		fi
 	fi
 
 	if [ -n "$DRY" ]; then
-		log capture "$cand" "$decision-dry" "$scores"
-		printf '%s %s\n%s' "$([ "$decision" = pin ] && echo PIN || echo REPLACE)" "$cand" "$(printf '%s' "$ctx" | sed 's/^/     | /')"
-		[ -z "$replace" ] || printf '\n     replaces %s' "$replace"
-		printf '\n     scores %s\n' "$scores"
+		if [ -n "$cand" ]; then
+			log capture "$cand" "$decision-dry" "$scores"
+			printf '%s %s\n%s' "$([ "$decision" = pin ] && echo PIN || echo REPLACE)" "$cand" "$(printf '%s' "$ctx" | sed 's/^/     | /')"
+			[ -z "$replace" ] || printf '\n     replaces %s' "$replace"
+			printf '\n'
+		fi
+		for t in ${drops[@]+"${drops[@]}"}; do printf 'SETTLED %s\n' "$t"; done
+		if [ -z "$cand" ] && [ -z "$skipped" ]; then
+			[ "${#drops[@]}" -gt 0 ] || printf 'KEEP all open asks\n'
+			printf '     scores %s\n' "$scores"
+		elif [ -n "$cand" ]; then printf '     scores %s\n' "$scores"
+		fi
 		return 0
 	fi
-	lock || { log capture "$cand" lock-failed; return 0; }
-	# A prompt that landed while Jev ran may already have answered this question.
-	if [ "$asks.seen" -nt "${stamp:-/nonexistent}" ]; then
-		unlock
-		log capture "$cand" answered-first "$scores"
+	if [ -z "$cand" ] && [ "${#drops[@]}" -eq 0 ]; then
+		[ -n "$skipped" ] || log capture "-" keep "$scores"
 		return 0
 	fi
-	if grep -qxF -- "$cand" "$asks" 2>/dev/null; then unlock; return 0; fi
-	rewrite_asks "$cand" "$ctx" ${replace:+"$replace"}
+	lock || { log capture "${cand:--}" lock-failed; return 0; }
+	if [ -n "$cand" ]; then
+		if [ "$asks.seen" -nt "${stamp:-/nonexistent}" ]; then # a prompt landed while Jev ran: it may have answered this
+			log capture "$cand" answered-first "$scores"
+			cand= ctx= replace=
+		elif grep -qxF -- "$cand" "$asks" 2>/dev/null; then cand= ctx= replace=
+		fi
+	fi
+	if [ -n "$cand" ] || [ "${#drops[@]}" -gt 0 ]; then
+		rewrite_asks "$cand" "$ctx" ${replace:+"$replace"} ${drops[@]+"${drops[@]}"}
+	fi
 	unlock
-	log capture "$cand" "$decision" "$scores"
+	[ -z "$cand" ] || log capture "$cand" "$decision" "$scores"
+	for t in ${removed[@]+"${removed[@]}"}; do [ "$t" = "$replace" ] || log capture "$t" settled "$scores"; done
+	log_dismissed
 }
+
+# ticket_done <N>: its PR is MERGED or CLOSED in the gh-status files, or its board row is Done
+# ($board_done, set by rewrite_asks). Local files only; a missing file means not done.
+ticket_done() {
+	if [ -n "$gh_dir" ] && [ -r "$gh_dir/status/pr-$1.json" ]; then
+		case $(jq -r '.state // empty' "$gh_dir/status/pr-$1.json" 2>/dev/null) in MERGED|CLOSED) return 0 ;; esac
+	fi
+	[[ $board_done == *" $1 "* ]]
+}
+
+log_dismissed() {
+	local t
+	for t in ${dismissed[@]+"${dismissed[@]}"}; do log clear "$t" done-ticket; done
+}
+
+# tick: $now = microseconds since the epoch (whole seconds before bash 5), a fork-free clock.
+tick() { now=${EPOCHREALTIME//[.,]/}; [ -n "$now" ] || printf -v now '%(%s)T000000' -1; }
 
 # ---------- the one writer of the asks file (call it under the lock) ----------
 # rewrite_asks <new ask or ""> <its context> <dropped ask text>...: append the new ask, keep only
 # the newest ask per ticket (its first #N; without one, its whole text), drop the lines with exactly
 # the dropped texts, and renumber the detail files to follow their lines. Texts, not line numbers:
-# the file may have changed since a judgment. Dropped lines land in $removed.
+# the file may have changed since a judgment. Dropped lines land in $removed. An ask whose first #N
+# is a done ticket is dropped too (into $dismissed): its PR is MERGED or CLOSED in the gh-status
+# files, or its board row is Done.
+# Every line has a pinned-at stamp (microseconds) in the sidecar $asks.meta, parallel to the file; a
+# line with no stamp is old. A dropped text only removes a line stamped at or before $snap, the time
+# its judgment read the file: an identical ask pinned while Jev ran is not touched.
 rewrite_asks() {
-	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop
-	local -a text keep
+	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop nums='' k=0 st
+	local -a text keep ids stamp
 	shift 2
-	removed=()
+	removed=() dismissed=() board_done=''
 	while IFS= read -r line; do
 		n=$((n + 1))
 		text[n]=$line
 	done <"$asks"
-	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; }
+	while IFS= read -r line; do
+		k=$((k + 1))
+		stamp[k]=$line
+	done <"$asks.meta"
+	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; tick; stamp[n]=$now; }
 	for ((i = n; i >= 1; i--)); do
 		line=${text[i]}
 		[ -n "$line" ] || continue
-		if [[ $line =~ \#[0-9]+ ]]; then id=${BASH_REMATCH[0]}; else id=$line; fi
+		if [[ $line =~ \#[0-9]+ ]]; then id=${BASH_REMATCH[0]}; nums="$nums ${id#\#}"; else id=$line; fi
 		case "$seen" in *$'\n'"$id"$'\n'*) continue ;; esac
 		seen="$seen$id"$'\n'
 		keep[i]=1
+		ids[i]=$id
+	done
+	if [ -n "$nums" ] && [ -r "$board_file" ]; then
+		board_done=$(awk -v want="$nums" 'BEGIN { n = split(want, a, " "); for (k = 1; k <= n; k++) w[a[k]] = 1 }
+			/^\| #[0-9]+ / { id = $2; sub(/^#/, "", id); m = split($0, c, "|"); st = c[m - 6]; gsub(/^ +| +$/, "", st)
+				if ((id in w) && st == "Done") printf " %s", id }
+			END { print " " }' "$board_file")
+	fi
+	for ((i = 1; i <= n; i++)); do
+		[ -n "${keep[i]:-}" ] || continue
+		[[ ${ids[i]} =~ ^\#[0-9]+$ ]] && ticket_done "${ids[i]#\#}" || continue
+		unset 'keep[i]'
+		dismissed+=("${text[i]}")
 	done
 	[ -z "$ctx" ] || mkdir -p "$detail"
 	: >"$asks.new"
+	: >"$asks.meta.new"
 	for ((i = 1; i <= n; i++)); do
 		line=${text[i]}
 		drop=
 		for t in "$@"; do [ "$line" = "$t" ] && drop=1; done
+		if [ -n "$drop" ] && [ -n "${snap:-}" ]; then
+			st=${stamp[i]:-0}
+			[[ $st =~ ^[0-9]+$ ]] || st=0
+			[ "$st" -le "$snap" ] || drop=
+		fi
 		if [ -z "${keep[i]:-}" ] || [ -n "$drop" ]; then
 			[ -z "$drop" ] || removed+=("$line")
 			[ ! -f "$detail/$i.md" ] || rm -f "$detail/$i.md"
@@ -303,12 +421,14 @@ rewrite_asks() {
 		fi
 		m=$((m + 1))
 		printf '%s\n' "$line" >>"$asks.new"
+		printf '%s\n' "${stamp[i]:-0}" >>"$asks.meta.new"
 		if [ -n "$new" ] && [ "$i" -eq "$n" ]; then
 			if [ -n "$ctx" ]; then printf '%s' "$ctx" >"$detail/$m.md"; elif [ -f "$detail/$m.md" ]; then rm -f "$detail/$m.md"; fi
 		elif [ "$m" -ne "$i" ] && [ -f "$detail/$i.md" ]; then
 			mv "$detail/$i.md" "$detail/$m.md"
 		fi
 	done
+	mv "$asks.meta.new" "$asks.meta"
 	mv "$asks.new" "$asks"
 }
 
@@ -325,11 +445,14 @@ apply_clear() {
 	rewrite_asks "" "" "$@"
 	unlock
 	for t in ${removed[@]+"${removed[@]}"}; do log clear "$t" clear "$scores"; done
+	log_dismissed
 }
 
 # The Jev part: one yes/no per open ask, judged over a snapshot of the file.
 clear_jev() {
 	resolve_state && job_init || return 0
+	tick
+	snap=$now
 	local n=0 line k v scores texts=()
 	printf '{}' >"$tmp/q.json"
 	jq -n --arg prompt "$prompt" '{user_message:$prompt}' >"$tmp/state.json"
@@ -384,6 +507,8 @@ NUM_RE='(^|[^[:alnum:]])#?([0-9]+)([^[:alnum:]]|$)'
 # must match an open ask. Returns 1 to hand the reply to Jev.
 short_clear() {
 	local rest=$prompt reply= line n found targets=() nums=()
+	tick
+	snap=$now
 	[ "${#prompt}" -le 120 ] || return 1
 	while [[ $rest =~ $NUM_RE ]]; do
 		nums+=("${BASH_REMATCH[2]}")
@@ -409,8 +534,10 @@ short_clear() {
 
 case "$event" in
 Stop)
-	# No "?" anywhere in the message: no work at all (an empty msg falls back to the transcript in the job).
-	[ -z "$msg" ] || [[ $msg == *\?* ]] || exit 0
+	# No "?" and no open ask: no work at all (an empty msg falls back to the transcript in the job).
+	if [ -n "$msg" ] && [[ $msg != *\?* ]]; then
+		resolve_state && [ -s "$asks" ] || exit 0
+	fi
 	stamp="${TMPDIR:-/tmp}/asks-stamp.$sid.$$"
 	: >"$stamp"
 	job capture
