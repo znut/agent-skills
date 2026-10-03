@@ -55,7 +55,7 @@ const ASK_ACCENT = '#CBA6F7'
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
-let mainLog = { key: '', sha: '', queue: 0 }
+let mainLog = { key: '', sha: '', queue: { running: 0, queued: 0 } }
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -287,7 +287,7 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   return { prs, gates }
 }
 
-async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: number } | null> {
+async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: { running: number; queued: number } } | null> {
   const ghDir = await resolveGhStatusDir($, options)
   if (!ghDir) return null
   const root = parentDir(ghDir)
@@ -297,7 +297,7 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
   const main8 = state.sha.slice(0, 8)
   const logPath = `${root}/main-ci/run.log`
   const logStat = (await listDir($, `${root}/main-ci`)).find(entry => entry.name === 'run.log' && entry.kind === 'file')
-  let queue = 0
+  let queue = { running: 0, queued: 0 }
   if (logStat) {
     const key = `${logStat.mtimeMs}:${logStat.size}`
     if (mainLog.key === key && mainLog.sha === main8) queue = mainLog.queue
@@ -487,6 +487,22 @@ const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as cons
 
 const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
 
+// boot-report writes the role marker after the session starts, so the pane waits for it a few ticks.
+const MANAGER_ROLES = new Set(['pm', 'tl-product', 'tl-platform'])
+const ROLE_DIR = '/tmp/cc-session-roles'
+const ROLE_WAIT_TICKS = 60
+let roleTicksLeft = 0
+
+async function openForManager($: $): Promise<void> {
+  if (roleTicksLeft <= 0) return
+  roleTicksLeft--
+  const sid = await $.session.id()
+  if (!sid || /[/]|\.\./.test(sid)) return
+  if (!MANAGER_ROLES.has(await readText($, `${ROLE_DIR}/${sid}`))) return
+  roleTicksLeft = 0
+  await $.ui.open({ id: PANE, title: 'Workers' })
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -495,7 +511,10 @@ export const register: Register = (on, options) => {
     })
     // One tick redraws the pane and the band (each re-reads its files while drawn)
     // and drops an expanded ask whose line is gone, so a later ask at that line opens closed.
+    roleTicksLeft = e.isInteractive ? ROLE_WAIT_TICKS : 0
+    await openForManager($)
     $.clock.every(REFRESH_MS, async () => {
+      await openForManager($)
       $.ui.invalidate('ui.render')
       const open = await read($, openAsk)
       if (open === null) return
@@ -540,7 +559,10 @@ export const register: Register = (on, options) => {
           <Box key="main-strip" flexDirection="row">
             <Text dimColor>{`main ${main.sha} · `}</Text>
             <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
-            <Text dimColor>{` · preview queue ${main.queue}`}</Text>
+            <Text dimColor>{' · preview '}</Text>
+            <Text color={main.queue.running > 0 ? 'green' : undefined} dimColor={main.queue.running === 0}>{main.queue.running}</Text>
+            <Text dimColor>/</Text>
+            <Text color={main.queue.queued > 0 ? 'red' : undefined} dimColor={main.queue.queued === 0}>{main.queue.queued}</Text>
           </Box>
         )}
         {prState.prs.length > 0 && (

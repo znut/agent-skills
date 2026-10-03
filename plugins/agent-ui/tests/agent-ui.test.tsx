@@ -203,7 +203,7 @@ describe('workers pane', () => {
       [`${root}/gate/pr-4390/${head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`]: JSON.stringify({ green: false, conflict: true }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main abcdef01 · green · preview queue 0')
+    expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
     expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/EZ-OPD/ez-opd-services/pull/4390')
     expect((await ui.find({ type: 'Text', text: 'green' }))?.props.color).toBe('green')
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
@@ -222,7 +222,7 @@ describe('workers pane', () => {
       [p2]: JSON.stringify({ number: 4421, state: 'OPEN', isDraft: false, title: 'two', headOid: '22222222abcdef' }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main feedbeef · running · preview queue 0')
+    expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
     expect((await ui.find({ type: 'Text', text: 'running' }))?.props.color).toBeUndefined()
     await ui.unmount()
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -250,20 +250,21 @@ describe('workers pane', () => {
       [`${root}/main-ci/run.log`]: log,
     })
     for (const [name, log, expected] of [
-      ['a queued PR counts', [queued(4390)], '1'],
-      ['a start line counts once after queued', [queued(4390), start(4390), queued(4391)], '2'],
-      ['a green result drains it', [queued(4390), `preview #4390 11111110-${MAIN}: green`], '0'],
-      ['a red result drains it', [queued(4390), `preview #4390 11111110-${MAIN}: RED — /x/pr-4390/log`], '0'],
-      ['a conflict drains it', [queued(4390), `preview #4390 11111110-${MAIN}: CONFLICT`], '0'],
-      ['a cancel (no sha pair) drains it', [queued(4390), 'preview #4390: cancelled'], '0'],
-      ['a head move (no sha pair) drains it', [queued(4390), 'preview #4390: head moved 11111110 -> 22222222; cancelling its preview'], '0'],
-      ['a requeue on a new head is one entry', [queued(4390), `preview #4390 22222222-${MAIN}: queued (ready)`], '1'],
-      ['entries for an older main are not counted', ['preview #4390 11111110-ffffffff: queued (ready)'], '0'],
+      ['queued only', [queued(4390)], '0/1'],
+      ['queued then start', [queued(4390), start(4390)], '1/0'],
+      ['one running and one queued', [start(4390), queued(4391)], '1/1'],
+      ['start then green', [start(4390), `preview #4390 11111110-${MAIN}: green`], '0/0'],
+      ['red result drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: RED — /x/pr-4390/log`], '0/0'],
+      ['conflict drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: CONFLICT`], '0/0'],
+      ['cancel without a sha pair drains it', [queued(4390), 'preview #4390: cancelled'], '0/0'],
+      ['head move without a sha pair drains it', [queued(4390), 'preview #4390: head moved 11111110 -> 22222222; cancelling its preview'], '0/0'],
+      ['requeue on a new head replaces the running state', [start(4390), `preview #4390 22222222-${MAIN}: queued (ready)`], '0/1'],
+      ['an older main is excluded', ['preview #4390 11111110-ffffffff: queued (ready)'], '0/0'],
     ] as const) {
       test(name, async ($, on) => {
         world(on, queueFiles(log.join('\n')))
         const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-        expect(/preview queue (\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe(expected)
+        expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe(expected)
         await ui.unmount()
       })
     }
@@ -629,4 +630,49 @@ describe('asks band', () => {
       }
     })
   }
+})
+
+describe('pane auto-open', () => {
+  const ROLE = `/tmp/cc-session-roles/${SID}`
+
+  async function start([$, on]: Parameters<Parameters<typeof test>[1]>, files: Record<string, string>, isInteractive = true) {
+    const w = world(on, { ...RUN_FILES, ...files })
+    const opened: string[] = []
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    on('ui.open', ($, e) => {
+      opened.push(e.id)
+      return { value: {} }
+    })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive })
+    return { w, opened }
+  }
+
+  for (const role of ['pm', 'tl-product', 'tl-platform']) {
+    test(`opens the pane at start for a ${role} session`, async ($, on) => {
+      const { opened } = await start([$, on], { [ROLE]: role })
+      expect(opened).toEqual(['workers'])
+    })
+  }
+
+  test('leaves the pane closed for an unmarked or non-manager session', async ($, on) => {
+    const { w, opened } = await start([$, on], { [ROLE]: 'worker' })
+    await w.clock.advance(3000)
+    expect(opened).toEqual([])
+  })
+
+  test('opens once when the marker is written after start', async ($, on) => {
+    const { w, opened } = await start([$, on], {})
+    expect(opened).toEqual([])
+    w.files[ROLE] = 'tl-platform'
+    await w.clock.advance(3000)
+    await w.clock.advance(3000)
+    expect(opened).toEqual(['workers'])
+  })
+
+  test('a headless session never opens a pane', async ($, on) => {
+    const { opened } = await start([$, on], { [ROLE]: 'pm' }, false)
+    expect(opened).toEqual([])
+  })
 })

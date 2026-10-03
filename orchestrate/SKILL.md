@@ -66,25 +66,9 @@ resume fails.
 
 ## Pinned asks
 
-Every question or decision the manager puts to the user also goes as one
-line (`#N short ask?`, ≤~100 chars) to `<state>/asks/<session-id>` — `<state>`
-per [session-bus.md §State directory](session-bus.md#state-directory),
-`<session-id>` the harness's own session ID (`CLAUDE_CODE_SESSION_ID`,
-`CODEX_THREAD_ID`, or `PI_SESSION_ID`). Chat scrolls
-out of view while the user works elsewhere; the file lets each harness pin
-the ask near the prompt where its own UI allows. Delete the line the moment
-the user answers; on wrap, empty the file
-([session-bus.md §Wrap](session-bus.md#wrap)).
-Name the GitHub ticket as `#N` in each ask line, or end the line with a link.
-With each ask, MUST write its context (what it is about, its options and
-recommendation) to `<state>/asks/<session-id>.d/<n>.md` in at most three short
-lines, plus an optional `link: <url>` line to a GitHub ticket or PR, image, or
-SSOT mock HTML; put longer context behind the link. An optional `options: a | b`
-line counts toward the three. The renderer slices the detail text to three
-lines and draws the `link:` line after them. `<n>` is the line's
-1-based number. Delete `<n>.md` with its line, then rename each later
-`<m>.md` to `<m-1>.md` in ascending order — stale detail files point at the
-wrong ask.
+The asks hook ([tools/hooks/README.md](../tools/hooks/README.md#asks-hook-stop-and-userpromptsubmit)) pins and clears asks (a reply on its fixed short-reply list clears the newest ask, or the asks whose `#N` it names; any other message is judged); managers write none. A manager still ends a turn with the question as its last line, `#N` included.
+
+File format (the `agent-ui` plugin reads it): `<state>/asks/<session-id>` holds one line per ask, one ask per ticket (a newer ask with the same first `#N` replaces the older); `<state>` per [session-bus.md §State directory](session-bus.md#state-directory). `<state>/asks/<session-id>.d/<n>.md` holds its context: at most three short lines, plus an optional `options: a | b` line (counts toward the three) and an optional `link: <url>` line. `<n>` is the ask's 1-based line number. A delete renumbers the later `<m>.md` to `<m-1>.md` in ascending order.
 
 ## Choose the base
 

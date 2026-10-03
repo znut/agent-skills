@@ -92,15 +92,16 @@ export function busStateDir(localMd: string, home: string): string | null {
 
 // Previews still queued or running on `main8`, replayed from main-ci's run.log. A PR's
 // entry ends with its result, a cancel, or a head move (the last two carry no sha pair).
-export function previewQueue(log: string, main8: string): number {
-  const active = new Map<number, string>()
+export function previewQueue(log: string, main8: string): { running: number; queued: number } {
+  const active = new Map<number, { main: string; state: 'queued' | 'running' }>()
   for (const line of log.split('\n')) {
     const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|canceled|head moved)/i.exec(line)
     if (!match) continue
     const [, pr = '', main, event = ''] = match
     if (/^(queued|start)$/i.test(event)) {
-      if (main) active.set(Number(pr), main)
+      if (main) active.set(Number(pr), { main, state: /^start$/i.test(event) ? 'running' : 'queued' })
     } else active.delete(Number(pr))
   }
-  return [...active.values()].filter(main => main === main8).length
+  const current = [...active.values()].filter(entry => entry.main === main8)
+  return { running: current.filter(entry => entry.state === 'running').length, queued: current.filter(entry => entry.state === 'queued').length }
 }
