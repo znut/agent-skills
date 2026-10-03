@@ -5,11 +5,13 @@
 # Scope: sessions with a /tmp/cc-session-roles marker (boot-report writes it at
 # every PM and TL boot). Silent and fail-open: any failure pins nothing, clears
 # nothing, exits 0. A candidate is the last "?" line of the final assistant
-# message; Jev (TypeSafe) judges it, with a hard 3 s cap per call.
+# message; Jev (TypeSafe) judges it, with a hard 3 s cap per call, detached so the
+# hook itself never waits on it.
 # File format (orchestrate/SKILL.md §Pinned asks): <state>/asks/<sid> holds one
 # line per ask; <state>/asks/<sid>.d/<n>.md its context, renumbered on delete.
 # Env overrides (tests): ASKS_STATE_DIR, ASKS_ROLE_DIR, ASKS_TOKEN_FILE,
-# ASKS_DRY_RUN=1 (judge and print the decision, write no ask).
+# ASKS_DRY_RUN=1 (judge and print the decision, write no ask), ASKS_SYNC=1
+# (run the Jev part in the foreground).
 
 set -u
 [ -n "${ASKS_DEBUG:-}" ] || exec 2>/dev/null
@@ -23,38 +25,68 @@ ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
 TOKEN_FILE=${ASKS_TOKEN_FILE:-$HOME/.config/typesafe.token}
 DRY=${ASKS_DRY_RUN:-}
 
-input=$(cat)
+# Inline work uses builtins and one jq: each fork costs ~5 ms of every turn and prompt.
+input=$(</dev/stdin)
 field() { printf '%s' "$input" | jq -r "$1 // empty"; }
 
-sid=$(field .session_id)
-event=$(field .hook_event_name)
-cwd=$(field .cwd)
+eval "$(printf '%s' "$input" | jq -r '@sh "sid=\(.session_id // "") event=\(.hook_event_name // "") cwd=\(.cwd // "") msg=\(.last_assistant_message // "") prompt=\(.prompt // "")"')"
 case "$sid" in ""|*/*|*..*) exit 0 ;; esac
-role=$(cat "$ROLE_DIR/$sid" 2>/dev/null)
+read -r role <"$ROLE_DIR/$sid" 2>/dev/null
 case "$role" in pm|tl-product|tl-platform) ;; *) exit 0 ;; esac
 [ -n "$cwd" ] || cwd=$PWD
 
-state=${ASKS_STATE_DIR:-}
-if [ -z "$state" ]; then
-	common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
-	local_md="${common%/.git}/.agent/orchestrate.local.md"
-	bus=$(sed -n 's/^- `session_bus_dir`: `\([^`]*\)`.*/\1/p' "$local_md" 2>/dev/null | head -n 1)
-	bus=${bus/#\~/$HOME}
-	[ -n "$bus" ] && state=$(dirname "${bus%/}")
-fi
-[ -n "$state" ] || exit 0
-asks="$state/asks/$sid"
-detail="$asks.d"
-logfile="$state/asks/jev-log.jsonl"
+# The state dir is repo config, constant for a session: cached after the first git lookup.
+resolve_state() {
+	local cache="${TMPDIR:-/tmp}/asks-hook-state.$sid" common local_md bus
+	state=${ASKS_STATE_DIR:-}
+	[ -n "$state" ] || read -r state <"$cache" 2>/dev/null
+	if [ -z "$state" ]; then
+		common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
+		local_md="${common%/.git}/.agent/orchestrate.local.md"
+		bus=$(sed -n 's/^- `session_bus_dir`: `\([^`]*\)`.*/\1/p' "$local_md" 2>/dev/null | head -n 1)
+		bus=${bus/#\~/$HOME}
+		[ -n "$bus" ] || return 1
+		state=$(dirname "${bus%/}")
+		printf '%s\n' "$state" >"$cache"
+	fi
+	asks="$state/asks/$sid"
+	detail="$asks.d"
+	logfile="$state/asks/jev-log.jsonl"
+}
 
-tmp=$(mktemp -d) || exit 0
-trap '[ -n "${ASKS_KEEP:-}" ] || rm -rf "$tmp"' EXIT
+# Everything past the inline deterministic work (Jev calls, file writes behind a
+# judgment) runs detached: the hook exits 0 at once, so a prompt never waits on Jev.
+# Dry run and ASKS_SYNC=1 keep the job in the foreground, for tests and samples.
+job() {
+	if [ -n "$DRY" ] || [ -n "${ASKS_SYNC:-}" ]; then "$1"
+	else ( "$1" ) </dev/null >/dev/null 2>&1 & disown
+	fi
+}
 
-log() { # log <hook> <candidate> <decision> <scores-json>
-	jq -nc --arg ts "$(date -u +%FT%TZ)" --arg sid "$sid" --arg hook "$1" --arg line "$2" \
-		--arg decision "$3" --argjson scores "${4:-null}" \
-		'{ts:$ts,sid:$sid,hook:$hook,candidate:$line,decision:$decision,scores:$scores}' \
-		>>"$logfile"
+job_init() {
+	tmp=$(mktemp -d) || return 1
+	trap '[ -n "${ASKS_KEEP:-}" ] || rm -rf "$tmp" "${stamp:-}"' EXIT
+}
+
+# Writers of the asks file and its details hold a lock file (O_EXCL create); rewrites are temp + mv.
+lock() {
+	local i=0
+	[ -d "$state/asks" ] || mkdir -p "$state/asks" || return 1
+	until (set -o noclobber; : >"$asks.lock") 2>/dev/null; do
+		[ -z "$(find "$asks.lock" -mmin +1 2>/dev/null)" ] || rm -f "$asks.lock"
+		i=$((i + 1))
+		[ "$i" -le 100 ] || return 1
+		sleep 0.05
+	done
+}
+unlock() { rm -f "$asks.lock"; }
+
+log() { # log <hook> <candidate> <decision> [scores-json]
+	local line=${2//\\/\\\\} ts
+	line=${line//\"/\\\"}; line=${line//$'\t'/ }; line=${line//$'\r'/ }
+	TZ=UTC printf -v ts '%(%FT%TZ)T' -1
+	printf '{"ts":"%s","sid":"%s","hook":"%s","candidate":"%s","decision":"%s","scores":%s}\n' \
+		"$ts" "$sid" "$1" "$line" "$3" "${4:-null}" >>"$logfile"
 }
 
 # jev <questions-json-file> <state-json-file>: prints the answers object, or fails.
@@ -69,12 +101,10 @@ jev() {
 		jq -e '.answers'
 }
 
-open_lines() { [ -s "$asks" ] && grep -n . "$asks"; }
-
 # ---------- Stop: pin the final question ----------
 capture() {
-	local msg tp
-	msg=$(field .last_assistant_message)
+	resolve_state && job_init || return 0
+	local tp
 	if [ -z "$msg" ]; then
 		tp=$(field .transcript_path)
 		[ -r "$tp" ] || return 0
@@ -187,85 +217,111 @@ capture() {
 		printf '\n     scores %s\n' "$scores"
 		return 0
 	fi
-	mkdir -p "$detail" || return 0
+	lock || { log capture "$cand" lock-failed; return 0; }
+	# A prompt that landed while Jev ran may already have answered this question.
+	if [ "$asks.seen" -nt "${stamp:-/nonexistent}" ]; then
+		unlock
+		log capture "$cand" answered-first "$scores"
+		return 0
+	fi
+	if grep -qxF -- "$cand" "$asks" 2>/dev/null; then unlock; return 0; fi
+	mkdir -p "$detail"
 	local n
 	n=$(($(grep -c . "$asks" 2>/dev/null) + 1))
 	[ -z "$ctx" ] || printf '%s' "$ctx" >"$detail/$n.md"
-	printf '%s\n' "$cand" >>"$asks"
+	{ cat "$asks" 2>/dev/null; printf '%s\n' "$cand"; } >"$asks.new" && mv "$asks.new" "$asks"
+	unlock
 	log capture "$cand" pin "$scores"
 }
 
 # ---------- UserPromptSubmit: clear answered asks ----------
-clear_answered() {
-	local prompt
-	prompt=$(field .prompt)
-	[ -n "$prompt" ] || return 0
-	case "$prompt" in /*) return 0 ;; esac
-	[ -s "$asks" ] || return 0
-	local count
-	count=$(grep -c . "$asks")
-	[ "$count" -gt 0 ] || return 0
-
-	local drop=" " scores="null"
-	local norm
-	norm=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z]+/ /g; s/^ +| +$//g')
-	if [ "$count" -eq 1 ] && printf '%s' "$norm" | grep -qxE 'go|yes|no|y|n|ok|okay|yep|nope|approved?|do it|go ahead|sure|agreed?'; then
-		drop=" 1 "
-		scores='"deterministic"'
-	else
-		local n=0 line
-		printf '{}' >"$tmp/q.json"
-		jq -n --arg prompt "$prompt" '{user_message:$prompt}' >"$tmp/state.json"
-		while IFS= read -r line; do
-			n=$((n + 1))
-			[ -n "$line" ] || continue
-			jq --arg k "$n" --arg ask "$line" --arg ctx "$(cat "$detail/$n.md" 2>/dev/null)" \
-				'. + {($k): {type:"noul", instructions:{open_ask:$ask, ask_context:$ctx,
-				question:"Does `user_message` answer `open_ask`? A reply that says yes or no to it, approves or declines it, or picks one of its options answers it; a message about something else does not."}}}' "$tmp/q.json" >"$tmp/q2.json" &&
-				mv "$tmp/q2.json" "$tmp/q.json"
-		done <"$asks"
-		local ans
-		if ! ans=$(jev "$tmp/q.json" "$tmp/state.json") || [ -z "$ans" ]; then
-			log clear "-" jev-failed
-			return 0
-		fi
-		scores=$(printf '%s' "$ans" | jq -c 'map_values(.noul)')
-		local k v
-		while IFS=$'\t' read -r k v; do
-			awk -v s="$v" -v m="$CLEAR_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }' && drop="$drop$k "
-		done < <(printf '%s' "$ans" | jq -r 'to_entries[] | [.key, .value.noul] | @tsv')
+# apply_clear <scores-json> <ask text>...: drop the lines with exactly these texts and
+# their details, then renumber the survivors in ascending order (texts, not line numbers:
+# the file may have changed since the judgment).
+apply_clear() {
+	local scores=$1 n=0 new=0 line drop t
+	shift
+	if [ -n "$DRY" ]; then
+		printf 'CLEAR %s\n     scores %s\n' "$(printf '%s | ' "$@")" "$scores"
+		return 0
 	fi
+	lock || return 0
+	: >"$asks.new"
+	while IFS= read -r line; do
+		n=$((n + 1))
+		[ -n "$line" ] || continue
+		drop=
+		for t in "$@"; do [ "$line" = "$t" ] && drop=1; done
+		if [ -n "$drop" ]; then
+			[ ! -f "$detail/$n.md" ] || rm -f "$detail/$n.md"
+			log clear "$line" clear "$scores"
+		else
+			new=$((new + 1))
+			printf '%s\n' "$line" >>"$asks.new"
+			[ "$new" -eq "$n" ] || { [ ! -f "$detail/$n.md" ] || mv "$detail/$n.md" "$detail/$new.md"; }
+		fi
+	done <"$asks"
+	mv "$asks.new" "$asks"
+	unlock
+}
 
-	if [ "$drop" = " " ]; then
+# The Jev part: one yes/no per open ask, judged over a snapshot of the file.
+clear_jev() {
+	resolve_state && job_init || return 0
+	local n=0 line ans k v scores texts=()
+	printf '{}' >"$tmp/q.json"
+	jq -n --arg prompt "$prompt" '{user_message:$prompt}' >"$tmp/state.json"
+	while IFS= read -r line; do
+		n=$((n + 1))
+		[ -n "$line" ] || continue
+		texts[$n]=$line
+		jq --arg k "$n" --arg ask "$line" --arg ctx "$(cat "$detail/$n.md" 2>/dev/null)" \
+			'. + {($k): {type:"noul", instructions:{open_ask:$ask, ask_context:$ctx,
+			question:"Does `user_message` answer `open_ask`? A reply that says yes or no to it, approves or declines it, or picks one of its options answers it; a message about something else does not."}}}' "$tmp/q.json" >"$tmp/q2.json" &&
+			mv "$tmp/q2.json" "$tmp/q.json"
+	done <"$asks"
+	if ! ans=$(jev "$tmp/q.json" "$tmp/state.json") || [ -z "$ans" ]; then
+		log clear "-" jev-failed
+		return 0
+	fi
+	scores=$(printf '%s' "$ans" | jq -c 'map_values(.noul)')
+	local drop=()
+	while IFS=$'\t' read -r k v; do
+		awk -v s="$v" -v m="$CLEAR_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }' && drop+=("${texts[$k]}")
+	done < <(printf '%s' "$ans" | jq -r 'to_entries[] | [.key, .value.noul] | @tsv')
+	if [ "${#drop[@]}" -eq 0 ]; then
 		log clear "-" keep "$scores"
 		[ -z "$DRY" ] || printf 'KEEP all open asks\n     scores %s\n' "$scores"
 		return 0
 	fi
-	if [ -n "$DRY" ]; then
-		printf 'CLEAR %s of:\n%s\n     scores %s\n' "$drop" "$(sed 's/^/     | /' "$asks")" "$scores"
-		return 0
-	fi
-
-	# Drop the lines and their details, then renumber the survivors in ascending order.
-	local n=0 new=0 line
-	: >"$tmp/kept"
-	while IFS= read -r line; do
-		n=$((n + 1))
-		[ -n "$line" ] || continue
-		case "$drop" in
-		*" $n "*) rm -f "$detail/$n.md"; log clear "$line" clear "$scores" ;;
-		*)
-			new=$((new + 1))
-			printf '%s\n' "$line" >>"$tmp/kept"
-			[ "$new" -eq "$n" ] || { [ ! -f "$detail/$n.md" ] || mv "$detail/$n.md" "$detail/$new.md"; }
-			;;
-		esac
-	done <"$asks"
-	cp "$tmp/kept" "$asks.new" && mv "$asks.new" "$asks"
+	apply_clear "$scores" "${drop[@]}"
 }
 
+BARE='^[[:space:][:punct:]]*(go|yes|no|y|n|ok|okay|yep|nope|approved?|do it|go ahead|sure|agreed?)[[:space:][:punct:]]*$'
+
 case "$event" in
-Stop) capture ;;
-UserPromptSubmit) clear_answered ;;
+Stop)
+	# No "?" anywhere in the message: no work at all (an empty msg falls back to the transcript in the job).
+	[ -z "$msg" ] || [[ $msg == *\?* ]] || exit 0
+	stamp="${TMPDIR:-/tmp}/asks-stamp.$sid.$$"
+	: >"$stamp"
+	job capture
+	;;
+UserPromptSubmit)
+	resolve_state || exit 0
+	[ -d "$state/asks" ] || mkdir -p "$state/asks"
+	: >"$asks.seen"
+	[ -n "$prompt" ] && [ -s "$asks" ] || exit 0
+	case "$prompt" in /*) exit 0 ;; esac
+	shopt -s nocasematch
+	if [[ $prompt =~ $BARE ]]; then
+		# A bare reply answers the newest ask only, with no Jev call.
+		newest=
+		while IFS= read -r line; do [ -z "$line" ] || newest=$line; done <"$asks"
+		[ -n "$newest" ] && apply_clear '"deterministic"' "$newest"
+	else
+		job clear_jev
+	fi
+	;;
 esac
 exit 0

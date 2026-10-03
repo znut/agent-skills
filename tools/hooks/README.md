@@ -30,15 +30,22 @@ TypeSafe token in `~/.config/typesafe.token`.
   `link:` line. One Jev request asks whether it is a decision the user must
   make (yes at 0.6 or above pins it), and picks up to three earlier lines as
   Problem, Options and Rec context (`<n>.md`).
-- **UserPromptSubmit (clear).** With exactly one open ask, a reply of `go`,
-  `yes`, `no` and the like clears it with no call. Otherwise one yes/no per
-  open ask, "does this message answer it?"; 0.6 or above clears, and later
-  asks renumber ([orchestrate §Pinned asks](../../orchestrate/SKILL.md#pinned-asks)).
+- **UserPromptSubmit (clear).** A bare reply (`go`, `yes`, `no`, `ok` and the
+  like) clears the newest open ask only, inline, with no call. Any other
+  message gets one yes/no per open ask, "does this message answer it?"; 0.6 or
+  above clears, and later asks renumber
+  ([orchestrate §Pinned asks](../../orchestrate/SKILL.md#pinned-asks)).
+- **Never blocks.** Inline work is builtins plus one `jq` (about 40 ms): the
+  no-`?` exit, the bare-reply clear, the state-dir lookup (cached per session).
+  Every Jev call and the write behind it run detached, and the hook exits 0 at
+  once. Writers hold a lock file and rewrite by temp file plus `mv`; a clear
+  matches ask text, not line numbers. A prompt that lands while a capture is
+  still judging cancels that pin.
 - **Failure.** Each Jev call has a 3 s cap. Any failure pins and clears nothing.
 - **Shadow log.** `<state>/asks/jev-log.jsonl`: one line per decision with the
   candidate line and the scores, never the user's message.
 
-Dry run: `ASKS_DRY_RUN=1` judges and prints the decision, writing no ask.
+Dry run: `ASKS_DRY_RUN=1` judges and prints the decision in the foreground, writing no ask. `ASKS_SYNC=1` runs the Jev part in the foreground and writes.
 `ASKS_STATE_DIR`, `ASKS_ROLE_DIR` and `ASKS_TOKEN_FILE` override the paths.
 
     "Stop": [
