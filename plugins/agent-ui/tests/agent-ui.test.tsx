@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { axisLabels, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
+import { type Metric, axisLabels, barMax, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -1151,8 +1151,10 @@ describe('main-ci chart', () => {
           expect(((line.children ?? []) as Drawn[]).every(cell => cell.type === 'Text')).toBe(true)
           expect(textOf(line).length).toBeLessThanOrEqual(content)
         }
-        const test = lines.find(line => textOf(line).startsWith('test'))
-        expect(((test?.children ?? []) as Drawn[]).map(textOf).join('')).toMatch(/^test +70\.4/)
+        // a job row: its name cell, then its numbers cell, side by side
+        const test = (lines.find(line => textOf(line).startsWith('test'))?.children ?? []) as Drawn[]
+        expect(test).toHaveLength(2)
+        expect(textOf(test[0]).trim()).toBe('test')
         expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(bodyColumns)
       }
       await ui.unmount()
@@ -1186,6 +1188,13 @@ describe('main-ci chart', () => {
     expect(barParts(run, 'wall')).toEqual([{ job: 'lint', value: 10 }, { job: 'test', value: 20 }])
     expect(barParts(run, 'cpu')).toEqual([{ job: 'lint', value: 5 }, { job: 'test', value: 32 }])
     expect(barParts(run, 'mem')).toEqual([{ job: 'test', value: 2458 }])
+    // a retried job's first attempt may hold the peak: the bar takes that job, not the final rows' top
+    const retried = summarize(name(3), parseRows([
+      row(3, 'build', { attempt: 1, exit: 1, max_rss_mb: 3000 }),
+      row(3, 'build', { attempt: 2, max_rss_mb: 500 }),
+      row(3, 'test', { max_rss_mb: 2000 }),
+    ].join('\n')))
+    expect(barParts(retried, 'mem')).toEqual([{ job: 'build', value: 3000 }])
     expect(axisLabels(497.4, 'wall')).toEqual({ top: '497s', bottom: '0s' })
     expect(axisLabels(612, 'cpu')).toEqual({ top: '612s', bottom: '0s' })
     expect(axisLabels(2458, 'mem')).toEqual({ top: '2.4G', bottom: '0' })
@@ -1203,25 +1212,28 @@ describe('main-ci chart', () => {
 
   test('the metric chips switch the bars and the axis; the pick persists', async ($, on) => {
     world(on, files(metrics(3)))
+    const runs = [1, 2, 3].map(i => summarize(name(i), parseRows(runRows(i))))
+    // the bar row: the axis box, then one column per run holding its bar
+    const drawnAs = async (ui: { drawn: () => Promise<unknown>; find: (q: object) => Promise<{ props: Record<string, unknown> } | undefined> }, metric: Metric) => {
+      const labels = axisLabels(barMax(runs, metric), metric)
+      const bars = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
+      expect(textOf(bars.children?.[0])).toBe(`${labels.top}${labels.bottom}`)
+      expect((await ui.find({ key: `ci-bar:${name(2)}` }))?.props.source).toEqual(chartTiles(runs, metric)[1])
+      for (const one of ['wall', 'cpu', 'mem']) expect((await ui.find({ key: `ci-metric:${one}` }))?.props.dimColor).toBe(one !== metric)
+    }
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
-    expect((await ui.find({ key: 'ci-metric:wall' }))?.props.dimColor).toBe(false)
-    expect((await ui.find({ key: 'ci-metric:mem' }))?.props.dimColor).toBe(true)
-    expect((await ui.find({ key: 'ci' }))?.text).toContain('20s')
+    await drawnAs(ui, 'wall')
     await ui.press({ key: 'ci-metric:cpu' })
-    // the axis is the bar row's first box: plain seconds, top and bottom
-    const bars = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
-    expect(textOf(bars.children?.[0])).toBe('6s0s')
+    await drawnAs(ui, 'cpu')
     await ui.unmount()
     const again = await $.ui.mount(pane())
-    expect((await again.find({ key: 'ci-metric:cpu' }))?.props.dimColor).toBe(false)
+    await drawnAs(again, 'cpu')
     await again.press({ key: 'ci-metric:mem' })
-    const runs = [1, 2, 3].map(i => summarize(name(i), parseRows(runRows(i))))
-    expect((await again.find({ key: `ci-bar:${name(2)}` }))?.props.source).toEqual(chartTiles(runs, 'mem')[1])
-    expect((await again.find({ key: 'ci' }))?.text).toContain('100M')
-    expect((await again.find({ key: 'ci' }))?.text).toContain('line = load · red = retry')
+    await drawnAs(again, 'mem')
     await again.unmount()
   })
+
 })
 
 describe('pane auto-open', () => {

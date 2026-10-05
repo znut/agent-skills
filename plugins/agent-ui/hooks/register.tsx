@@ -8,15 +8,15 @@ import {
   CHART_ROWS,
   type Cell,
   type CiRun,
+  METRICS,
   type MainState,
+  type Metric,
   type MetricRow,
-  cardTable,
   axisLabels,
   barMax,
   barTotal,
-  METRICS,
-  type Metric,
   cardPlace,
+  cardTable,
   chartCells,
   chartTiles,
   encodeCells,
@@ -911,9 +911,9 @@ export const register: Register = (on, options) => {
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
-    const [chosen, open, isCiOpen] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen)])
-    const metric = await read($, ciMetric)
+    const [chosen, open, isCiOpen, metric] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen), read($, ciMetric)])
     const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns, metric) : null
+    const axis = chart ? axisLabels(chart.max, chart.metric) : null
     const visible = rows.flatMap(row => [
       { row, isChild: false },
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
@@ -956,8 +956,8 @@ export const register: Register = (on, options) => {
           <Box key="ci" flexDirection="column">
             <Box flexDirection="row" height={CHART_ROWS}>
               <Box width={AXIS_COLS} height={CHART_ROWS} flexDirection="column" justifyContent="space-between">
-                <Text dimColor>{axisLabels(chart.max, chart.metric).top}</Text>
-                <Text dimColor>{axisLabels(chart.max, chart.metric).bottom}</Text>
+                <Text dimColor>{axis?.top}</Text>
+                <Text dimColor>{axis?.bottom}</Text>
               </Box>
               {/* each run column holds its own bar: the hover zone and the bar are one box (runCell) */}
               {chart.runs.map((run, i) => (

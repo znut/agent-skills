@@ -14,7 +14,7 @@ export type MetricRow = {
   load: number | null
 }
 export type CiJob = { job: string; wall: number; cpu: number; mb: number; retries: number }
-export type CiRun = { run: string; sha8: string; jobs: CiJob[]; green: boolean; retries: number; load: number | null; peak: number; pending: boolean; cancelled: boolean }
+export type CiRun = { run: string; sha8: string; jobs: CiJob[]; green: boolean; retries: number; load: number | null; peak: number; peakJob: string; pending: boolean; cancelled: boolean }
 export type MainState = { sha: string; phase: string }
 export type Cell = { glyph: number; color: number }
 
@@ -65,6 +65,8 @@ export function summarize(run: string, rows: MetricRow[]): CiRun {
   const final = new Map<string, MetricRow>()
   for (const row of rows) if (row.attempt >= (final.get(row.job)?.attempt ?? 0)) final.set(row.job, row)
   const jobs = [...final.values()].map(row => ({ job: row.job, wall: row.wall, cpu: row.cpu, mb: row.mb, retries: row.attempt - 1 }))
+  // any attempt's row, a retried one's included: that memory was in use
+  const peak = rows.reduce<MetricRow | null>((top, row) => (top && top.mb >= row.mb ? top : row), null)
   return {
     run,
     sha8: (rows[0]?.sha ?? '').slice(0, 8),
@@ -72,7 +74,8 @@ export function summarize(run: string, rows: MetricRow[]): CiRun {
     green: [...final.values()].every(row => row.exit === 0),
     retries: rows.filter(row => row.attempt > 1).length,
     load: rows.find(row => row.load !== null)?.load ?? null,
-    peak: Math.max(0, ...rows.map(row => row.mb)),
+    peak: Math.max(0, peak?.mb ?? 0),
+    peakJob: peak?.job ?? '',
     pending: false,
     cancelled: false,
   }
@@ -101,7 +104,7 @@ export function withPending(runs: CiRun[], state: MainState | null): CiRun[] {
   if (last && at >= 0 && at < runs.length - 1) return pendLast()
   if (state.phase !== 'builds') return runs
   if (at >= 0) return pendLast()
-  return [...runs, { run: `pending-${sha8}`, sha8, jobs: [], green: false, retries: 0, load: null, peak: 0, pending: true, cancelled: false }]
+  return [...runs, { run: `pending-${sha8}`, sha8, jobs: [], green: false, retries: 0, load: null, peak: 0, peakJob: '', pending: true, cancelled: false }]
 }
 
 // Run i's first cell, counted from the chart's left edge (the axis included): its bar, its
@@ -130,8 +133,7 @@ export const METRICS: readonly Metric[] = ['wall', 'cpu', 'mem']
 // jobs run one after another, so a sum of their peaks is memory never in use at once.
 export function barParts(run: CiRun, metric: Metric): { job: string; value: number }[] {
   if (metric !== 'mem') return run.jobs.map(job => ({ job: job.job, value: metric === 'cpu' ? job.cpu : job.wall }))
-  const top = run.jobs.reduce<CiJob | null>((best, job) => (best && best.mb >= job.mb ? best : job), null)
-  return top ? [{ job: top.job, value: run.peak }] : []
+  return run.peakJob ? [{ job: run.peakJob, value: run.peak }] : []
 }
 
 export const barTotal = (run: CiRun, metric: Metric) => barParts(run, metric).reduce((sum, part) => sum + part.value, 0)

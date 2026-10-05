@@ -338,6 +338,25 @@ describe('repo panels', () => {
     expect(placeBeside(4, 1, 3, 6)).toEqual({ x: 1, width: 3 })
   })
 
+  test('with the main-ci chart open, a row card counts the strip, the bars, the metric chips and the legend above the panels', async ($, on) => {
+    const metric = (i: number) => JSON.stringify({ run: `20260101T00000${i}Z-acme`, sha: `acme000${i}aaaa`, job: 'lint', attempt: 1, wall_s: 10, exit: 0 })
+    const w = world(on, {
+      ...GIT_CONFIG,
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'acme0002aaaa', green: true, phase: 'done' }),
+      [`${STATE}/main-ci/metrics.jsonl`]: `${metric(1)}\n${metric(2)}\n`,
+      [CONFIG]: JSON.stringify(SPECS),
+    }, [])
+    w.panel = () => ok()
+    w.redraws = true
+    const ui = await $.ui.mount(PANE())
+    await ui.press({ key: 'ci-toggle' })
+    await ui.press({ key: 'panel-toggle:acme' })
+    // strip 0, bars 1-6, chips 7, legend 8; the panel: head 9, tabs 10, columns 11, r1 12, its card 13
+    expect(keyed(walk(await ui.drawn()), 'panel-card:acme:r1')?.props?.top).toBe(13)
+    await ui.unmount()
+  })
+
   test('a card fits a narrow pane', async ($, on) => {
     setup(on, () => ok({ ...OUTPUT, tabs: [{ ...OUTPUT.tabs[0], rows: [{ id: 'r1', cells: {}, hover: ['x'.repeat(80)] }] }] }))
     const ui = await $.ui.mount(PANE(30))
