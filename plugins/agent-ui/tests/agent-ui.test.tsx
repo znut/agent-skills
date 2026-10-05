@@ -341,11 +341,13 @@ describe('workers pane', () => {
       expect(bytes(avatarPicture('gpt', 'done', 0).source.rgba)).toHaveLength(32 * 32 * 4)
     })
 
-    test('the alt text is the braille the Raster draws, two cells wide', () => {
+    test('the alt text is the braille the Raster draws at the same tick, two cells wide', () => {
       for (const avatar of ['claude', 'gpt', 'kimi'] as const) {
-        const words = new Uint32Array(bytes(avatarCells(avatar, 'running', 0)).buffer)
-        expect(words).toHaveLength(2 * 3)
-        expect(avatarPicture(avatar, 'running', 0).alt).toBe(String.fromCodePoint(words[0] ?? 0, words[3] ?? 0))
+        for (const tick of [0, 1, 2, 3]) {
+          const words = new Uint32Array(bytes(avatarCells(avatar, 'running', tick)).buffer)
+          expect(words).toHaveLength(2 * 3)
+          expect(avatarPicture(avatar, 'running', tick).alt).toBe(String.fromCodePoint(words[0] ?? 0, words[3] ?? 0))
+        }
       }
     })
 

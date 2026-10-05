@@ -1,6 +1,6 @@
 // Rasterizes the gpt avatar's knot to sprite pixel strings: six rounded links (capsule
 // outlines) rotated in 60° steps, each passing over the next and under the one before.
-// Prints the frames for SPRITES.gpt in hooks/sprites.ts; `--json` prints them as JSON.
+// Prints the frames for SPRITES.gpt in hooks/sprites.ts.
 //   bun plugins/agent-ui/scripts/gpt-knot.ts
 const SIZE = 32
 const ROTATIONS = [0, 15, 30, 45] // the knot repeats every 60°, so these loop seamlessly
@@ -68,9 +68,5 @@ function frame(rotation: number): string[] {
   return rows
 }
 
-const frames = ROTATIONS.map(frame)
-if (process.argv.includes('--json')) console.log(JSON.stringify(frames))
-else {
-  const lines = frames.map(rows => `    [\n${rows.map(row => `      '${row}',`).join('\n')}\n    ],`)
-  console.log(`  gpt: [\n${lines.join('\n')}\n  ],`)
-}
+const lines = ROTATIONS.map(frame).map(rows => `    [\n${rows.map(row => `      '${row}',`).join('\n')}\n    ],`)
+console.log(`  gpt: [\n${lines.join('\n')}\n  ],`)
