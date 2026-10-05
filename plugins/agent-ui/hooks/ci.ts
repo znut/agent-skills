@@ -122,8 +122,26 @@ export const jobColor = (job: string): number => PALETTE[fnv1a(job) % PALETTE.le
 // A repo panel's bar tones, in the chart's colors.
 export const TONES: Record<string, number> = { good: PALETTE[3] as number, mid: PALETTE[2] as number, bad: RED, dim: DIM }
 
-export const totalWall = (run: CiRun) => run.jobs.reduce((sum, job) => sum + job.wall, 0)
-export const maxWall = (runs: CiRun[]) => Math.max(1, ...runs.map(totalWall))
+// What a bar measures: each job's wall or cpu seconds stacked, or the run's peak memory.
+export type Metric = 'wall' | 'cpu' | 'mem'
+export const METRICS: readonly Metric[] = ['wall', 'cpu', 'mem']
+
+// A run's bar, bottom up. mem is one part, the run's peak in the colour of the job that hit it:
+// jobs run one after another, so a sum of their peaks is memory never in use at once.
+export function barParts(run: CiRun, metric: Metric): { job: string; value: number }[] {
+  if (metric !== 'mem') return run.jobs.map(job => ({ job: job.job, value: metric === 'cpu' ? job.cpu : job.wall }))
+  const top = run.jobs.reduce<CiJob | null>((best, job) => (best && best.mb >= job.mb ? best : job), null)
+  return top ? [{ job: top.job, value: run.peak }] : []
+}
+
+export const barTotal = (run: CiRun, metric: Metric) => barParts(run, metric).reduce((sum, part) => sum + part.value, 0)
+export const barMax = (runs: CiRun[], metric: Metric) => Math.max(1, ...runs.map(run => barTotal(run, metric)))
+
+// The axis's top label, a line each (it is AXIS_COLS wide), and its bottom one.
+export function axisLabels(max: number, metric: Metric): { top: string[]; bottom: string } {
+  if (metric === 'mem') return { top: [max >= 1024 ? `${(max / 1024).toFixed(1)}G` : `${Math.round(max)}M`], bottom: '0' }
+  return { top: metric === 'cpu' ? [`${Math.round(max)}s`, 'cpu'] : [`${Math.round(max)}s`], bottom: '0s' }
+}
 
 // 3x5 digits for a retry count; 9+ reads "+".
 const DIGITS: Record<string, string> = {
@@ -138,8 +156,8 @@ type Picture = { rgba: string; width: number; height: number }
 // across them. A terminal fits a picture to its cell box keeping its aspect ratio, so one wide
 // picture drifts off the cell grid wherever the cells are not exactly 1:2; one per run column
 // keeps each bar inside its own hover column.
-export function chartTiles(runs: CiRun[]): Picture[] {
-  const whole = chartBytes(runs)
+export function chartTiles(runs: CiRun[], metric: Metric = 'wall'): Picture[] {
+  const whole = chartBytes(runs, metric)
   const tile = 2 * PX_COL
   return runs.map((_, i) => {
     const bytes = new Uint8Array(tile * whole.height * 4)
@@ -148,7 +166,7 @@ export function chartTiles(runs: CiRun[]): Picture[] {
   })
 }
 
-export function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; height: number } {
+export function chartBytes(runs: CiRun[], metric: Metric = 'wall'): { bytes: Uint8Array; width: number; height: number } {
   const width = Math.max(1, runs.length) * 2 * PX_COL
   const height = CHART_ROWS * PX_ROW
   const bytes = new Uint8Array(width * height * 4)
@@ -158,7 +176,7 @@ export function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; h
   }
   const base = height - UNDER - 1
   const span = base - TOP
-  const scale = span / maxWall(runs)
+  const scale = span / barMax(runs, metric)
   const loadMax = Math.max(1, ...runs.map(run => run.load ?? 0))
   const points: [number, number][] = []
   runs.forEach((run, i) => {
@@ -167,10 +185,10 @@ export function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; h
     let sum = 0
     let top = base + 1
     const faded = run.pending || run.cancelled
-    for (const job of run.jobs) {
-      const from = base - Math.round((sum + job.wall) * scale) + 1
-      for (let y = from; y < top; y++) for (let x = x0; x < x1; x++) put(x, y, jobColor(job.job), faded ? 128 : 255)
-      sum += job.wall
+    for (const part of barParts(run, metric)) {
+      const from = base - Math.round((sum + part.value) * scale) + 1
+      for (let y = from; y < top; y++) for (let x = x0; x < x1; x++) put(x, y, jobColor(part.job), faded ? 128 : 255)
+      sum += part.value
       top = Math.min(top, from)
     }
     if (faded) {
@@ -196,15 +214,16 @@ export function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; h
   return { bytes, width, height }
 }
 
-// The fallback: rows x (2 per run) cells of ▁..█, colored by the run's slowest job; a retry
+// The fallback: rows x (2 per run) cells of ▁..█, colored by the bar's largest part; a retry
 // count in red above the bar.
-export function chartCells(runs: CiRun[]): Cell[][] {
+export function chartCells(runs: CiRun[], metric: Metric = 'wall'): Cell[][] {
   const eighths = CHART_ROWS * 8
-  const scale = (eighths - 8) / maxWall(runs)
+  const scale = (eighths - 8) / barMax(runs, metric)
   const grid: Cell[][] = Array.from({ length: CHART_ROWS }, () => Array.from({ length: runs.length * 2 }, () => ({ glyph: 0x20, color: DIM })))
   runs.forEach((run, i) => {
-    const color = run.jobs.reduce<CiJob | null>((top, job) => (top && top.wall >= job.wall ? top : job), null)
-    const level = Math.round(totalWall(run) * scale)
+    const parts = barParts(run, metric)
+    const color = parts.reduce<(typeof parts)[number] | null>((top, part) => (top && top.value >= part.value ? top : part), null)
+    const level = Math.round(barTotal(run, metric) * scale)
     for (let row = 0; row < CHART_ROWS; row++) {
       const fill = Math.min(8, Math.max(0, level - (CHART_ROWS - 1 - row) * 8))
       const glyph = fill === 0 ? 0x20 : 0x2580 + fill
@@ -226,17 +245,43 @@ export function encodeCells(grid: Cell[][]): string {
 
 const pad = (text: string, width: number, right = false) => (right ? text.padStart(width) : text.padEnd(width))
 
+export type CardRow = { job: string; name: string; nums: string }
+export type CardTable = { head: string; header: CardRow; rows: CardRow[]; nameWidth: number; width: number }
+
+const CARD_COLUMNS: { label: string; width: number; of: (job: CiJob) => string }[] = [
+  { label: 'wall', width: 6, of: job => job.wall.toFixed(1) },
+  { label: 'cpu', width: 6, of: job => job.cpu.toFixed(1) },
+  { label: 'MB', width: 6, of: job => String(Math.round(job.mb)) },
+  { label: 're', width: 3, of: job => String(job.retries) },
+]
+const NAME_MIN = 8
+const NAME_MAX = 16
+
 // The hover card: a heading, then job / wall / cpu / MB / re for the run's 8 slowest jobs, each
-// line at most `width` columns (the job name gives way first). `jobs[k]` is line k + 2's job,
-// its name the line's first `nameWidth` columns.
-export function cardLines(run: CiRun, width = Infinity): { lines: string[]; jobs: string[]; nameWidth: number } {
-  const nameWidth = Math.max(4, Math.min(16, width - 21))
-  const line = (job: string, ...cells: [string, number][]) => `${pad(job.slice(0, nameWidth - 1), nameWidth)}${cells.map(([text, w]) => pad(text, w, true)).join('')}`
+// row a name cell and a numbers cell, never wider than `width`: the name shortens first (to
+// NAME_MIN), then `re` goes, then `cpu`. `width` is the card's content width.
+export function cardTable(run: CiRun, maxWidth = Infinity): CardTable {
   const head = `${run.sha8}${run.cancelled ? ' · cancelled (tip moved)' : ''} · load ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
   const slowest = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8)
-  const table = slowest.map(job => line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]))
-  const lines = [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
-  return { lines, jobs: slowest.map(job => job.job), nameWidth }
+  const natural = Math.min(NAME_MAX, Math.max('job'.length, ...slowest.map(job => job.job.length)) + 1)
+  let columns = CARD_COLUMNS
+  const numsWidth = () => columns.reduce((sum, column) => sum + column.width, 0)
+  const nameFor = () => Math.max(Math.min(natural, NAME_MIN), Math.min(natural, maxWidth - numsWidth()))
+  for (const drop of ['re', 'cpu']) if (nameFor() + numsWidth() > maxWidth) columns = columns.filter(column => column.label !== drop)
+  const nameWidth = Math.min(nameFor(), Math.max(1, maxWidth))
+  const width = Math.max(1, Math.min(maxWidth, Math.max(head.length, nameWidth + numsWidth())))
+  const row = (job: string, cells: string[]): CardRow => ({
+    job,
+    name: pad(job.slice(0, nameWidth - 1), nameWidth),
+    nums: cells.map((text, k) => pad(text, (columns[k] as (typeof columns)[number]).width, true)).join('').slice(0, width - nameWidth),
+  })
+  return {
+    head: head.slice(0, width),
+    header: row('job', columns.map(column => column.label)),
+    rows: slowest.map(job => row(job.job, columns.map(column => column.of(job)))),
+    nameWidth,
+    width,
+  }
 }
 
 // Where a card goes along one axis of `span` cells, beside the `size` cells it describes at `at`:

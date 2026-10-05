@@ -72,7 +72,8 @@ documents its own setup in `tools/README.md` or its folder.
 pane of the session's child runs (GPT, Kimi, Claude review panels) with each
 run's live tail on click and main-ci's verdict line, which expands to a chart of
 recent main-ci runs (its line is the 1-minute load average when each run started;
-hover a bar for its slowest jobs), opens itself at start in
+chips switch the bars between stacked job wall time, stacked job cpu time, and
+one bar at the run's peak memory; hover a bar for its slowest jobs), opens itself at start in
 PM and TL sessions, and pins
 the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
 above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click. Load it for one session with

@@ -10,7 +10,12 @@ import {
   type CiRun,
   type MainState,
   type MetricRow,
-  cardLines,
+  cardTable,
+  axisLabels,
+  barMax,
+  barTotal,
+  METRICS,
+  type Metric,
   cardPlace,
   chartCells,
   chartTiles,
@@ -18,13 +23,11 @@ import {
   fnv1a,
   jobColor,
   markCancelled,
-  maxWall,
   parseRows,
   placeBeside,
   runsFit,
   summarize,
   tileCells,
-  totalWall,
   withPending,
 } from './ci'
 import {
@@ -437,32 +440,33 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
   return feed
 }
 
-type CiCard = ReturnType<typeof cardLines> & { width: number; left: number }
-type CiChart = { key: string; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: { grids: Cell[][][]; cells: string[] } }
+type CiCard = ReturnType<typeof cardTable> & { left: number }
+type CiChart = { key: string; metric: Metric; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: { grids: Cell[][][]; cells: string[] } }
 let ciChart: CiChart | null = null
 
-// Encoded again only when a run is added or changes, main-ci's state moves, or the width does.
-async function readCiChart($: $, main: MainStrip, bodyColumns: number): Promise<CiChart | null> {
+// Encoded again only when a run is added or changes, main-ci's state moves, or the width or the
+// metric does.
+async function readCiChart($: $, main: MainStrip, bodyColumns: number, metric: Metric): Promise<CiChart | null> {
   const fit = runsFit(bodyColumns)
   const feed = fit > 0 ? await readCiRuns($, main, fit) : null
   if (!feed) return null
-  const key = `${feed.version}|${main.log?.version ?? 0}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}`
+  const key = `${feed.version}|${main.log?.version ?? 0}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}|${metric}`
   if (ciChart?.key === key) return ciChart
   const runs = markCancelled(withPending(feed.runs, main.ci), main.log?.log.cancels ?? []).slice(-fit)
   if (runs.length === 0) return null
+  // a card's border and padding take 4 columns beside its content
   const cards = runs.map((run, i) => {
-    const natural = cardLines(run, bodyColumns - 4)
-    const place = cardPlace(i, Math.min(bodyColumns, Math.max(...natural.lines.map(line => line.length)) + 4), bodyColumns)
-    return { ...cardLines(run, place.width - 4), width: place.width, left: place.x }
+    const place = cardPlace(i, cardTable(run, bodyColumns - 4).width + 4, bodyColumns)
+    return { ...cardTable(run, place.width - 4), left: place.x }
   })
-  ciChart = { key, runs, max: maxWall(runs), tiles: chartTiles(runs), cards }
+  ciChart = { key, metric, runs, max: barMax(runs, metric), tiles: chartTiles(runs, metric), cards }
   return ciChart
 }
 
 // Block-glyph cells, built only where a picture cannot be drawn.
 function fallbackOf(chart: CiChart): { grids: Cell[][][]; cells: string[] } {
   if (!chart.fallback) {
-    const grid = chartCells(chart.runs)
+    const grid = chartCells(chart.runs, chart.metric)
     const grids = chart.runs.map((_, i) => tileCells(grid, i))
     chart.fallback = { grids, cells: grids.map(encodeCells) }
   }
@@ -786,6 +790,7 @@ const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as st
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
+const ciMetric = atom({ plugin: 'agent-ui', key: 'ciMetric' } as const, 'wall' as Metric)
 const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
 const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
 
@@ -839,7 +844,7 @@ function syncFrames($: $): void {
 // A hovered run column's background, behind its bar's transparent pixels.
 const COLUMN_LIT = '#3a3d50'
 // A bar's alt text where a picture cannot be drawn: its height as a block glyph, twice.
-const barGlyphs = (run: CiRun, max: number) => String.fromCharCode(0x2581 + Math.min(7, Math.floor((totalWall(run) / max) * 8))).repeat(2)
+const barGlyphs = (run: CiRun, chart: CiChart) => String.fromCharCode(0x2581 + Math.min(7, Math.floor((barTotal(run, chart.metric) / chart.max) * 8))).repeat(2)
 
 // The card draws on its own dark background, so its text colors are fixed, not the theme's.
 const CARD_TEXT = '#e1e1e6'
@@ -907,7 +912,8 @@ export const register: Register = (on, options) => {
     const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
     const [chosen, open, isCiOpen] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen)])
-    const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns) : null
+    const metric = await read($, ciMetric)
+    const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns, metric) : null
     const visible = rows.flatMap(row => [
       { row, isChild: false },
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
@@ -925,8 +931,8 @@ export const register: Register = (on, options) => {
     const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
     if (root && specs.length > 0) refreshPanels($, root, specs, now)
     // a card's top counts pane rows: the panels start below the main strip (1 row) and the
-    // open chart (CHART_ROWS bars + its legend line), the only rows drawn above them
-    const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 1 : 0)
+    // open chart (CHART_ROWS bars, its metric chips and its legend line), the only rows above them
+    const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 2 : 0)
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
       segments.map((segment, k) => (
@@ -950,14 +956,18 @@ export const register: Register = (on, options) => {
           <Box key="ci" flexDirection="column">
             <Box flexDirection="row" height={CHART_ROWS}>
               <Box width={AXIS_COLS} height={CHART_ROWS} flexDirection="column" justifyContent="space-between">
-                <Text dimColor>{`${Math.round(chart.max)}s`}</Text>
-                <Text dimColor>0s</Text>
+                <Box flexDirection="column">
+                  {axisLabels(chart.max, chart.metric).top.map((line, k) => (
+                    <Text key={`ci-axis-${k}`} dimColor>{line}</Text>
+                  ))}
+                </Box>
+                <Text dimColor>{axisLabels(chart.max, chart.metric).bottom}</Text>
               </Box>
               {/* each run column holds its own bar: the hover zone and the bar are one box (runCell) */}
               {chart.runs.map((run, i) => (
                 <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} flexDirection="column" hover={{ scope: `ci:${run.run}`, backgroundColor: COLUMN_LIT }}>
                   {Image ? (
-                    <Image key={`ci-bar:${run.run}`} source={chart.tiles[i] as CiChart['tiles'][number]} columns={2} rows={CHART_ROWS} alt={barGlyphs(run, chart.max)} />
+                    <Image key={`ci-bar:${run.run}`} source={chart.tiles[i] as CiChart['tiles'][number]} columns={2} rows={CHART_ROWS} alt={barGlyphs(run, chart)} />
                   ) : Raster ? (
                     <Raster key={`ci-bar:${run.run}`} columns={2} rows={CHART_ROWS} cells={fallbackOf(chart).cells[i] ?? ''} />
                   ) : (
@@ -965,6 +975,14 @@ export const register: Register = (on, options) => {
                       <Text key={`ci-cell-${i}-${y}`} color={hex(row[0]?.color ?? 0)}>{row.map(cell => String.fromCharCode(cell.glyph)).join('')}</Text>
                     ))
                   )}
+                </Box>
+              ))}
+            </Box>
+            <Box key="ci-metrics" flexDirection="row">
+              {METRICS.map((one, k) => (
+                <Box key={`ci-metric-box:${one}`} flexDirection="row">
+                  {k > 0 && <Text dimColor>{' · '}</Text>}
+                  <Button key={`ci-metric:${one}`} plain dimColor={one !== chart.metric} label={one} onPress={() => update($, ciMetric, () => one)} />
                 </Box>
               ))}
             </Box>
@@ -1082,22 +1100,17 @@ export const register: Register = (on, options) => {
         {chart?.runs.map((run, i) => {
           const card = chart.cards[i] as CiCard
           return (
-            <Box key={`ci-card:${run.run}`} {...CARD} top={2} left={card.left} width={card.width} hover={{ display: 'flex', scope: `ci:${run.run}` }}>
-              {card.lines.map((line, k) => {
-                const job = card.jobs[k - 2]
-                return (
-                  <Box key={`ci-line-${k}`} flexDirection="row">
-                    {job === undefined ? (
-                      <Text color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>
-                    ) : (
-                      <>
-                        <Text color={hex(jobColor(job))}>{line.slice(0, card.nameWidth)}</Text>
-                        <Text color={CARD_TEXT}>{line.slice(card.nameWidth)}</Text>
-                      </>
-                    )}
-                  </Box>
-                )
-              })}
+            <Box key={`ci-card:${run.run}`} {...CARD} top={2} left={card.left} width={card.width + 4} hover={{ display: 'flex', scope: `ci:${run.run}` }}>
+              <Box key="ci-line-0" flexDirection="row" flexWrap="nowrap">
+                <Text color={CARD_TEXT} wrap="truncate-end">{card.head}</Text>
+              </Box>
+              {/* each table row is one line: a row Box of the name cell and the numbers cell */}
+              {[card.header, ...card.rows].map((row, k) => (
+                <Box key={`ci-line-${k + 1}`} flexDirection="row" flexWrap="nowrap">
+                  <Text color={k === 0 ? CARD_DIM : hex(jobColor(row.job))} wrap="truncate-end">{row.name}</Text>
+                  <Text color={k === 0 ? CARD_DIM : CARD_TEXT} wrap="truncate-end">{row.nums}</Text>
+                </Box>
+              ))}
             </Box>
           )
         })}

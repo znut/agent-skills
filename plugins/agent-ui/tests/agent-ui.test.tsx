@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cardPlace, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
+import { axisLabels, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -1132,6 +1132,93 @@ describe('main-ci chart', () => {
     expect(((card?.children ?? []) as Drawn[]).map(line => line.props?.key)).toEqual(Array.from({ length: 4 }, (_, k) => `ci-line-${k}`))
     expect(all.filter(node => typeof node.props?.key === 'string' && (node.props.key as string).startsWith('ci-card:')).map(node => node.props?.key)).toEqual([1, 2, 3].map(i => `ci-card:${name(i)}`))
     await ui.unmount()
+  })
+
+  for (const bodyColumns of [30, 50, 80]) {
+    test(`at ${bodyColumns} columns each card table row is one row Box no wider than the card`, async ($, on) => {
+      const jobs = ['a-very-long-job-name-indeed', 'test', 'lint']
+      world(on, files(`${[1, 2, 3].map(i => jobs.map(job => row(i, job, { wall_s: 70.4, cpu_user_s: 100, cpu_sys_s: 38.5, max_rss_mb: 1994 })).join('\n')).join('\n')}\n`))
+      const ui = await $.ui.mount(pane(bodyColumns))
+      await ui.press({ key: 'ci-toggle' })
+      for (const i of [1, 2, 3]) {
+        const card = await cardOf(ui, name(i))
+        const content = Number(card?.props?.width) - 4
+        const lines = (card?.children ?? []) as Drawn[]
+        expect(lines).toHaveLength(2 + jobs.length)
+        for (const line of lines) {
+          expect(line.type).toBe('Box')
+          expect(line.props?.flexDirection).toBe('row')
+          expect(((line.children ?? []) as Drawn[]).every(cell => cell.type === 'Text')).toBe(true)
+          expect(textOf(line).length).toBeLessThanOrEqual(content)
+        }
+        const test = lines.find(line => textOf(line).startsWith('test'))
+        expect(((test?.children ?? []) as Drawn[]).map(textOf).join('')).toMatch(/^test +70\.4/)
+        expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(bodyColumns)
+      }
+      await ui.unmount()
+    })
+  }
+
+  test('a narrow card shortens the job name to 8 first, then drops re, then cpu', () => {
+    const run = summarize(name(1), parseRows(row(1, 'a-very-long-job-name-indeed')))
+    const shape = (width: number) => {
+      const table = cardTable(run, width)
+      return [table.nameWidth, `${table.header.name}${table.header.nums}`.replace(/ +/g, ' ').trim(), table.width]
+    }
+    expect(shape(80)).toEqual([16, 'job wall cpu MB re', 37])
+    expect(shape(29)).toEqual([8, 'job wall cpu MB re', 29])
+    expect(shape(28)).toEqual([10, 'job wall cpu MB', 28])
+    expect(shape(23)).toEqual([11, 'job wall MB', 23])
+    expect(shape(22)).toEqual([10, 'job wall MB', 22])
+    expect(shape(20)).toEqual([8, 'job wall MB', 20])
+    for (const width of [12, 20, 29, 37]) {
+      const table = cardTable(run, width)
+      for (const line of [table.header, ...table.rows]) expect(line.name.length + line.nums.length).toBeLessThanOrEqual(width)
+      expect(table.head.length).toBeLessThanOrEqual(width)
+    }
+  })
+
+  test('cpu stacks each job, mem is one bar at the peak in the colour of the job that hit it', () => {
+    const run = summarize(name(1), parseRows([
+      row(1, 'lint', { wall_s: 10, cpu_user_s: 4, cpu_sys_s: 1, max_rss_mb: 300 }),
+      row(1, 'test', { wall_s: 20, cpu_user_s: 30, cpu_sys_s: 2, max_rss_mb: 2458 }),
+    ].join('\n')))
+    expect(barParts(run, 'wall')).toEqual([{ job: 'lint', value: 10 }, { job: 'test', value: 20 }])
+    expect(barParts(run, 'cpu')).toEqual([{ job: 'lint', value: 5 }, { job: 'test', value: 32 }])
+    expect(barParts(run, 'mem')).toEqual([{ job: 'test', value: 2458 }])
+    expect(axisLabels(497.4, 'wall')).toEqual({ top: ['497s'], bottom: '0s' })
+    expect(axisLabels(612, 'cpu')).toEqual({ top: ['612s', 'cpu'], bottom: '0s' })
+    expect(axisLabels(2458, 'mem')).toEqual({ top: ['2.4G'], bottom: '0' })
+    expect(axisLabels(900, 'mem')).toEqual({ top: ['900M'], bottom: '0' })
+    // the mem bar fills from the base to the top in one colour; a red run keeps its underline and retry digit
+    const red = summarize(name(2), parseRows([row(2, 'lint', { exit: 1, max_rss_mb: 50 }), row(2, 'lint', { attempt: 2, exit: 1, max_rss_mb: 50 })].join('\n')))
+    const { bytes } = chartBytes([run, red], 'mem')
+    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
+    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255]
+    expect(at(5, 67)).toEqual(rgb(jobColor('test')))
+    expect(at(5, 9)).toEqual(rgb(jobColor('test')))
+    expect(at(17, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
+    expect(Array.from({ length: 67 }, (_, y) => at(17, y)).some(px => px[0] === 0xe6 && px[1] === 0x5a)).toBe(true)
+  })
+
+  test('the metric chips switch the bars and the axis; the pick persists', async ($, on) => {
+    world(on, files(metrics(3)))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    expect((await ui.find({ key: 'ci-metric:wall' }))?.props.dimColor).toBe(false)
+    expect((await ui.find({ key: 'ci-metric:mem' }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ key: 'ci' }))?.text).toContain('20s')
+    await ui.press({ key: 'ci-metric:cpu' })
+    expect((await ui.find({ key: 'ci' }))?.text).toContain('6scpu')
+    await ui.unmount()
+    const again = await $.ui.mount(pane())
+    expect((await again.find({ key: 'ci-metric:cpu' }))?.props.dimColor).toBe(false)
+    await again.press({ key: 'ci-metric:mem' })
+    const runs = [1, 2, 3].map(i => summarize(name(i), parseRows(runRows(i))))
+    expect((await again.find({ key: `ci-bar:${name(2)}` }))?.props.source).toEqual(chartTiles(runs, 'mem')[1])
+    expect((await again.find({ key: 'ci' }))?.text).toContain('100M')
+    expect((await again.find({ key: 'ci' }))?.text).toContain('line = load · red = retry')
+    await again.unmount()
   })
 })
 
