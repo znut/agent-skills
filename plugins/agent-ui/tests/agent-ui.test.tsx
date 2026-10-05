@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { epoch, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
+import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
+import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -204,7 +205,7 @@ describe('workers pane', () => {
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
-    expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/EZ-OPD/ez-opd-services/pull/4390')
+    expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/acme/widgets/pull/4390')
     expect((await ui.find({ type: 'Text', text: 'green' }))?.props.color).toBe('green')
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
     await ui.unmount()
@@ -309,18 +310,46 @@ describe('workers pane', () => {
   })
 
   describe('avatars', () => {
-    const cellsOf = async (ui: { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, dir: string) =>
-      (await ui.find({ key: `avatar:disk:${dir}` }))?.props.cells
-    const frames = (key: string, w: { blits: { key: string; cells: string }[] }) => w.blits.filter(blit => blit.key === key)
+    type Found = { type: string; props: Record<string, unknown> }
+    const avatarOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) => ui.find({ key: `avatar:disk:${dir}` })
+    const pictureOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) =>
+      ((await avatarOf(ui, dir))?.props.source as { rgba?: string } | undefined)?.rgba
+    const frames = (key: string, w: { blits: { key: string; cells?: string; rgba?: string }[] }) => w.blits.filter(blit => blit.key === key)
+    const bytes = (base64: string) => Uint8Array.from(atob(base64), ch => ch.charCodeAt(0))
+    const pixel = (rgba: string, x: number, y: number) => [...bytes(rgba).slice((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)]
+    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255]
 
-    test('terminal rows draw a sprite per status in place of the mark; other surfaces keep the mark', async ($, on) => {
+    test('a sprite frame is 16x16 RGBA in its palette; done dims it, failed turns it red', () => {
+      const run = avatarPicture('claude', 'running', 0)
+      expect(run.source).toMatchObject({ width: 16, height: 16 })
+      expect(bytes(run.source.rgba)).toHaveLength(16 * 16 * 4)
+      expect(pixel(run.source.rgba, 3, 2)).toEqual(rgb(0xd97757))
+      expect(pixel(run.source.rgba, 5, 4)).toEqual(rgb(0x1a1a1a))
+      expect(pixel(run.source.rgba, 0, 0)[3]).toBe(0)
+      expect(pixel(avatarPicture('claude', 'done', 0).source.rgba, 3, 2)).toEqual(rgb(dim(0xd97757)))
+      expect(pixel(avatarPicture('claude', 'failed', 0).source.rgba, 3, 2)).toEqual(rgb(0xe06c75))
+      expect(pixel(avatarPicture('kimi', 'running', 0).source.rgba, 13, 2)).toEqual(rgb(0x5b7fff))
+      expect(avatarPicture('claude', 'running', 1).source.rgba).not.toBe(run.source.rgba)
+    })
+
+    test('the alt text is the braille the Raster draws, two cells wide', () => {
+      for (const avatar of ['claude', 'gpt', 'kimi'] as const) {
+        const words = new Uint32Array(bytes(avatarCells(avatar, 'running', 0)).buffer)
+        expect(words).toHaveLength(2 * 3)
+        expect(avatarPicture(avatar, 'running', 0).alt).toBe(String.fromCodePoint(words[0] ?? 0, words[3] ?? 0))
+      }
+    })
+
+    test('terminal rows draw a picture per status in place of the mark; other surfaces keep the mark', async ($, on) => {
       world(on, { ...RUN_FILES, ...under(`${KIDS}/f-unknown`, { pid: '110', 'owner-session': SID, 'start-epoch': epoch(5) }) })
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      const run = await cellsOf(ui, `${KIDS}/a-run`)
-      const done = await cellsOf(ui, `${KIDS}/b-done`)
-      const failed = await cellsOf(ui, `${KIDS}/e-failed`)
+      expect((await avatarOf(ui, `${KIDS}/a-run`))?.type).toBe('Image')
+      expect((await avatarOf(ui, `${KIDS}/a-run`))?.props).toMatchObject({ columns: 2, rows: 1 })
+      const run = await pictureOf(ui, `${KIDS}/a-run`)
+      const done = await pictureOf(ui, `${KIDS}/b-done`)
+      const failed = await pictureOf(ui, `${KIDS}/e-failed`)
       expect(new Set([run, done, failed]).size).toBe(3)
-      expect(await cellsOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
+      expect(await pictureOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
       expect(await ui.find({ key: `mark:disk:${KIDS}/a-run` })).toBeUndefined()
       expect((await ui.find({ key: `mark:disk:${KIDS}/f-unknown` }))?.text).toContain('†')
       await ui.unmount()
@@ -342,7 +371,8 @@ describe('workers pane', () => {
       const keys = new Set(w.blits.map(blit => blit.key))
       expect([...keys].sort()).toEqual([`avatar:disk:${KIDS}/a-run`, `avatar:disk:${PANEL}/0123abcdef/code`].sort())
       expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(4)
-      expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.cells)).size).toBeGreaterThan(1)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.rgba && !blit.cells)).toBe(true)
+      expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.rgba)).size).toBeGreaterThan(1)
       await ui.unmount()
 
       w.alive.clear()
@@ -354,12 +384,34 @@ describe('workers pane', () => {
       await settled.unmount()
     })
 
+    test('a terminal that draws the alt switches the pane to braille Rasters', async ($, on) => {
+      const w = world(on, RUN_FILES)
+      w.blitOk = true
+      w.imageDeny = 'the Image draws its alt here'
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(250)
+      await w.clock.advance(1000)
+      // one redraw, no loop: the Raster pane's blits are cells, which never read as alt
+      expect(w.invalidated).toBe(1)
+      await ui.unmount()
+
+      w.imageDeny = undefined
+      const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect((await avatarOf(again, `${KIDS}/a-run`))?.type).toBe('Raster')
+      await w.clock.advance(250)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.cells && !blit.rgba)).toBe(true)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(1)
+      await again.unmount()
+    })
+
     test('31 running rows are all listed; animation still stops at 20', async ($, on) => {
       const files: Record<string, string> = {}
       for (let i = 0; i < 31; i++) Object.assign(files, under(`${KIDS}/m-${i}`, run('openai', `70${i}`)))
       const w = world(on, files, Array.from({ length: 31 }, (_, i) => `70${i}`))
       w.blitOk = true
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      // the plugin loads afresh per test: the alt switch above does not carry over
+      expect((await avatarOf(ui, `${KIDS}/m-0`))?.type).toBe('Image')
       expect((await ui.findAll({})).filter(node => node.key?.startsWith('disk:'))).toHaveLength(31)
       await w.clock.advance(1000)
       expect(new Set(w.blits.map(blit => blit.key)).size).toBe(20)
@@ -502,8 +554,8 @@ describe('asks band', () => {
   test('one row per ask; a click expands its context; an ask without a detail file says none was recorded', async ($, on) => {
     world(on, {
       ...RUN_FILES,
-      [ASKS]: '#12 merge the DF fold?\n\n#13 pick the panel model?\n',
-      [`${ASKS}.d/1.md`]: 'DF fold: options A or B. Recommend A.',
+      [ASKS]: '#12 merge the fold?\n\n#13 pick the panel model?\n',
+      [`${ASKS}.d/1.md`]: 'Fold: options A or B. Recommend A.',
     })
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
@@ -547,6 +599,81 @@ describe('asks band', () => {
     await ui.unmount()
   })
 
+  test('every ask row leads with its own toggle, a ticketless ask included', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: '#123 merge the fold?\npick the panel model?\n',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const line = async (n: number) => (await ui.find({ key: `ask-line-${n}` }))?.text ?? ''
+    expect(await line(1)).toMatch(/^▸ merge the fold\? *#123$/)
+    expect(await line(2)).toBe('▸ pick the panel model?')
+    await ui.unmount()
+  })
+
+  test('a mid-sentence #N keeps the sentence whole and links the ticket beside it', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: 'for #123, should I send it back?\n',
+      ...GIT_CONFIG,
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ for #123, should I send it back?')
+    expect((await ui.find({ type: 'Link', text: '#123' }))?.props.href).toBe('https://github.com/acme/widgets/issues/123')
+    await ui.unmount()
+  })
+
+  test('only the linked #N leaves the label; any other #N stays', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: 'see #12 and #13\n#12 merge #13\n',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ see #12 and #13')
+    expect((await ui.find({ key: 'ask-2' }))?.text).toBe('▸ merge #13')
+    await ui.unmount()
+  })
+
+  describe('ticket link repository', () => {
+    const files = (config?: string) => ({
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: '#123 merge the fold?\n',
+      ...(config === undefined ? {} : { '/fx/repo/.git/config': config }),
+    })
+    const href = async (ui: { find: (q: { type: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) => (await ui.find({ type: 'Link' }))?.props.href
+
+    test('an https origin remote names the repository; origin wins over other remotes', async ($, on) => {
+      world(on, files('[remote "fork"]\n\turl = git@github.com:me/widgets.git\n[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n'))
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await href(ui)).toBe('https://github.com/acme/widgets/issues/123')
+      await ui.unmount()
+    })
+
+    for (const [name, config] of [['no config file', undefined], ['a non-GitHub remote', '[remote "origin"]\n\turl = git@example.com:acme/widgets.git\n']] as const) {
+      test(`${name} leaves #N as plain text`, async ($, on) => {
+        world(on, files(config))
+        const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+        expect(await ui.find({ type: 'Link' })).toBeUndefined()
+        expect((await ui.find({ key: 'ask-line-1' }))?.text).toContain('#123')
+        await ui.unmount()
+      })
+    }
+
+    test('the repoSlug option wins over the remote', { options: { repoSlug: 'other/thing' } }, async ($, on) => {
+      world(on, files(GIT_CONFIG['/fx/repo/.git/config']))
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await href(ui)).toBe('https://github.com/other/thing/issues/123')
+      await ui.unmount()
+    })
+  })
+
+  test('the childrenDir option replaces the default child-runs directory', { options: { childrenDir: '/fx/runs/' } }, async ($, on) => {
+    world(on, under('/fx/runs/x-run', run('openai', '101')))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ key: 'disk:/fx/runs/x-run' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('unsafe http links render the asks band as plain text', async ($, on) => {
     world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
@@ -582,7 +709,7 @@ describe('asks band', () => {
     world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
       [ASKS]: '#4390 review the UI?\n',
-      [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/EZ-OPD/ez-opd-services/pull/4390\n',
+      [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/acme/widgets/pull/4390\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     await ui.press({ key: 'ask-1' })
@@ -592,9 +719,8 @@ describe('asks band', () => {
   })
 
   test('an expanded ask closes once its line is gone', async ($, on) => {
-    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the DF fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
+    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
     on('command.register', ($, e) => ({ value: { command: e.name } }))
-    on('ui.invalidate', () => ({ value: undefined }))
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive: true })
 
@@ -605,7 +731,7 @@ describe('asks band', () => {
 
     w.files[ASKS] = ''
     await w.clock.advance(3000)
-    w.files[ASKS] = '#12 merge the DF fold?\n'
+    w.files[ASKS] = '#12 merge the fold?\n'
     const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await again.find({ key: 'ask-1' })).toBeDefined()
     expect(await again.find({ key: 'ask-detail-1' })).toBeUndefined()
@@ -637,7 +763,7 @@ describe('asks band: done tickets', () => {
   const CONFIG = '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n- `board_snapshot_file`: `~/state/board-snapshot.md`\n'
   const pr = (n: number, state: string) => ({ [`${STATE}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state, isDraft: false }) })
   const board = (...rows: [number, string][]) => ({
-    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Practice | Free | Week 16 | M7 | — |`)].join('\n'),
+    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Web | Free | Week 16 | M7 | — |`)].join('\n'),
   })
   const shown = async (ui: { find: (query: { key: string }) => Promise<unknown> }, lines: number[]) =>
     Promise.all(lines.map(async n => (await ui.find({ key: `ask-${n}` })) !== undefined))
@@ -683,7 +809,6 @@ describe('pane auto-open', () => {
     const w = world(on, { ...RUN_FILES, ...files })
     const opened: string[] = []
     on('command.register', ($, e) => ({ value: { command: e.name } }))
-    on('ui.invalidate', () => ({ value: undefined }))
     on('ui.open', ($, e) => {
       opened.push(e.id)
       return { value: {} }
@@ -693,23 +818,25 @@ describe('pane auto-open', () => {
     return { w, opened }
   }
 
-  for (const role of ['pm', 'tl-product', 'tl-platform']) {
+  for (const role of ['pm', 'tl-widgets']) {
     test(`opens the pane at start for a ${role} session`, async ($, on) => {
       const { opened } = await start([$, on], { [ROLE]: role })
       expect(opened).toEqual(['workers'])
     })
   }
 
-  test('leaves the pane closed for an unmarked or non-manager session', async ($, on) => {
-    const { w, opened } = await start([$, on], { [ROLE]: 'worker' })
-    await w.clock.advance(3000)
-    expect(opened).toEqual([])
-  })
+  for (const role of ['worker', 'tl-', 'pm-x']) {
+    test(`leaves the pane closed for a ${role} session`, async ($, on) => {
+      const { w, opened } = await start([$, on], { [ROLE]: role })
+      await w.clock.advance(3000)
+      expect(opened).toEqual([])
+    })
+  }
 
   test('opens once when the marker is written after start', async ($, on) => {
     const { w, opened } = await start([$, on], {})
     expect(opened).toEqual([])
-    w.files[ROLE] = 'tl-platform'
+    w.files[ROLE] = 'tl-widgets'
     await w.clock.advance(3000)
     await w.clock.advance(3000)
     expect(opened).toEqual(['workers'])

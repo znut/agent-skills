@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
-import { type Avatar, SPRITE_COLS, avatarCells, avatarOf } from './sprites'
+import { type Avatar, SPRITE_COLS, avatarCells, avatarOf, avatarPicture } from './sprites'
 import {
   TAIL_LINES,
   busStateDir,
@@ -100,8 +100,7 @@ async function gitCommonDir($: $): Promise<string | null> {
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   return perCwd($, 'roots', async () => {
     const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-    const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
-    const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
+    const children = String(options.childrenDir ?? '').replace(/\/+$/, '') || `${tmp}/agent-tools/children`
     const common = await gitCommonDir($)
     return [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
   })
@@ -460,14 +459,41 @@ function safeHref(href: string): string | null {
   }
 }
 
-function repoSlug(options: PluginOptions): string {
-  const configured = String(options.repoSlug ?? '').trim()
-  return (configured || 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+// `owner/repo` of a GitHub remote URL (https, ssh or scp form), else null.
+function githubSlug(url: string): string | null {
+  const match = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(url.trim())
+  return match?.[1] ?? null
+}
+
+// The configured slug, else the session repo's `origin` remote, read from the git config file:
+// null when neither names a GitHub repo, and ticket refs stay text.
+async function resolveRepo($: $, options: PluginOptions): Promise<string | null> {
+  const configured = String(options.repoSlug ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+  if (configured) return configured
+  return perCwd($, 'repo', async () => {
+    const common = await gitCommonDir($)
+    if (!common) return null
+    let inOrigin = false
+    for (const line of (await readText($, `${common}/config`)).split('\n')) {
+      const section = /^\s*\[(.*)\]\s*$/.exec(line)
+      if (section) inOrigin = section[1] === 'remote "origin"'
+      const url = inOrigin ? /^\s*url\s*=\s*(\S+)/.exec(line)?.[1] : undefined
+      if (url) return githubSlug(url)
+    }
+    return null
+  })
 }
 
 function asNative(agent: AgentInfo): NativeRun {
   const status = agent.status === 'completed' ? 'done' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'dead' : 'running'
   return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
+}
+
+// The ask's sentence, minus the linked `#issue` at its very start or end (the link beside it
+// carries the number); a mid-sentence `#issue` and every other `#N` stay.
+function askBody(text: string, issue: string | null, dropUrl: boolean): string {
+  const body = dropUrl ? text.replace(/\s*https?:\/\/\S+$/, '') : text
+  return issue ? body.replace(new RegExp(`^#${issue}(?!\\d)\\s*`), '').replace(new RegExp(`\\s*#${issue}$`), '') : body
 }
 
 function askOptions(detail: string): string[] {
@@ -512,6 +538,10 @@ const CHILD_CAP = 8
 let frameTimer: Timer | null = null
 let frameTick = 0
 let animating: { key: string; avatar: Avatar }[] = []
+let animatingPictures = false
+// A terminal without pictures draws an Image's alt dim and uncolored; once a blit says so,
+// the pane draws braille Rasters instead.
+let picturesDrawAlt = false
 
 function syncFrames($: $): void {
   if (animating.length === 0) {
@@ -523,9 +553,23 @@ function syncFrames($: $): void {
   frameTimer = $.clock.every(FRAME_MS, async () => {
     frameTick++
     const batch = animating
+    const pictures = animatingPictures
     const results = await Promise.all(
-      batch.map(row => $.ui.blit({ requestId: PANE, key: `avatar:${row.key}`, cells: avatarCells(row.avatar, 'running', frameTick) }).catch(() => ({ deny: 'blit failed' }))),
+      batch.map(row => {
+        const key = `avatar:${row.key}`
+        const blit = pictures
+          ? $.ui.blit({ requestId: PANE, key, source: avatarPicture(row.avatar, 'running', frameTick).source })
+          : $.ui.blit({ requestId: PANE, key, cells: avatarCells(row.avatar, 'running', frameTick) })
+        return blit.catch(() => ({ deny: 'blit failed' }))
+      }),
     )
+    // Reads the engine's deny wording (its reasons are "spelled out for a fallback"); not yet
+    // confirmed against a real terminal without pictures.
+    if (pictures && results.some(result => /\balt\b/i.test(result.deny ?? ''))) {
+      picturesDrawAlt = true
+      animating = []
+      $.ui.invalidate('ui.render')
+    }
     // nothing of ours is mounted any more (the pane closed): wait for the next render
     if (results.every(result => result.deny)) animating = []
     syncFrames($)
@@ -537,7 +581,7 @@ const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as cons
 const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
 
 // boot-report writes the role marker after the session starts, so the pane waits for it a few ticks.
-const MANAGER_ROLES = new Set(['pm', 'tl-product', 'tl-platform'])
+const MANAGER_ROLE = /^(pm|tl-[a-z0-9-]+)$/
 const ROLE_DIR = '/tmp/cc-session-roles'
 const ROLE_WAIT_TICKS = 60
 let roleTicksLeft = 0
@@ -547,7 +591,7 @@ async function openForManager($: $): Promise<void> {
   roleTicksLeft--
   const sid = await $.session.id()
   if (!sid || /[/]|\.\./.test(sid)) return
-  if (!MANAGER_ROLES.has(await readText($, `${ROLE_DIR}/${sid}`))) return
+  if (!MANAGER_ROLE.test(await readText($, `${ROLE_DIR}/${sid}`))) return
   roleTicksLeft = 0
   await $.ui.open({ id: PANE, title: 'Workers' })
 }
@@ -582,7 +626,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : null
+    const terminal = e.surface === 'terminal' ? $.ui.resolve(e) : null
+    const Image = picturesDrawAlt ? null : terminal?.Image ?? null
+    const Raster = terminal?.Raster ?? null
     const now = await $.clock.now()
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
@@ -593,13 +639,13 @@ export const register: Register = (on, options) => {
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
     ])
     const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
-    animating = Raster
+    animating = Image || Raster
       ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
+    animatingPictures = !!Image
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
-    const repo = repoSlug(options)
-    const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
+    const repo = await resolveRepo($, options)
     const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
@@ -620,7 +666,7 @@ export const register: Register = (on, options) => {
             {prState.prs.map(pr => {
               const gate = prState.gates.get(pr.number) ?? null
               const result = gate == null ? '…' : gate.green === true ? '✓' : '✗'
-              const href = safeHref(`https://github.com/${repo}/pull/${pr.number}`)
+              const href = repo ? safeHref(`https://github.com/${repo}/pull/${pr.number}`) : null
               return (
                 <Box key={`pr:${pr.number}`}>
                   {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
@@ -635,7 +681,9 @@ export const register: Register = (on, options) => {
         {visible.map(({ row, isChild }) => (
           <Box key={`row:${row.key}`} flexDirection="row">
             {isChild && <Text dimColor>{'  └ '}</Text>}
-            {Raster && row.avatar ? (
+            {Image && row.avatar ? (
+              <Image key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} {...avatarPicture(row.avatar, row.status, frameTick)} />
+            ) : Raster && row.avatar ? (
               <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
             ) : (
               <Box key={`mark:${row.key}`}>
@@ -680,7 +728,7 @@ export const register: Register = (on, options) => {
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const issueUrl = (n: number) => `https://github.com/${repoSlug(options)}/issues/${n}`
+    const repo = await resolveRepo($, options)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
@@ -695,7 +743,7 @@ export const register: Register = (on, options) => {
       return {
         ask,
         issue,
-        issueHref: issue ? safeHref(issueUrl(Number(issue))) : null,
+        issueHref: issue && repo ? safeHref(`https://github.com/${repo}/issues/${issue}`) : null,
         trailing,
         trailingHref: trailing ? safeHref(trailing) : null,
         askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),
@@ -705,18 +753,20 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
-          const body = (trailingHref && !issue ? ask.text.replace(/\s*https?:\/\/\S+$/, '') : ask.text).replace(/#\d+\s*/, '')
+          // The toggle leads every row, ticket or not, so no ask reads as part of the row above.
+          const urlLink = !issue && trailingHref
           return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
-              {!issue && trailingHref ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
               <Button
                 key={`ask-${ask.n}`}
                 plain
-                label={`${ask === shown ? '▾' : '▸'} ${body}`}
+                label={`${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, !!urlLink)}`}
                 onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
               />
+              {issue || urlLink ? <Text>{' '}</Text> : null}
+              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
+              {urlLink ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
             </Box>
             {ask === shown &&
               (detail ? (

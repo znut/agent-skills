@@ -4,9 +4,10 @@ import { mock } from 'claude-code/testing'
 
 export const SID = 'sid-1'
 export const NOW = 1_790_000_000_000
-export const KIDS = '/fx/tmp/ez-opd/kimi-children'
+export const KIDS = '/fx/tmp/agent-tools/children'
 export const PANEL = '/fx/repo/.git/.review-panel'
 export const STATE = '/fx/home/state'
+export const GIT_CONFIG = { '/fx/repo/.git/config': '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n' }
 
 export const epoch = (minutesAgo: number) => String(Math.floor(NOW / 1000) - minutesAgo * 60)
 
@@ -46,6 +47,7 @@ export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
   '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus` (peer inboxes)\n',
+  ...GIT_CONFIG,
 }
 
 export const ALIVE = ['101', '106']
@@ -61,9 +63,12 @@ export type World = {
   filled: string[]
   modes: string[]
   lists: string[]
-  blits: { key: string; cells: string }[]
+  blits: { key: string; cells?: string; rgba?: string }[]
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
   blitOk: boolean
+  // set: an Image blit is denied with this reason, as on a terminal that draws the alt
+  imageDeny?: string
+  invalidated: number
   denied: number
   // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
   cwd: string
@@ -83,7 +88,7 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0,
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0,
     cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
   }
   on('session.cwd', () => ({ value: w.cwd }))
@@ -96,7 +101,15 @@ export function world(
       return { value: { deny: 'not mounted' } }
     }
     if ('cells' in e) w.blits.push({ key: e.key, cells: e.cells })
+    else if ('rgba' in e.source) {
+      if (w.imageDeny) return { value: { deny: w.imageDeny } }
+      w.blits.push({ key: e.key, rgba: e.source.rgba })
+    }
     return { value: {} }
+  })
+  on('ui.invalidate', () => {
+    w.invalidated++
+    return { value: undefined }
   })
   on('prompt.fill', ($, e) => {
     w.filled.push(e.text)

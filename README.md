@@ -77,9 +77,11 @@ above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to
 that path to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`. Its paths are `userConfig` options in `/config`;
 each option's description in its `plugin.json` names the default an empty
-value resolves to. The defaults follow the ez-opd runtime layout: child runs
-under `$EZOPD_RUNTIME_DIR/kimi-children`, review panels under the clone's git
-common directory (`.review-panel/`), and the asks state beside the
-`session_bus_dir` the main checkout's `.agent/orchestrate.local.md` declares.
+value resolves to. The defaults: child runs under `$TMPDIR/agent-tools/children`
+(`childrenDir`), review panels under the clone's git common directory
+(`.review-panel/`), the asks state beside the `session_bus_dir` the main
+checkout's `.agent/orchestrate.local.md` declares (`stateDir`), and ticket links
+to the GitHub repository of the session clone's `origin` remote (`repoSlug`; no
+GitHub remote, no link). A repo whose layout differs sets these options.
 Check it with `claude plugin validate`, `claude plugin test` and `tsc -p` on
 that folder.
