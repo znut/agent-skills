@@ -1,3 +1,5 @@
+import { toBase64 } from './lib'
+
 // Provider avatars: 2 terminal cells wide, one row tall (a square on screen). Where the
 // terminal draws pictures, a square RGBA sprite (its frame's size, 16 or 32 pixels) fills
 // the box; elsewhere braille (2x4 dots a cell, so 4x4 pixels) in a Raster, and the same
@@ -221,7 +223,6 @@ const SPRITES: Record<Avatar, string[][]> = {
 const CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 0, 2], kimi: [0, 0, 1, 1] }
 const SPRITE_CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 2, 3], kimi: [0, 0, 1, 1] }
 
-const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
 
 // One braille code point a cell, with the cell's color.
 function brailleCells(frame: string[], main: number, accent: number): { glyph: number; color: number }[] {

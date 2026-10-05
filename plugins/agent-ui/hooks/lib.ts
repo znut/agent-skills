@@ -2,6 +2,13 @@ import type { RunKind, RunStatus } from '../types'
 
 export const TAIL_LINES = 40
 
+// Base64 in 8 KiB slices: one spread of a large array overflows the argument limit.
+export function toBase64(bytes: Uint8Array): string {
+  let text = ''
+  for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return btoa(text)
+}
+
 export function baseName(path: string): string {
   return path.replace(/\/+$/, '').split('/').pop() ?? path
 }

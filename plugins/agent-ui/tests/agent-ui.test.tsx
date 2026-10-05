@@ -906,7 +906,7 @@ describe('main-ci chart', () => {
     await ui.unmount()
   })
 
-  test('metrics.jsonl is read once, then only its appended tail; a partial line waits', async ($, on) => {
+  test('metrics.jsonl is read once, then only its appended lines; a partial line is read again whole', async ($, on) => {
     const w = world(on, files(metrics(2)))
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
@@ -929,7 +929,7 @@ describe('main-ci chart', () => {
     const whole = await $.ui.mount(pane())
     expect(await cards(whole)).toHaveLength(3)
     await whole.unmount()
-    expect(w.tails.at(-1)).toBe(`+${size + 21} ${METRICS}`)
+    expect(w.tails.at(-1)).toBe(`+${size + 1} ${METRICS}`)
   })
 
   test("a run's card lists its 8 slowest jobs and stays inside the pane", async ($, on) => {
@@ -975,6 +975,55 @@ describe('main-ci chart', () => {
     expect(await desktop.find({ key: 'ci-chart' })).toBeUndefined()
     expect((await desktop.find({ key: 'ci-text-5' }))?.text).toContain('█')
     await desktop.unmount()
+  })
+
+  test('a file cut to other runs is read afresh, never served from the old chart', async ($, on) => {
+    const w = world(on, files(metrics(3)))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    expect(await cards(ui)).toHaveLength(3)
+    await ui.unmount()
+    w.files[METRICS] = `${runRows(7)}\n${runRows(8)}\n`
+    const again = await $.ui.mount(pane())
+    expect(await cards(again)).toEqual([`ci-run:${name(7)}`, `ci-run:${name(8)}`])
+    await again.unmount()
+  })
+
+  test('two renders reading at once take the appended rows once', async ($, on) => {
+    const w = world(on, files(metrics(3)))
+    const ui = await $.ui.mount(pane(120, 'desktop'))
+    await ui.press({ key: 'ci-toggle' })
+    await ui.unmount()
+    w.files[METRICS] += `${row(3, 'test', { attempt: 2 })}\n`
+    const [one, two] = await Promise.all([$.ui.mount(pane(120, 'terminal')), $.ui.mount(pane(120, 'desktop'))])
+    await one.unmount()
+    await two.unmount()
+    expect(w.tails).toHaveLength(3)
+    const after = await $.ui.mount(pane(120, 'desktop'))
+    const chartText = (await Promise.all([0, 1, 2, 3, 4, 5].map(async y => (await after.find({ key: `ci-text-${y}` }))?.text ?? ''))).join('')
+    expect(chartText.match(/[0-9+]/g)).toEqual(['1'])
+    await after.unmount()
+  })
+
+  test('a first read from mid-file drops the run it began inside', async ($, on) => {
+    // runs of about 20 KB: the first read (2 runs' worth, 32 KiB) begins inside run 2
+    const jobs = Array.from({ length: 60 }, (_, k) => `job-${String(k).padStart(3, '0')}-${'x'.repeat(120)}`)
+    world(on, files(`${[1, 2, 3].map(i => runRows(i, jobs)).join('\n')}\n`))
+    const ui = await $.ui.mount(pane(10))
+    await ui.press({ key: 'ci-toggle' })
+    expect(await cards(ui)).toEqual([`ci-run:${name(3)}`])
+    await ui.unmount()
+  })
+
+  test('in a narrow pane the card and its lines fit the pane width', async ($, on) => {
+    world(on, files(`${runRows(1, ['a-very-long-job-name-indeed', 'test'])}\n`))
+    const ui = await $.ui.mount(pane(30))
+    await ui.press({ key: 'ci-toggle' })
+    const card = (await ui.find({ key: `ci-run:${name(1)}` }))?.children[0] as { props: Record<string, unknown>; children: { children?: unknown[] }[] }
+    expect(Number(card.props.width)).toBeLessThanOrEqual(30)
+    for (const line of card.children) expect(String(line.children?.[0] ?? '').length).toBeLessThanOrEqual(26)
+    expect(6 + Number(card.props.left) + Number(card.props.width)).toBeLessThanOrEqual(30)
+    await ui.unmount()
   })
 
   test('the jobs row expands to the color key', async ($, on) => {

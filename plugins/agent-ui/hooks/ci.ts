@@ -1,3 +1,5 @@
+import { toBase64 } from './lib'
+
 // main-ci's run history, from its metrics.jsonl (one row per job attempt): runs grouped, the
 // stacked-bar chart encoded as one RGBA picture or as block-glyph cells, and a run's hover card.
 export type MetricRow = {
@@ -152,7 +154,7 @@ export function encodeChart(runs: CiRun[]): { rgba: string; width: number; heigh
     const steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay), 1)
     for (let s = 0; s <= steps; s++) put(Math.round(ax + ((bx - ax) * s) / steps), Math.round(ay + ((by - ay) * s) / steps), LOAD)
   }
-  return { rgba: btoa(String.fromCharCode(...bytes)), width, height }
+  return { rgba: toBase64(bytes), width, height }
 }
 
 // The fallback: rows x (2 per run) cells of ▁..█, colored by the run's slowest job; a retry
@@ -177,18 +179,21 @@ export function chartCells(runs: CiRun[]): Cell[][] {
 
 export function encodeCells(grid: Cell[][]): string {
   const words = Uint32Array.from(grid.flatMap(row => row.flatMap(cell => [cell.glyph, cell.color, 0x01000000])))
-  return btoa(String.fromCharCode(...new Uint8Array(words.buffer)))
+  return toBase64(new Uint8Array(words.buffer))
 }
 
 const pad = (text: string, width: number, right = false) => (right ? text.padStart(width) : text.padEnd(width))
 
-// The hover card: a heading, then job / wall / cpu / MB / re for the run's 8 slowest jobs.
-export function cardLines(run: CiRun): string[] {
+// The hover card: a heading, then job / wall / cpu / MB / re for the run's 8 slowest jobs, each
+// line at most `width` columns (the job name gives way first).
+export function cardLines(run: CiRun, width = Infinity): string[] {
+  const nameWidth = Math.max(4, Math.min(16, width - 21))
+  const line = (job: string, ...cells: [string, number][]) => `${pad(job.slice(0, nameWidth - 1), nameWidth)}${cells.map(([text, w]) => pad(text, w, true)).join('')}`
   const head = `${run.sha8} · load1 ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
   const table = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8).map(job =>
-    `${pad(job.job.slice(0, 15), 16)}${pad(job.wall.toFixed(1), 6, true)}${pad(job.cpu.toFixed(1), 6, true)}${pad(String(Math.round(job.mb)), 6, true)}${pad(String(job.retries), 3, true)}`,
+    line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]),
   )
-  return [head, `${pad('job', 16)}${pad('wall', 6, true)}${pad('cpu', 6, true)}${pad('MB', 6, true)}${pad('re', 3, true)}`, ...table]
+  return [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
 }
 
 // The card's left offset from its run column, clamped so the card stays inside the pane.

@@ -6,6 +6,7 @@ import { type Avatar, SPRITE_COLS, avatarCells, avatarOf, avatarPicture } from '
 import {
   AXIS_COLS,
   CHART_ROWS,
+  type Cell,
   type CiRun,
   type MainState,
   type MetricRow,
@@ -314,7 +315,7 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   return { prs, gates }
 }
 
-type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState }
+type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null }
 
 async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | null> {
   const ghDir = await resolveGhStatusDir($, options)
@@ -325,7 +326,8 @@ async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | 
   if (!state || typeof state.sha !== 'string') return null
   const main8 = state.sha.slice(0, 8)
   const logPath = `${root}/main-ci/run.log`
-  const logStat = (await listDir($, `${root}/main-ci`)).find(entry => entry.name === 'run.log' && entry.kind === 'file')
+  const listing = await listDir($, `${root}/main-ci`)
+  const logStat = listing.find(entry => entry.name === 'run.log' && entry.kind === 'file')
   let queue = { running: 0, queued: 0 }
   if (logStat) {
     const key = `${logStat.mtimeMs}:${logStat.size}`
@@ -341,58 +343,90 @@ async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | 
     queue,
     ciDir: `${root}/main-ci`,
     ci: { sha: state.sha, phase: String(state.phase ?? '') },
+    metrics: listing.find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file') ?? null,
   }
 }
 
 // metrics.jsonl read incrementally: the first read takes the tail that holds `cap` runs, each
-// later one only the bytes appended since; a shorter file (rotated) starts over.
-type CiFeed = { path: string; cap: number; offset: number; rest: string; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
+// later one only the whole lines appended since; a shorter file (rotated) starts over. The
+// offset stays on a line boundary, so a partial last line is read again next time.
+type CiFeed = { path: string; cap: number; offset: number; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
 const RUN_BYTES = 16_384
 let ciFeed: CiFeed | null = null
-const freshFeed = (path: string, cap: number): CiFeed => ({ path, cap, offset: -1, rest: '', rows: new Map(), runs: [], version: 0 })
+// Feed versions never repeat, a fresh feed's included, so a chart cached on one cannot match.
+let ciVersion = 0
+const freshFeed = (path: string, cap: number): CiFeed => ({ path, cap, offset: -1, rows: new Map(), runs: [], version: ++ciVersion })
 
-async function readCiRuns($: $, dir: string, need: number): Promise<CiFeed | null> {
-  const path = `${dir}/metrics.jsonl`
-  if (!ciFeed || ciFeed.path !== path || need > ciFeed.cap) ciFeed = freshFeed(path, Math.max(need, ciFeed?.cap ?? 0))
-  const feed = ciFeed
-  const stat = (await listDir($, dir)).find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file')
+// Bytes of `text` as read from the file: a read that starts inside a character decodes each of
+// its stray bytes as one U+FFFD, which TextEncoder would count as three.
+function fileBytes(text: string, fromMidFile: boolean): number {
+  const stray = fromMidFile ? (/^\uFFFD*/.exec(text)?.[0].length ?? 0) : 0
+  return new TextEncoder().encode(text).length - 2 * stray
+}
+
+async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed | null> {
+  const path = `${main.ciDir}/metrics.jsonl`
+  const stat = main.metrics
   if (!stat) return null
-  if (stat.size < feed.offset) Object.assign(feed, freshFeed(path, feed.cap))
+  if (!ciFeed || ciFeed.path !== path || need > ciFeed.cap || stat.size < ciFeed.offset) ciFeed = freshFeed(path, Math.max(need, ciFeed?.cap ?? 0))
+  const feed = ciFeed
   if (stat.size === feed.offset) return feed
-  const first = feed.offset < 0
-  const start = first ? Math.max(0, stat.size - feed.cap * RUN_BYTES) : feed.offset
+  const offset = feed.offset
+  const start = offset < 0 ? Math.max(0, stat.size - feed.cap * RUN_BYTES) : offset
   const ran = await $.process.run(['tail', '-c', `+${start + 1}`, path]).catch(() => null)
-  if (ran?.exitCode !== 0) return feed
-  let text = feed.rest + ran.stdout
-  if (first && start > 0) text = text.slice(text.indexOf('\n') + 1)
+  // another render read these bytes while this one waited
+  if (ciFeed !== feed || feed.offset !== offset || ran?.exitCode !== 0) return feed
+  const text = ran.stdout
+  const from = offset < 0 && start > 0 ? text.indexOf('\n') + 1 : 0
   const cut = text.lastIndexOf('\n') + 1
-  feed.rest = text.slice(cut)
-  feed.offset = start + new TextEncoder().encode(ran.stdout).length
-  const rows = parseRows(text.slice(0, cut))
+  if (cut <= from) return feed
+  feed.offset = start + fileBytes(text.slice(0, cut), offset < 0 && start > 0)
+  const rows = parseRows(text.slice(from, cut))
   if (rows.length === 0) return feed
-  for (const row of rows) feed.rows.set(row.run, [...(feed.rows.get(row.run) ?? []), row])
+  for (const row of rows) {
+    const list = feed.rows.get(row.run)
+    if (list) list.push(row)
+    else feed.rows.set(row.run, [row])
+  }
   const names = [...feed.rows.keys()].sort()
-  for (const name of names.slice(0, Math.max(0, names.length - feed.cap - 1))) feed.rows.delete(name)
-  feed.runs = [...feed.rows.keys()].sort().map(name => summarize(name, feed.rows.get(name) ?? []))
-  feed.version++
+  // a read from mid-file can begin inside its oldest run
+  if (offset < 0 && start > 0 && names.length > 0) feed.rows.delete(names.shift() as string)
+  for (const name of names.splice(0, Math.max(0, names.length - feed.cap))) feed.rows.delete(name)
+  feed.runs = names.map(name => summarize(name, feed.rows.get(name) ?? []))
+  feed.version = ++ciVersion
   return feed
 }
 
-type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; grid: ReturnType<typeof chartCells>; cells: string }
+type CiCard = { lines: string[]; width: number; left: number }
+type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; cards: CiCard[]; jobs: string[]; fallback?: { grid: Cell[][]; cells: string } }
 let ciChart: CiChart | null = null
 
 // Encoded again only when a run is added or changes, main-ci's state moves, or the width does.
 async function readCiChart($: $, main: MainStrip, bodyColumns: number): Promise<CiChart | null> {
   const fit = runsFit(bodyColumns)
-  const feed = fit > 0 ? await readCiRuns($, main.ciDir, fit) : null
+  const feed = fit > 0 ? await readCiRuns($, main, fit) : null
   if (!feed) return null
-  const key = `${feed.path}|${feed.version}|${main.ci.sha}|${main.ci.phase}|${fit}`
+  const key = `${feed.version}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}`
   if (ciChart?.key === key) return ciChart
   const runs = withPending(feed.runs, main.ci).slice(-fit)
   if (runs.length === 0) return null
-  const grid = chartCells(runs)
-  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), grid, cells: encodeCells(grid) }
+  const cards = runs.map((run, i) => {
+    const lines = cardLines(run, bodyColumns - 4)
+    const width = Math.min(bodyColumns, Math.max(...lines.map(line => line.length)) + 4)
+    return { lines, width, left: cardLeft(i, width, bodyColumns) }
+  })
+  const jobs = [...new Set(runs.flatMap(run => run.jobs.map(job => job.job)))].sort()
+  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), cards, jobs }
   return ciChart
+}
+
+// Block-glyph cells, built only where a picture cannot be drawn.
+function fallbackOf(chart: CiChart): { grid: Cell[][]; cells: string } {
+  if (!chart.fallback) {
+    const grid = chartCells(chart.runs)
+    chart.fallback = { grid, cells: encodeCells(grid) }
+  }
+  return chart.fallback
 }
 
 const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
@@ -655,6 +689,9 @@ function syncFrames($: $): void {
   })
 }
 
+// The card draws on its own dark background, so its text colors are fixed, not the theme's.
+const CARD_TEXT = '#e1e1e6'
+const CARD_DIM = '#9a9cab'
 const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
@@ -754,9 +791,9 @@ export const register: Register = (on, options) => {
                   {Image ? (
                     <Image key="ci-chart" source={chart.source} columns={chart.runs.length * 2} rows={CHART_ROWS} alt={`last ${chart.runs.length} main-ci runs`} />
                   ) : Raster ? (
-                    <Raster key="ci-chart" columns={chart.runs.length * 2} rows={CHART_ROWS} cells={chart.cells} />
+                    <Raster key="ci-chart" columns={chart.runs.length * 2} rows={CHART_ROWS} cells={fallbackOf(chart).cells} />
                   ) : (
-                    chart.grid.map((row, y) => (
+                    fallbackOf(chart).grid.map((row, y) => (
                       <Box key={`ci-text-${y}`} flexDirection="row">
                         {row.map((cell, x) => <Text key={`ci-cell-${y}-${x}`} color={hex(cell.color)}>{String.fromCharCode(cell.glyph)}</Text>)}
                       </Box>
@@ -765,15 +802,14 @@ export const register: Register = (on, options) => {
                 </Box>
                 <Box flexDirection="row">
                   {chart.runs.map((run, i) => {
-                    const lines = cardLines(run)
-                    const width = Math.max(...lines.map(line => line.length)) + 4
+                    const card = chart.cards[i] as CiCard
                     return (
                       <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS}>
                         <Box
                           position="absolute"
                           top={1}
-                          left={cardLeft(i, width, e.props.bodyColumns)}
-                          width={width}
+                          left={card.left}
+                          width={card.width}
                           display="none"
                           hover={{ display: 'flex' }}
                           flexDirection="column"
@@ -781,7 +817,7 @@ export const register: Register = (on, options) => {
                           backgroundColor="#2c2e3c"
                           paddingX={1}
                         >
-                          {lines.map((line, k) => <Text key={`ci-line-${k}`} dimColor={k === 1}>{line}</Text>)}
+                          {card.lines.map((line, k) => <Text key={`ci-line-${k}`} color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>)}
                         </Box>
                       </Box>
                     )
@@ -790,19 +826,12 @@ export const register: Register = (on, options) => {
               </Box>
             </Box>
             <Text dimColor>{`last ${chart.runs.length} runs · line = load1 · red = retry`}</Text>
-            {(() => {
-              const jobs = [...new Set(chart.runs.flatMap(run => run.jobs.map(job => job.job)))].sort()
-              return (
-                <Box key="ci-jobs-row" flexDirection="column">
-                  <Button key="ci-jobs" plain dimColor label={`${isJobsOpen ? '▾' : '▸'} jobs (${jobs.length})`} onPress={() => update($, ciJobsOpen, was => !was)} />
-                  {isJobsOpen && (
-                    <Box key="ci-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
-                      {jobs.map(job => <Text key={`ci-job:${job}`} color={hex(jobColor(job))}>{`■ ${job}`}</Text>)}
-                    </Box>
-                  )}
-                </Box>
-              )
-            })()}
+            <Button key="ci-jobs" plain dimColor label={`${isJobsOpen ? '▾' : '▸'} jobs (${chart.jobs.length})`} onPress={() => update($, ciJobsOpen, was => !was)} />
+            {isJobsOpen && (
+              <Box key="ci-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
+                {chart.jobs.map(job => <Text key={`ci-job:${job}`} color={hex(jobColor(job))}>{`■ ${job}`}</Text>)}
+              </Box>
+            )}
           </Box>
         )}
         {prState.prs.length > 0 && (
