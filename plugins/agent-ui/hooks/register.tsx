@@ -100,8 +100,7 @@ async function gitCommonDir($: $): Promise<string | null> {
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   return perCwd($, 'roots', async () => {
     const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-    const runtime = (await $.env.get('EZOPD_RUNTIME_DIR')) || `${tmp}/ez-opd`
-    const children = String(options.childrenDir ?? '') || `${runtime}/kimi-children`
+    const children = String(options.childrenDir ?? '').replace(/\/+$/, '') || `${tmp}/agent-tools/children`
     const common = await gitCommonDir($)
     return [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
   })
@@ -460,9 +459,31 @@ function safeHref(href: string): string | null {
   }
 }
 
-function repoSlug(options: PluginOptions): string {
-  const configured = String(options.repoSlug ?? '').trim()
-  return (configured || 'EZ-OPD/ez-opd-services').replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+// `owner/repo` of a GitHub remote URL (https, ssh or scp form), else null.
+function githubSlug(url: string): string | null {
+  const match = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(url.trim())
+  return match?.[1] ?? null
+}
+
+// The configured slug, else the session repo's `origin` remote (its first remote without one),
+// read from the git config file: null when neither names a GitHub repo, and ticket refs stay text.
+async function resolveRepo($: $, options: PluginOptions): Promise<string | null> {
+  const configured = String(options.repoSlug ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
+  if (configured) return configured
+  return perCwd($, 'repo', async () => {
+    const common = await gitCommonDir($)
+    if (!common) return null
+    const urls = new Map<string, string>()
+    let remote = ''
+    for (const line of (await readText($, `${common}/config`)).split('\n')) {
+      const section = /^\s*\[(.*)\]\s*$/.exec(line)
+      if (section) remote = /^remote "([^"]+)"$/.exec(section[1] ?? '')?.[1] ?? ''
+      const url = /^\s*url\s*=\s*(\S+)/.exec(line)?.[1]
+      if (remote && url && !urls.has(remote)) urls.set(remote, url)
+    }
+    const url = urls.get('origin') ?? [...urls.values()][0]
+    return url ? githubSlug(url) : null
+  })
 }
 
 function asNative(agent: AgentInfo): NativeRun {
@@ -605,8 +626,7 @@ export const register: Register = (on, options) => {
       : []
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
-    const repo = repoSlug(options)
-    const issueUrl = (n: number) => `https://github.com/${repo}/issues/${n}`
+    const repo = await resolveRepo($, options)
     const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
@@ -627,7 +647,7 @@ export const register: Register = (on, options) => {
             {prState.prs.map(pr => {
               const gate = prState.gates.get(pr.number) ?? null
               const result = gate == null ? '…' : gate.green === true ? '✓' : '✗'
-              const href = safeHref(`https://github.com/${repo}/pull/${pr.number}`)
+              const href = repo ? safeHref(`https://github.com/${repo}/pull/${pr.number}`) : null
               return (
                 <Box key={`pr:${pr.number}`}>
                   {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
@@ -687,7 +707,7 @@ export const register: Register = (on, options) => {
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const issueUrl = (n: number) => `https://github.com/${repoSlug(options)}/issues/${n}`
+    const repo = await resolveRepo($, options)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
@@ -702,7 +722,7 @@ export const register: Register = (on, options) => {
       return {
         ask,
         issue,
-        issueHref: issue ? safeHref(issueUrl(Number(issue))) : null,
+        issueHref: issue && repo ? safeHref(`https://github.com/${repo}/issues/${issue}`) : null,
         trailing,
         trailingHref: trailing ? safeHref(trailing) : null,
         askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),

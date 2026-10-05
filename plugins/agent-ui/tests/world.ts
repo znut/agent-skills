@@ -4,9 +4,10 @@ import { mock } from 'claude-code/testing'
 
 export const SID = 'sid-1'
 export const NOW = 1_790_000_000_000
-export const KIDS = '/fx/tmp/ez-opd/kimi-children'
+export const KIDS = '/fx/tmp/agent-tools/children'
 export const PANEL = '/fx/repo/.git/.review-panel'
 export const STATE = '/fx/home/state'
+export const GIT_CONFIG = { '/fx/repo/.git/config': '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n' }
 
 export const epoch = (minutesAgo: number) => String(Math.floor(NOW / 1000) - minutesAgo * 60)
 
@@ -46,6 +47,7 @@ export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
   '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus` (peer inboxes)\n',
+  ...GIT_CONFIG,
 }
 
 export const ALIVE = ['101', '106']

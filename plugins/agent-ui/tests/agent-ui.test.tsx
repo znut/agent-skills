@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { epoch, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
+import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -204,7 +204,7 @@ describe('workers pane', () => {
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
-    expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/EZ-OPD/ez-opd-services/pull/4390')
+    expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/acme/widgets/pull/4390')
     expect((await ui.find({ type: 'Text', text: 'green' }))?.props.color).toBe('green')
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
     await ui.unmount()
@@ -502,8 +502,8 @@ describe('asks band', () => {
   test('one row per ask; a click expands its context; an ask without a detail file says none was recorded', async ($, on) => {
     world(on, {
       ...RUN_FILES,
-      [ASKS]: '#12 merge the DF fold?\n\n#13 pick the panel model?\n',
-      [`${ASKS}.d/1.md`]: 'DF fold: options A or B. Recommend A.',
+      [ASKS]: '#12 merge the fold?\n\n#13 pick the panel model?\n',
+      [`${ASKS}.d/1.md`]: 'Fold: options A or B. Recommend A.',
     })
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
@@ -563,10 +563,51 @@ describe('asks band', () => {
     world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
       [ASKS]: 'for #123, should I send it back?\n',
+      ...GIT_CONFIG,
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ for #123, should I send it back?')
-    expect((await ui.find({ type: 'Link', text: '#123' }))?.props.href).toMatch(/\/issues\/123$/)
+    expect((await ui.find({ type: 'Link', text: '#123' }))?.props.href).toBe('https://github.com/acme/widgets/issues/123')
+    await ui.unmount()
+  })
+
+  describe('ticket link repository', () => {
+    const files = (config?: string) => ({
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: '#123 merge the fold?\n',
+      ...(config === undefined ? {} : { '/fx/repo/.git/config': config }),
+    })
+    const href = async (ui: { find: (q: { type: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) => (await ui.find({ type: 'Link' }))?.props.href
+
+    test('an https origin remote names the repository; origin wins over other remotes', async ($, on) => {
+      world(on, files('[remote "fork"]\n\turl = git@github.com:me/widgets.git\n[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n'))
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await href(ui)).toBe('https://github.com/acme/widgets/issues/123')
+      await ui.unmount()
+    })
+
+    for (const [name, config] of [['no config file', undefined], ['a non-GitHub remote', '[remote "origin"]\n\turl = git@example.com:acme/widgets.git\n']] as const) {
+      test(`${name} leaves #N as plain text`, async ($, on) => {
+        world(on, files(config))
+        const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+        expect(await ui.find({ type: 'Link' })).toBeUndefined()
+        expect((await ui.find({ key: 'ask-line-1' }))?.text).toContain('#123')
+        await ui.unmount()
+      })
+    }
+
+    test('the repoSlug option wins over the remote', { options: { repoSlug: 'other/thing' } }, async ($, on) => {
+      world(on, files(GIT_CONFIG['/fx/repo/.git/config']))
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await href(ui)).toBe('https://github.com/other/thing/issues/123')
+      await ui.unmount()
+    })
+  })
+
+  test('the childrenDir option replaces the default child-runs directory', { options: { childrenDir: '/fx/runs/' } }, async ($, on) => {
+    world(on, under('/fx/runs/x-run', run('openai', '101')))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ key: 'disk:/fx/runs/x-run' })).toBeDefined()
     await ui.unmount()
   })
 
@@ -605,7 +646,7 @@ describe('asks band', () => {
     world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
       [ASKS]: '#4390 review the UI?\n',
-      [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/EZ-OPD/ez-opd-services/pull/4390\n',
+      [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/acme/widgets/pull/4390\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     await ui.press({ key: 'ask-1' })
@@ -615,7 +656,7 @@ describe('asks band', () => {
   })
 
   test('an expanded ask closes once its line is gone', async ($, on) => {
-    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the DF fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
+    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
     on('command.register', ($, e) => ({ value: { command: e.name } }))
     on('ui.invalidate', () => ({ value: undefined }))
     on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -628,7 +669,7 @@ describe('asks band', () => {
 
     w.files[ASKS] = ''
     await w.clock.advance(3000)
-    w.files[ASKS] = '#12 merge the DF fold?\n'
+    w.files[ASKS] = '#12 merge the fold?\n'
     const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await again.find({ key: 'ask-1' })).toBeDefined()
     expect(await again.find({ key: 'ask-detail-1' })).toBeUndefined()
@@ -660,7 +701,7 @@ describe('asks band: done tickets', () => {
   const CONFIG = '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n- `board_snapshot_file`: `~/state/board-snapshot.md`\n'
   const pr = (n: number, state: string) => ({ [`${STATE}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state, isDraft: false }) })
   const board = (...rows: [number, string][]) => ({
-    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Practice | Free | Week 16 | M7 | — |`)].join('\n'),
+    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Web | Free | Week 16 | M7 | — |`)].join('\n'),
   })
   const shown = async (ui: { find: (query: { key: string }) => Promise<unknown> }, lines: number[]) =>
     Promise.all(lines.map(async n => (await ui.find({ key: `ask-${n}` })) !== undefined))

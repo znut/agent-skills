@@ -10,7 +10,7 @@
     "childrenDir": {
       "type": "string",
       "title": "Child run directory",
-      "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: $EZOPD_RUNTIME_DIR/kimi-children, else $TMPDIR/ez-opd/kimi-children.",
+      "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: $TMPDIR/agent-tools/children.",
       "default": ""
     },
     "stateDir": {
@@ -22,7 +22,7 @@
     "repoSlug": {
       "type": "string",
       "title": "GitHub repository",
-      "description": "Owner and repository for ticket links. Empty: EZ-OPD/ez-opd-services.",
+      "description": "Owner and repository (owner/repo) for ticket and PR links. Empty: the GitHub origin remote of the session's repository; with no GitHub remote, #N shows without a link.",
       "default": ""
     }
   }
