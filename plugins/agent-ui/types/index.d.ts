@@ -21,6 +21,8 @@ declare module 'claude-code' {
       selectedRun: string | null
       openAsk: OpenAsk | null
       expanded: string[]
+      ciOpen: boolean
+      ciJobsOpen: boolean
     }
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { cardLeft, encodeChart, jobColor, parseRows, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -810,6 +811,181 @@ describe('asks band: done tickets', () => {
     expect(await shown(second, [1])).toEqual([false])
     expect(await second.find({ type: 'Text', text: 'engine band' })).toBeDefined()
     await second.unmount()
+  })
+})
+
+describe('main-ci chart', () => {
+  const CI = `${STATE}/main-ci`
+  const METRICS = `${CI}/metrics.jsonl`
+  const MD = { '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n' }
+  const name = (i: number) => `20260101T0000${String(i).padStart(2, '0')}Z-cafe00${String(i).padStart(2, '0')}`
+  const sha = (i: number) => `cafe00${String(i).padStart(2, '0')}0123456789abcdef0123456789abcdef`
+  const row = (i: number, job: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ run: name(i), sha: sha(i), job, kind: 'core', attempt: 1, wall_s: 10, cpu_user_s: 2, cpu_sys_s: 1, max_rss_mb: 100, exit: 0, load1_start: 2, ...extra })
+  const runRows = (i: number, jobs = ['lint', 'test']) => jobs.map(job => row(i, job)).join('\n')
+  const metrics = (count: number) => `${Array.from({ length: count }, (_, i) => runRows(i + 1)).join('\n')}\n`
+  const files = (text: string, state: Record<string, unknown> = { sha: sha(3), green: true, phase: 'done' }) => ({
+    ...MD,
+    [`${CI}/state.json`]: JSON.stringify(state),
+    [METRICS]: text,
+  })
+  const pane = (bodyColumns = 120, surface: 'terminal' | 'desktop' = 'terminal') => ({ ...PANE, surface, props: { ...PANE.props, bodyColumns } })
+  const cards = async (ui: { findAll: (q: object) => Promise<{ key?: string }[]> }) =>
+    (await ui.findAll({})).map(node => node.key ?? '').filter(key => key.startsWith('ci-run:'))
+
+  test('a run keeps each job at its final attempt and counts its retries', () => {
+    const rows = parseRows([
+      row(1, 'lint'),
+      row(1, 'test', { exit: 1 }),
+      row(1, 'test', { attempt: 2, wall_s: 30 }),
+      JSON.stringify({ run: name(1), job: 'preview-7', kind: 'preview', wall_s: 99 }),
+      'not json',
+    ].join('\n'))
+    expect(rows).toHaveLength(3)
+    const run = summarize(name(1), rows)
+    expect(run.jobs.map(job => [job.job, job.wall, job.retries])).toEqual([['lint', 10, 0], ['test', 30, 1]])
+    expect(run).toMatchObject({ sha8: 'cafe0001', green: true, retries: 1, load: 2, peak: 100, pending: false })
+    expect(summarize(name(2), parseRows(row(2, 'lint', { exit: 2 }))).green).toBe(false)
+  })
+
+  test('the run main-ci is on is pending; an unstarted one is an empty slot', () => {
+    const runs = [1, 2].map(i => summarize(name(i), parseRows(runRows(i))))
+    expect(withPending(runs, { sha: sha(2), phase: 'done' }).map(run => run.pending)).toEqual([false, false])
+    expect(withPending(runs, { sha: sha(2), phase: 'builds' }).map(run => run.pending)).toEqual([false, true])
+    expect(withPending(runs, { sha: sha(1), phase: 'done' }).map(run => run.pending)).toEqual([false, true])
+    const slot = withPending(runs, { sha: sha(9), phase: 'builds' })
+    expect(slot.map(run => [run.sha8, run.pending, run.jobs.length])).toEqual([['cafe0001', false, 2], ['cafe0002', false, 2], ['cafe0009', true, 0]])
+  })
+
+  test('a job keeps its color whatever other jobs exist', () => {
+    expect(jobColor('test')).toBe(jobColor('test'))
+    const pixelOf = (jobs: string[]) => {
+      const bytes = Uint8Array.from(atob(encodeChart([summarize(name(1), parseRows(jobs.map(job => row(1, job)).join('\n')))]).rgba), ch => ch.charCodeAt(0))
+      return [...bytes.slice((67 * 12 + 5) * 4, (67 * 12 + 5) * 4 + 3)]
+    }
+    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    expect(pixelOf(['aaa'])).toEqual(rgb(jobColor('aaa')))
+    expect(pixelOf(['aaa', 'zzz'])).toEqual(rgb(jobColor('aaa')))
+  })
+
+  test('the picture is 12x72 pixels a run; a red run is underlined, a retry counted in red', () => {
+    const red = summarize(name(1), parseRows([row(1, 'lint', { exit: 1 }), row(1, 'lint', { attempt: 2, exit: 1 })].join('\n')))
+    const chart = encodeChart([red, summarize(name(2), parseRows(runRows(2)))])
+    expect(chart).toMatchObject({ width: 24, height: 72 })
+    const bytes = Uint8Array.from(atob(chart.rgba), ch => ch.charCodeAt(0))
+    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
+    expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
+    expect(at(17, 70)[3]).toBe(0)
+    const redAbove = Array.from({ length: 40 }, (_, y) => at(5, y)).some(px => px[0] === 0xe6 && px[1] === 0x5a)
+    expect(redAbove).toBe(true)
+  })
+
+  test('collapsed by default; the toggle opens the chart and stays open', async ($, on) => {
+    world(on, files(metrics(3)))
+    const ui = await $.ui.mount(pane())
+    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('▸ main cafe0003')
+    expect(await ui.find({ key: 'ci' })).toBeUndefined()
+    await ui.press({ key: 'ci-toggle' })
+    expect(await ui.find({ key: 'ci' })).toBeDefined()
+    expect((await ui.find({ key: 'ci' }))?.text).toContain('last 3 runs')
+    await ui.unmount()
+    const again = await $.ui.mount(pane())
+    expect(await again.find({ key: 'ci' })).toBeDefined()
+    await again.unmount()
+  })
+
+  test('the pane width sets how many runs show, two columns each past the axis', async ($, on) => {
+    expect(runsFit(50)).toBe(22)
+    expect(runsFit(5)).toBe(0)
+    world(on, files(metrics(15)))
+    const ui = await $.ui.mount(pane(26))
+    await ui.press({ key: 'ci-toggle' })
+    expect(await cards(ui)).toHaveLength(10)
+    expect((await ui.find({ key: 'ci-chart' }))?.props).toMatchObject({ columns: 20, rows: 6 })
+    expect((await cards(ui)).at(-1)).toBe(`ci-run:${name(15)}`)
+    await ui.unmount()
+  })
+
+  test('metrics.jsonl is read once, then only its appended tail; a partial line waits', async ($, on) => {
+    const w = world(on, files(metrics(2)))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    await ui.unmount()
+    const size = w.files[METRICS]?.length ?? 0
+    expect(w.tails).toEqual([`+1 ${METRICS}`])
+
+    const again = await $.ui.mount(pane())
+    await again.unmount()
+    expect(w.tails).toHaveLength(1)
+
+    const half = row(3, 'lint')
+    w.files[METRICS] += half.slice(0, 20)
+    const partial = await $.ui.mount(pane())
+    expect(await cards(partial)).toHaveLength(2)
+    await partial.unmount()
+    expect(w.tails.at(-1)).toBe(`+${size + 1} ${METRICS}`)
+
+    w.files[METRICS] += `${half.slice(20)}\n`
+    const whole = await $.ui.mount(pane())
+    expect(await cards(whole)).toHaveLength(3)
+    await whole.unmount()
+    expect(w.tails.at(-1)).toBe(`+${size + 21} ${METRICS}`)
+  })
+
+  test("a run's card lists its 8 slowest jobs and stays inside the pane", async ($, on) => {
+    const jobs = Array.from({ length: 10 }, (_, k) => `job-${k}`)
+    const text = `${[1, 2, 3].map(i => jobs.map((job, k) => row(i, job, { wall_s: k + 1 })).join('\n')).join('\n')}\n`
+    world(on, files(text))
+    const ui = await $.ui.mount(pane(60))
+    await ui.press({ key: 'ci-toggle' })
+    const cardOf = async (run: string) => (await ui.find({ key: `ci-run:${run}` }))?.children[0] as { props: Record<string, unknown>; children: unknown[] } | undefined
+    const card = await cardOf(name(3))
+    const cardText = (await ui.find({ key: `ci-run:${name(3)}` }))?.text
+    const lines = (card?.children ?? []).filter((child): child is { type: string } => typeof child === 'object' && child !== null)
+    expect(lines).toHaveLength(2 + 8)
+    expect(cardText).toContain('cafe0003 · load1 2.0 · peak 100 MB')
+    expect(cardText).toContain('job-9')
+    expect(cardText).not.toContain('job-0 ')
+    const width = Number(card?.props.width)
+    for (const [i, key] of [[0, name(1)], [2, name(3)]] as const) {
+      const left = Number((await cardOf(key))?.props.left)
+      expect(6 + i * 2 + left).toBeGreaterThanOrEqual(0)
+      expect(6 + i * 2 + left + width).toBeLessThanOrEqual(60)
+    }
+    expect(cardLeft(0, 40, 120)).toBe(2)
+    expect(cardLeft(50, 40, 120)).toBe(120 - 40 - 106)
+    expect(cardLeft(0, 200, 120)).toBe(-6)
+    await ui.unmount()
+  })
+
+  test('without pictures the chart is block glyphs: a Raster after an alt deny, Text on desktop', async ($, on) => {
+    const w = world(on, { ...RUN_FILES, ...files(metrics(3)) })
+    w.blitOk = true
+    w.imageDeny = 'the Image draws its alt here'
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    expect((await ui.find({ key: 'ci-chart' }))?.type).toBe('Image')
+    await w.clock.advance(250)
+    await ui.unmount()
+    const again = await $.ui.mount(pane())
+    expect((await again.find({ key: 'ci-chart' }))?.type).toBe('Raster')
+    await again.unmount()
+
+    const desktop = await $.ui.mount(pane(120, 'desktop'))
+    expect(await desktop.find({ key: 'ci-chart' })).toBeUndefined()
+    expect((await desktop.find({ key: 'ci-text-5' }))?.text).toContain('█')
+    await desktop.unmount()
+  })
+
+  test('the jobs row expands to the color key', async ($, on) => {
+    world(on, files(metrics(2)))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    expect((await ui.find({ key: 'ci-jobs' }))?.text).toContain('▸ jobs (2)')
+    expect(await ui.find({ key: 'ci-legend' })).toBeUndefined()
+    await ui.press({ key: 'ci-jobs' })
+    expect((await ui.find({ type: 'Text', text: '■ test' }))?.props.color).toBe(`#${jobColor('test').toString(16).padStart(6, '0')}`)
+    await ui.unmount()
   })
 })
 

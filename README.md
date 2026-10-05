@@ -70,7 +70,9 @@ documents its own setup in `tools/README.md` or its folder.
 
 `plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
 pane of the session's child runs (GPT, Kimi, Claude review panels) with each
-run's live tail on click, opens itself at start in PM and TL sessions, and pins
+run's live tail on click and main-ci's verdict line, which expands to a chart of
+recent main-ci runs (hover a bar for its slowest jobs), opens itself at start in
+PM and TL sessions, and pins
 the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
 above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click. Load it for one session with
 `claude --plugin-dir <clone>/plugins/agent-ui`, or for every session by adding

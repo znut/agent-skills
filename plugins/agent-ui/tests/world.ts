@@ -69,6 +69,8 @@ export type World = {
   // set: an Image blit is denied with this reason, as on a terminal that draws the alt
   imageDeny?: string
   invalidated: number
+  // each tail run: its -c argument and path
+  tails: string[]
   denied: number
   // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
   cwd: string
@@ -88,7 +90,7 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0,
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, tails: [],
     cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
   }
   on('session.cwd', () => ({ value: w.cwd }))
@@ -154,7 +156,9 @@ export function world(
     if (command === 'tail') {
       const text = w.files[args.at(-1) ?? '']
       if (text === undefined || args[0] !== '-c') return ok('', 1)
-      return ok(text.slice(-Number(args[1])))
+      w.tails.push(`${args[1]} ${args.at(-1)}`)
+      const from = args[1] ?? ''
+      return ok(from.startsWith('+') ? text.slice(Number(from.slice(1)) - 1) : text.slice(-Number(from)))
     }
     throw new Error(`unexpected command ${command}`)
   })

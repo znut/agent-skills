@@ -4,6 +4,24 @@ import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Time
 import type { OpenAsk, Run } from '../types'
 import { type Avatar, SPRITE_COLS, avatarCells, avatarOf, avatarPicture } from './sprites'
 import {
+  AXIS_COLS,
+  CHART_ROWS,
+  type CiRun,
+  type MainState,
+  type MetricRow,
+  cardLeft,
+  cardLines,
+  chartCells,
+  encodeCells,
+  encodeChart,
+  jobColor,
+  maxWall,
+  parseRows,
+  runsFit,
+  summarize,
+  withPending,
+} from './ci'
+import {
   TAIL_LINES,
   busStateDir,
   codexTail,
@@ -296,7 +314,9 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   return { prs, gates }
 }
 
-async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: string; state: string; queue: { running: number; queued: number } } | null> {
+type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState }
+
+async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | null> {
   const ghDir = await resolveGhStatusDir($, options)
   if (!ghDir) return null
   const root = parentDir(ghDir)
@@ -315,7 +335,64 @@ async function readMainStrip($: $, options: PluginOptions): Promise<{ sha: strin
       mainLog = { key, sha: main8, queue }
     }
   }
-  return { sha: main8, state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'), queue }
+  return {
+    sha: main8,
+    state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'),
+    queue,
+    ciDir: `${root}/main-ci`,
+    ci: { sha: state.sha, phase: String(state.phase ?? '') },
+  }
+}
+
+// metrics.jsonl read incrementally: the first read takes the tail that holds `cap` runs, each
+// later one only the bytes appended since; a shorter file (rotated) starts over.
+type CiFeed = { path: string; cap: number; offset: number; rest: string; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
+const RUN_BYTES = 16_384
+let ciFeed: CiFeed | null = null
+const freshFeed = (path: string, cap: number): CiFeed => ({ path, cap, offset: -1, rest: '', rows: new Map(), runs: [], version: 0 })
+
+async function readCiRuns($: $, dir: string, need: number): Promise<CiFeed | null> {
+  const path = `${dir}/metrics.jsonl`
+  if (!ciFeed || ciFeed.path !== path || need > ciFeed.cap) ciFeed = freshFeed(path, Math.max(need, ciFeed?.cap ?? 0))
+  const feed = ciFeed
+  const stat = (await listDir($, dir)).find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file')
+  if (!stat) return null
+  if (stat.size < feed.offset) Object.assign(feed, freshFeed(path, feed.cap))
+  if (stat.size === feed.offset) return feed
+  const first = feed.offset < 0
+  const start = first ? Math.max(0, stat.size - feed.cap * RUN_BYTES) : feed.offset
+  const ran = await $.process.run(['tail', '-c', `+${start + 1}`, path]).catch(() => null)
+  if (ran?.exitCode !== 0) return feed
+  let text = feed.rest + ran.stdout
+  if (first && start > 0) text = text.slice(text.indexOf('\n') + 1)
+  const cut = text.lastIndexOf('\n') + 1
+  feed.rest = text.slice(cut)
+  feed.offset = start + new TextEncoder().encode(ran.stdout).length
+  const rows = parseRows(text.slice(0, cut))
+  if (rows.length === 0) return feed
+  for (const row of rows) feed.rows.set(row.run, [...(feed.rows.get(row.run) ?? []), row])
+  const names = [...feed.rows.keys()].sort()
+  for (const name of names.slice(0, Math.max(0, names.length - feed.cap - 1))) feed.rows.delete(name)
+  feed.runs = [...feed.rows.keys()].sort().map(name => summarize(name, feed.rows.get(name) ?? []))
+  feed.version++
+  return feed
+}
+
+type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; grid: ReturnType<typeof chartCells>; cells: string }
+let ciChart: CiChart | null = null
+
+// Encoded again only when a run is added or changes, main-ci's state moves, or the width does.
+async function readCiChart($: $, main: MainStrip, bodyColumns: number): Promise<CiChart | null> {
+  const fit = runsFit(bodyColumns)
+  const feed = fit > 0 ? await readCiRuns($, main.ciDir, fit) : null
+  if (!feed) return null
+  const key = `${feed.path}|${feed.version}|${main.ci.sha}|${main.ci.phase}|${fit}`
+  if (ciChart?.key === key) return ciChart
+  const runs = withPending(feed.runs, main.ci).slice(-fit)
+  if (runs.length === 0) return null
+  const grid = chartCells(runs)
+  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), grid, cells: encodeCells(grid) }
+  return ciChart
 }
 
 const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
@@ -528,6 +605,8 @@ const PANE = 'workers'
 const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
+const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
+const ciJobsOpen = atom({ plugin: 'agent-ui', key: 'ciJobsOpen' } as const, false)
 
 const FRAME_MS = 250
 const MAX_ANIMATED = 20
@@ -575,6 +654,8 @@ function syncFrames($: $): void {
     syncFrames($)
   })
 }
+
+const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
@@ -633,7 +714,8 @@ export const register: Register = (on, options) => {
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
-    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
+    const [chosen, open, isCiOpen, isJobsOpen] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen), read($, ciJobsOpen)])
+    const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns) : null
     const visible = rows.flatMap(row => [
       { row, isChild: false },
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
@@ -652,12 +734,75 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {main && (
           <Box key="main-strip" flexDirection="row">
-            <Text dimColor>{`main ${main.sha} · `}</Text>
+            <Button key="ci-toggle" plain dimColor label={`${isCiOpen ? '▾' : '▸'} main ${main.sha} · `} onPress={() => update($, ciOpen, was => !was)} />
             <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
             <Text dimColor>{' · preview '}</Text>
             <Text color={main.queue.running > 0 ? 'green' : undefined} dimColor={main.queue.running === 0}>{main.queue.running}</Text>
             <Text dimColor>/</Text>
             <Text color={main.queue.queued > 0 ? 'red' : undefined} dimColor={main.queue.queued === 0}>{main.queue.queued}</Text>
+          </Box>
+        )}
+        {chart && (
+          <Box key="ci" flexDirection="column">
+            <Box flexDirection="row" height={CHART_ROWS}>
+              <Box width={AXIS_COLS} height={CHART_ROWS} flexDirection="column" justifyContent="space-between">
+                <Text dimColor>{`${Math.round(chart.max)}s`}</Text>
+                <Text dimColor>0s</Text>
+              </Box>
+              <Box width={chart.runs.length * 2} height={CHART_ROWS}>
+                <Box position="absolute" top={0} left={0} flexDirection="column">
+                  {Image ? (
+                    <Image key="ci-chart" source={chart.source} columns={chart.runs.length * 2} rows={CHART_ROWS} alt={`last ${chart.runs.length} main-ci runs`} />
+                  ) : Raster ? (
+                    <Raster key="ci-chart" columns={chart.runs.length * 2} rows={CHART_ROWS} cells={chart.cells} />
+                  ) : (
+                    chart.grid.map((row, y) => (
+                      <Box key={`ci-text-${y}`} flexDirection="row">
+                        {row.map((cell, x) => <Text key={`ci-cell-${y}-${x}`} color={hex(cell.color)}>{String.fromCharCode(cell.glyph)}</Text>)}
+                      </Box>
+                    ))
+                  )}
+                </Box>
+                <Box flexDirection="row">
+                  {chart.runs.map((run, i) => {
+                    const lines = cardLines(run)
+                    const width = Math.max(...lines.map(line => line.length)) + 4
+                    return (
+                      <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS}>
+                        <Box
+                          position="absolute"
+                          top={1}
+                          left={cardLeft(i, width, e.props.bodyColumns)}
+                          width={width}
+                          display="none"
+                          hover={{ display: 'flex' }}
+                          flexDirection="column"
+                          borderStyle="round"
+                          backgroundColor="#2c2e3c"
+                          paddingX={1}
+                        >
+                          {lines.map((line, k) => <Text key={`ci-line-${k}`} dimColor={k === 1}>{line}</Text>)}
+                        </Box>
+                      </Box>
+                    )
+                  })}
+                </Box>
+              </Box>
+            </Box>
+            <Text dimColor>{`last ${chart.runs.length} runs · line = load1 · red = retry`}</Text>
+            {(() => {
+              const jobs = [...new Set(chart.runs.flatMap(run => run.jobs.map(job => job.job)))].sort()
+              return (
+                <Box key="ci-jobs-row" flexDirection="column">
+                  <Button key="ci-jobs" plain dimColor label={`${isJobsOpen ? '▾' : '▸'} jobs (${jobs.length})`} onPress={() => update($, ciJobsOpen, was => !was)} />
+                  {isJobsOpen && (
+                    <Box key="ci-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
+                      {jobs.map(job => <Text key={`ci-job:${job}`} color={hex(jobColor(job))}>{`■ ${job}`}</Text>)}
+                    </Box>
+                  )}
+                </Box>
+              )
+            })()}
           </Box>
         )}
         {prState.prs.length > 0 && (
