@@ -524,16 +524,11 @@ const isDue = (run: PanelRun, spec: PanelSpec, now: number) => !run.running && (
 // The render only schedules: a run it started itself would be cut when its dispatch ends, as
 // every `$` call in flight with a dispatch is ("Work that outlives a dispatch", plugin-authoring
 // reference), so the due panels start on a module timer. The render draws the last data; a
-// run's end draws the pane again. A timer that never fired (refused, or lost) is replaced after
-// a few seconds; `isDue` keeps a late one from starting a second run.
-const KICK_STALE_MS = 5000
-let kickedAt: number | null = null
-
+// run's end draws the pane again. Each render that finds a panel due sets a timer; `isDue` and
+// the `running` flag, set as a run starts, let only the first timer start it.
 function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): void {
-  if ((kickedAt !== null && now - kickedAt < KICK_STALE_MS) || !specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
-  kickedAt = now
+  if (!specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
   $.clock.after(1, () => {
-    kickedAt = null
     for (const spec of specs) {
       const run = panelRunOf(root, spec)
       if (isDue(run, spec, now)) void runPanel($, root, spec, run, now)
