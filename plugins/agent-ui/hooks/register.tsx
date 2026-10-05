@@ -465,24 +465,22 @@ function githubSlug(url: string): string | null {
   return match?.[1] ?? null
 }
 
-// The configured slug, else the session repo's `origin` remote (its first remote without one),
-// read from the git config file: null when neither names a GitHub repo, and ticket refs stay text.
+// The configured slug, else the session repo's `origin` remote, read from the git config file:
+// null when neither names a GitHub repo, and ticket refs stay text.
 async function resolveRepo($: $, options: PluginOptions): Promise<string | null> {
   const configured = String(options.repoSlug ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
   if (configured) return configured
   return perCwd($, 'repo', async () => {
     const common = await gitCommonDir($)
     if (!common) return null
-    const urls = new Map<string, string>()
-    let remote = ''
+    let inOrigin = false
     for (const line of (await readText($, `${common}/config`)).split('\n')) {
       const section = /^\s*\[(.*)\]\s*$/.exec(line)
-      if (section) remote = /^remote "([^"]+)"$/.exec(section[1] ?? '')?.[1] ?? ''
-      const url = /^\s*url\s*=\s*(\S+)/.exec(line)?.[1]
-      if (remote && url && !urls.has(remote)) urls.set(remote, url)
+      if (section) inOrigin = section[1] === 'remote "origin"'
+      const url = inOrigin ? /^\s*url\s*=\s*(\S+)/.exec(line)?.[1] : undefined
+      if (url) return githubSlug(url)
     }
-    const url = urls.get('origin') ?? [...urls.values()][0]
-    return url ? githubSlug(url) : null
+    return null
   })
 }
 
@@ -491,11 +489,11 @@ function asNative(agent: AgentInfo): NativeRun {
   return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
 }
 
-// The ask's sentence, minus a `#N` at its very start or end (the link beside it carries the
-// number); a mid-sentence `#N` stays, so the sentence reads whole.
-function askBody(text: string, dropUrl: boolean): string {
+// The ask's sentence, minus the linked `#issue` at its very start or end (the link beside it
+// carries the number); a mid-sentence `#issue` and every other `#N` stay.
+function askBody(text: string, issue: string | null, dropUrl: boolean): string {
   const body = dropUrl ? text.replace(/\s*https?:\/\/\S+$/, '') : text
-  return body.replace(/^#\d+\s*/, '').replace(/\s*#\d+$/, '')
+  return issue ? body.replace(new RegExp(`^#${issue}(?!\\d)\\s*`), '').replace(new RegExp(`\\s*#${issue}$`), '') : body
 }
 
 function askOptions(detail: string): string[] {
@@ -740,7 +738,7 @@ export const register: Register = (on, options) => {
               <Button
                 key={`ask-${ask.n}`}
                 plain
-                label={`${ask === shown ? '▾' : '▸'} ${askBody(ask.text, !!urlLink)}`}
+                label={`${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, !!urlLink)}`}
                 onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
               />
               {issue || urlLink ? <Text>{' '}</Text> : null}

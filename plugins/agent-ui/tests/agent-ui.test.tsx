@@ -571,6 +571,17 @@ describe('asks band', () => {
     await ui.unmount()
   })
 
+  test('only the linked #N leaves the label; any other #N stays', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: 'see #12 and #13\n#12 merge #13\n',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ see #12 and #13')
+    expect((await ui.find({ key: 'ask-2' }))?.text).toBe('▸ merge #13')
+    await ui.unmount()
+  })
+
   describe('ticket link repository', () => {
     const files = (config?: string) => ({
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
