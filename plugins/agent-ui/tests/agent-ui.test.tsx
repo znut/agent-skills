@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -309,18 +310,46 @@ describe('workers pane', () => {
   })
 
   describe('avatars', () => {
-    const cellsOf = async (ui: { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, dir: string) =>
-      (await ui.find({ key: `avatar:disk:${dir}` }))?.props.cells
-    const frames = (key: string, w: { blits: { key: string; cells: string }[] }) => w.blits.filter(blit => blit.key === key)
+    type Found = { type: string; props: Record<string, unknown> }
+    const avatarOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) => ui.find({ key: `avatar:disk:${dir}` })
+    const pictureOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) =>
+      ((await avatarOf(ui, dir))?.props.source as { rgba?: string } | undefined)?.rgba
+    const frames = (key: string, w: { blits: { key: string; cells?: string; rgba?: string }[] }) => w.blits.filter(blit => blit.key === key)
+    const bytes = (base64: string) => Uint8Array.from(atob(base64), ch => ch.charCodeAt(0))
+    const pixel = (rgba: string, x: number, y: number) => [...bytes(rgba).slice((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)]
+    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255]
 
-    test('terminal rows draw a sprite per status in place of the mark; other surfaces keep the mark', async ($, on) => {
+    test('a sprite frame is 16x16 RGBA in its palette; done dims it, failed turns it red', () => {
+      const run = avatarPicture('claude', 'running', 0)
+      expect(run.source).toMatchObject({ width: 16, height: 16 })
+      expect(bytes(run.source.rgba)).toHaveLength(16 * 16 * 4)
+      expect(pixel(run.source.rgba, 3, 2)).toEqual(rgb(0xd97757))
+      expect(pixel(run.source.rgba, 5, 4)).toEqual(rgb(0x1a1a1a))
+      expect(pixel(run.source.rgba, 0, 0)[3]).toBe(0)
+      expect(pixel(avatarPicture('claude', 'done', 0).source.rgba, 3, 2)).toEqual(rgb(dim(0xd97757)))
+      expect(pixel(avatarPicture('claude', 'failed', 0).source.rgba, 3, 2)).toEqual(rgb(0xe06c75))
+      expect(pixel(avatarPicture('kimi', 'running', 0).source.rgba, 13, 2)).toEqual(rgb(0x5b7fff))
+      expect(avatarPicture('claude', 'running', 1).source.rgba).not.toBe(run.source.rgba)
+    })
+
+    test('the alt text is the braille the Raster draws, two cells wide', () => {
+      for (const avatar of ['claude', 'gpt', 'kimi'] as const) {
+        const words = new Uint32Array(bytes(avatarCells(avatar, 'running', 0)).buffer)
+        expect(words).toHaveLength(2 * 3)
+        expect(avatarPicture(avatar, 'running', 0).alt).toBe(String.fromCodePoint(words[0] ?? 0, words[3] ?? 0))
+      }
+    })
+
+    test('terminal rows draw a picture per status in place of the mark; other surfaces keep the mark', async ($, on) => {
       world(on, { ...RUN_FILES, ...under(`${KIDS}/f-unknown`, { pid: '110', 'owner-session': SID, 'start-epoch': epoch(5) }) })
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      const run = await cellsOf(ui, `${KIDS}/a-run`)
-      const done = await cellsOf(ui, `${KIDS}/b-done`)
-      const failed = await cellsOf(ui, `${KIDS}/e-failed`)
+      expect((await avatarOf(ui, `${KIDS}/a-run`))?.type).toBe('Image')
+      expect((await avatarOf(ui, `${KIDS}/a-run`))?.props).toMatchObject({ columns: 2, rows: 1 })
+      const run = await pictureOf(ui, `${KIDS}/a-run`)
+      const done = await pictureOf(ui, `${KIDS}/b-done`)
+      const failed = await pictureOf(ui, `${KIDS}/e-failed`)
       expect(new Set([run, done, failed]).size).toBe(3)
-      expect(await cellsOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
+      expect(await pictureOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
       expect(await ui.find({ key: `mark:disk:${KIDS}/a-run` })).toBeUndefined()
       expect((await ui.find({ key: `mark:disk:${KIDS}/f-unknown` }))?.text).toContain('†')
       await ui.unmount()
@@ -342,7 +371,8 @@ describe('workers pane', () => {
       const keys = new Set(w.blits.map(blit => blit.key))
       expect([...keys].sort()).toEqual([`avatar:disk:${KIDS}/a-run`, `avatar:disk:${PANEL}/0123abcdef/code`].sort())
       expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(4)
-      expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.cells)).size).toBeGreaterThan(1)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.rgba && !blit.cells)).toBe(true)
+      expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.rgba)).size).toBeGreaterThan(1)
       await ui.unmount()
 
       w.alive.clear()
@@ -352,6 +382,24 @@ describe('workers pane', () => {
       await w.clock.advance(5000)
       expect(w.blits).toHaveLength(before)
       await settled.unmount()
+    })
+
+    test('a terminal that draws the alt switches the pane to braille Rasters', async ($, on) => {
+      const w = world(on, RUN_FILES)
+      w.blitOk = true
+      w.imageDeny = 'the Image draws its alt here'
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await w.clock.advance(250)
+      expect(w.invalidated).toBeGreaterThan(0)
+      await ui.unmount()
+
+      w.imageDeny = undefined
+      const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect((await avatarOf(again, `${KIDS}/a-run`))?.type).toBe('Raster')
+      await w.clock.advance(250)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.cells && !blit.rgba)).toBe(true)
+      expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(1)
+      await again.unmount()
     })
 
     test('31 running rows are all listed; animation still stops at 20', async ($, on) => {
@@ -669,7 +717,6 @@ describe('asks band', () => {
   test('an expanded ask closes once its line is gone', async ($, on) => {
     const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
     on('command.register', ($, e) => ({ value: { command: e.name } }))
-    on('ui.invalidate', () => ({ value: undefined }))
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive: true })
 
@@ -758,7 +805,6 @@ describe('pane auto-open', () => {
     const w = world(on, { ...RUN_FILES, ...files })
     const opened: string[] = []
     on('command.register', ($, e) => ({ value: { command: e.name } }))
-    on('ui.invalidate', () => ({ value: undefined }))
     on('ui.open', ($, e) => {
       opened.push(e.id)
       return { value: {} }

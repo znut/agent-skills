@@ -63,9 +63,12 @@ export type World = {
   filled: string[]
   modes: string[]
   lists: string[]
-  blits: { key: string; cells: string }[]
+  blits: { key: string; cells?: string; rgba?: string }[]
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
   blitOk: boolean
+  // set: an Image blit is denied with this reason, as on a terminal that draws the alt
+  imageDeny?: string
+  invalidated: number
   denied: number
   // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
   cwd: string
@@ -85,7 +88,7 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0,
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0,
     cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
   }
   on('session.cwd', () => ({ value: w.cwd }))
@@ -98,7 +101,15 @@ export function world(
       return { value: { deny: 'not mounted' } }
     }
     if ('cells' in e) w.blits.push({ key: e.key, cells: e.cells })
+    else if ('rgba' in e.source) {
+      if (w.imageDeny) return { value: { deny: w.imageDeny } }
+      w.blits.push({ key: e.key, rgba: e.source.rgba })
+    }
     return { value: {} }
+  })
+  on('ui.invalidate', () => {
+    w.invalidated++
+    return { value: undefined }
   })
   on('prompt.fill', ($, e) => {
     w.filled.push(e.text)

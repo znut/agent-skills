@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
-import { type Avatar, SPRITE_COLS, avatarCells, avatarOf } from './sprites'
+import { type Avatar, SPRITE_COLS, avatarCells, avatarOf, avatarPicture } from './sprites'
 import {
   TAIL_LINES,
   busStateDir,
@@ -537,7 +537,10 @@ const CHILD_CAP = 8
 // A render lists the rows to animate; the timer cancels itself once the list is empty.
 let frameTimer: Timer | null = null
 let frameTick = 0
-let animating: { key: string; avatar: Avatar }[] = []
+let animating: { key: string; avatar: Avatar; isPicture: boolean }[] = []
+// A terminal without pictures draws an Image's alt dim and uncolored; once a blit says so,
+// the pane draws braille Rasters instead.
+let picturesDrawAlt = false
 
 function syncFrames($: $): void {
   if (animating.length === 0) {
@@ -550,8 +553,19 @@ function syncFrames($: $): void {
     frameTick++
     const batch = animating
     const results = await Promise.all(
-      batch.map(row => $.ui.blit({ requestId: PANE, key: `avatar:${row.key}`, cells: avatarCells(row.avatar, 'running', frameTick) }).catch(() => ({ deny: 'blit failed' }))),
+      batch.map(row => {
+        const key = `avatar:${row.key}`
+        const blit = row.isPicture
+          ? $.ui.blit({ requestId: PANE, key, source: avatarPicture(row.avatar, 'running', frameTick).source })
+          : $.ui.blit({ requestId: PANE, key, cells: avatarCells(row.avatar, 'running', frameTick) })
+        return blit.catch(() => ({ deny: 'blit failed' }))
+      }),
     )
+    if (batch.some((row, i) => row.isPicture && /\balt\b/i.test(results[i]?.deny ?? ''))) {
+      picturesDrawAlt = true
+      animating = []
+      $.ui.invalidate('ui.render')
+    }
     // nothing of ours is mounted any more (the pane closed): wait for the next render
     if (results.every(result => result.deny)) animating = []
     syncFrames($)
@@ -608,7 +622,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : null
+    const terminal = e.surface === 'terminal' ? $.ui.resolve(e) : null
+    const Image = picturesDrawAlt ? null : terminal?.Image ?? null
+    const Raster = terminal?.Raster ?? null
     const now = await $.clock.now()
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
@@ -619,8 +635,8 @@ export const register: Register = (on, options) => {
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
     ])
     const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
-    animating = Raster
-      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
+    animating = Image || Raster
+      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar, isPicture: !!Image }] : [])).slice(0, MAX_ANIMATED)
       : []
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
@@ -660,7 +676,9 @@ export const register: Register = (on, options) => {
         {visible.map(({ row, isChild }) => (
           <Box key={`row:${row.key}`} flexDirection="row">
             {isChild && <Text dimColor>{'  └ '}</Text>}
-            {Raster && row.avatar ? (
+            {Image && row.avatar ? (
+              <Image key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} {...avatarPicture(row.avatar, row.status, frameTick)} />
+            ) : Raster && row.avatar ? (
               <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
             ) : (
               <Box key={`mark:${row.key}`}>
