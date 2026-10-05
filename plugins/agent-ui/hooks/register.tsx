@@ -936,7 +936,14 @@ export const register: Register = (on, options) => {
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
       segments.map((segment, k) => (
-        <Text key={`${prefix}-${k}`} color={segment.color === undefined ? undefined : hex(segment.color)} dimColor={dim}>{segment.text}</Text>
+        <Text
+          key={`${prefix}-${k}`}
+          color={segment.color === undefined ? undefined : hex(segment.color)}
+          backgroundColor={segment.background === undefined ? undefined : hex(segment.background)}
+          dimColor={dim && segment.background === undefined}
+        >
+          {segment.text}
+        </Text>
       ))
     const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 

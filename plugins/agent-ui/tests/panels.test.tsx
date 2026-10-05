@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { TONES, placeBeside } from '../hooks/ci'
-import { barCells, headerSegments, parsePanelOutput, parseSpecs, rowSegments } from '../hooks/panels'
+import { BAR_TRACK, INK_ON_FILL, INK_ON_TRACK, barSegments, headerSegments, parsePanelOutput, parseSpecs, rowSegments } from '../hooks/panels'
 import { GIT_CONFIG, KIDS, type PanelResult, RUN_FILES, STATE, world } from './world'
 
 const CONFIG = '/fx/repo/.agent/pane-panels.json'
@@ -271,18 +271,34 @@ describe('repo panels', () => {
     expect(data?.tabs.map(tab => tab.id)).toEqual(['north', 'south'])
   })
 
-  test('columns take their width and alignment, one space apart; a bar is width - 4 cells, its text right of it', () => {
+  test('columns take their width and alignment, one space apart; a bar fills its column, its text inside', () => {
     const tab = parsePanelOutput(JSON.stringify(OUTPUT))?.tabs[0]
     if (!tab) throw new Error('no tab')
     const [alpha, beta] = tab.rows
     if (!alpha || !beta) throw new Error('no rows')
     expect(plain(headerSegments(tab, 80))).toBe('name       n pass      ')
-    expect(plain(rowSegments(tab, alpha, 80))).toBe('alpha      9 ████▌  75%')
-    expect(plain(rowSegments(tab, beta, 80))).toBe('beta-lon  12 █▌     25%')
-    expect(plain(rowSegments(tab, alpha, 15))).toBe('alpha      9 ██')
-    expect(barCells(0, 4)).toBe('    ')
-    expect(barCells(1, 4)).toBe('████')
-    expect(barCells(1 / 32, 4)).toBe('▏   ')
+    expect(plain(rowSegments(tab, alpha, 80))).toBe('alpha      9       75% ')
+    expect(plain(rowSegments(tab, beta, 80))).toBe('beta-lon  12       25% ')
+    expect(plain(rowSegments(tab, alpha, 15))).toBe('alpha      9   ')
+  })
+
+  test('a bar is the column wide; its text sits at one place whatever the fill; each character is inked by what is under it', () => {
+    const good = TONES.good as number
+    const bar = (frac: number, width = 10, text = '64%') => barSegments({ frac, text, tone: 'good' }, width, false)
+    for (const frac of [0, 0.3, 0.75, 1]) {
+      expect(plain(bar(frac))).toBe('      64% ')
+      expect(bar(frac).filter(segment => segment.background === good).reduce((sum, segment) => sum + segment.text.length, 0)).toBe(Math.round(frac * 10))
+    }
+    // the fill edge between the 6 and the 4: dark ink on the tone, light ink on the track
+    expect(bar(0.7)).toEqual([
+      { text: '      6', color: INK_ON_FILL, background: good },
+      { text: '4% ', color: INK_ON_TRACK, background: BAR_TRACK },
+    ])
+    expect(bar(0)).toEqual([{ text: '      64% ', color: INK_ON_TRACK, background: BAR_TRACK }])
+    expect(bar(1)).toEqual([{ text: '      64% ', color: INK_ON_FILL, background: good }])
+    // no room for the margin: the text runs to the edge; no room for the text: it is cut
+    expect(plain(bar(0.5, 4, '100%'))).toBe('100%')
+    expect(plain(bar(0.5, 3, '100%'))).toBe('100')
   })
 
   test('bar tones map to the chart palette; an unknown tone is dim', () => {
@@ -294,7 +310,9 @@ describe('repo panels', () => {
       }],
     }))?.tabs[0]
     if (!tab) throw new Error('no tab')
-    expect(tab.rows.map(row => rowSegments(tab, row, 80)[0]?.color)).toEqual([TONES.good, TONES.mid, TONES.bad, TONES.dim, TONES.dim])
+    expect(tab.rows.map(row => rowSegments(tab, row, 80)[0]?.background)).toEqual([TONES.good, TONES.mid, TONES.bad, TONES.dim, TONES.dim])
+    // a dim row's bar is grey whatever its tone
+    expect(barSegments({ frac: 1, text: '', tone: 'good' }, 6, true)[0]?.background).toBe(TONES.dim)
   })
 
   test('rows draw truncated to the pane, bars in their tone, dim rows dimmed, then the note', async ($, on) => {
@@ -303,11 +321,15 @@ describe('repo panels', () => {
     await ui.press({ key: 'panel-toggle:acme' })
     const all = walk(await ui.drawn())
     for (const key of ['panel-columns', 'panel-row:acme:r1', 'panel-row:acme:r2']) expect(textOf(keyed(all, key)).length).toBeLessThanOrEqual(14)
-    expect(textOf(keyed(all, 'panel-row:acme:r1'))).toBe('alpha      9 █')
+    expect(textOf(keyed(all, 'panel-row:acme:r1'))).toBe('alpha      9  ')
     const cells = (key: string) => (keyed(all, key)?.children ?? []) as Drawn[]
+    const hex = (rgb: number | undefined) => `#${(rgb ?? 0).toString(16).padStart(6, '0')}`
     expect(cells('panel-row:acme:r1').map(cell => cell.props?.dimColor)).toEqual([false, false, false, false, false])
-    expect(cells('panel-row:acme:r2').every(cell => cell.props?.dimColor === true)).toBe(true)
-    expect(cells('panel-row:acme:r1')[4]?.props?.color).toBe(`#${TONES.good?.toString(16)}`)
+    expect(cells('panel-row:acme:r1')[4]?.props).toMatchObject({ backgroundColor: hex(TONES.good), color: hex(INK_ON_FILL) })
+    // a dim row dims its text; its bar keeps its ink, on the grey tone
+    const dimRow = cells('panel-row:acme:r2')
+    for (const cell of dimRow) expect(cell.props?.dimColor).toBe(cell.props?.backgroundColor === undefined)
+    expect(dimRow.at(-1)?.props?.backgroundColor).toBe(hex(TONES.dim))
     expect(cells('panel-columns').every(cell => cell.props?.dimColor === true)).toBe(true)
     expect((await ui.find({ type: 'Text', text: 'dim = few runs' }))?.props.dimColor).toBe(true)
     await ui.unmount()

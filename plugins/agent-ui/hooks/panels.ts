@@ -8,7 +8,7 @@ export type Column = { key: string; label: string; width: number; align: 'left' 
 export type PanelRow = { id: string; dim: boolean; cells: Record<string, string | Bar>; hover: string[] }
 export type PanelTab = { id: string; label: string; columns: Column[]; rows: PanelRow[]; note: string }
 export type PanelData = { summary: string; tab: string; tabs: PanelTab[] }
-export type Segment = { text: string; color?: number }
+export type Segment = { text: string; color?: number; background?: number }
 
 export const PANEL_TIMEOUT_MS = 10_000
 const REFRESH_DEFAULT_S = 60
@@ -22,6 +22,10 @@ const MAX_TABS = 12
 const MAX_ROWS = 100
 // one space between columns
 const GAP = 1
+// a bar's unfilled cells, and its text's ink over the fill and over the track
+export const BAR_TRACK = 0x3a3c4e
+export const INK_ON_FILL = 0x1e1f28
+export const INK_ON_TRACK = 0xe1e1e6
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 // A control character (a newline, an escape sequence's ESC) would break the row or restyle the
@@ -89,22 +93,27 @@ export function pickTab(data: PanelData, chosen: string | undefined): PanelTab |
 
 const fit = (text: string, width: number, right: boolean) => (right ? text.slice(0, width).padStart(width) : text.slice(0, width).padEnd(width))
 
-// `frac` of `width` cells in eighths: full blocks, then one partial block, then blanks.
-export function barCells(frac: number, width: number): string {
-  const eighths = Math.round(Math.min(1, Math.max(0, frac)) * width * 8)
-  const full = Math.floor(eighths / 8)
-  const part = eighths % 8 === 0 || full >= width ? '' : String.fromCharCode(0x2590 - (eighths % 8))
-  return `${'█'.repeat(full)}${part}`.padEnd(width)
+// A bar the whole cell wide: its first `frac` of the cells on the tone's background, the rest
+// on the track; the text right-aligned over it, one cell clear of the right edge when it fits,
+// each character inked dark over the fill and light over the track. One segment per run of
+// characters alike.
+export function barSegments(bar: Bar, width: number, dim: boolean): Segment[] {
+  const fill = Math.round(bar.frac * width)
+  const tone = (dim ? TONES.dim : TONES[bar.tone]) ?? (TONES.dim as number)
+  const text = bar.text.slice(0, width)
+  const line = (text.length + 2 <= width ? `${text} ` : text).padStart(width)
+  const out: Segment[] = []
+  for (let i = 0; i < width; i++) {
+    const filled = i < fill
+    const last = out.at(-1)
+    if (last && last.background === (filled ? tone : BAR_TRACK)) last.text += line[i]
+    else out.push({ text: line[i] as string, color: filled ? INK_ON_FILL : INK_ON_TRACK, background: filled ? tone : BAR_TRACK })
+  }
+  return out
 }
 
-function cellSegments(column: Column, value: string | Bar | undefined): Segment[] {
-  if (column.isBar && typeof value === 'object') {
-    const barWidth = Math.max(0, column.width - 4)
-    return [
-      { text: barCells(value.frac, barWidth), color: TONES[value.tone] ?? TONES.dim },
-      { text: fit(value.text, column.width - barWidth, true) },
-    ]
-  }
+function cellSegments(column: Column, value: string | Bar | undefined, dim: boolean): Segment[] {
+  if (column.isBar && typeof value === 'object') return barSegments(value, column.width, dim)
   const text = typeof value === 'object' ? value.text : (value ?? '')
   return [{ text: fit(text, column.width, column.align === 'right') }]
 }
@@ -128,7 +137,7 @@ export const headerSegments = (tab: PanelTab, width: number): Segment[] =>
   clip(join(tab.columns.map(column => [{ text: fit(column.label, column.width, column.align === 'right' && !column.isBar) }])), width)
 
 export const rowSegments = (tab: PanelTab, row: PanelRow, width: number): Segment[] =>
-  clip(join(tab.columns.map(column => cellSegments(column, row.cells[column.key]))), width)
+  clip(join(tab.columns.map(column => cellSegments(column, row.cells[column.key], row.dim))), width)
 
 // stderr's first line with text, its control characters spaces
 export function firstLine(text: string): string {
