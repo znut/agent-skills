@@ -55,9 +55,11 @@ TypeSafe token in `~/.config/typesafe.token`.
   about an already-closed ticket stays until answered. A PR file
   `<gh_status_dir>/status/pr-N.json` with a top-level `state` of `MERGED` or
   `CLOSED` (read with `jq`, so a nested object's `state` never counts) decides
-  by its close time (`mergedAt`, else `closedAt`, else `updatedAt`) against the
-  ask's pin stamp. Without one, a row in `board_snapshot_file` whose `Status`
-  column (found by its header cell; `\|` inside a cell never splits it) reads
+  by its close time (`mergedAt`, else `closedAt`) against the ask's pin stamp,
+  and keeps the ask when it has neither: `updatedAt` moves on later comments,
+  so it is never a close time. Without such a file, a row in
+  `board_snapshot_file` whose `Status` column (found by the header row of its
+  own table; `\|` inside a cell never splits it) reads
   `Done` drops the ask, unless the row was already `Done` at the pin (the
   `board-done` flag on the ask's `<sid>.meta` line). Both paths come from
   `.agent/orchestrate.local.md`, or sit beside `ASKS_STATE_DIR` in tests. Local
@@ -95,6 +97,10 @@ TypeSafe token in `~/.config/typesafe.token`.
   ran stays; an ask with no stamp counts as old.
   A prompt that lands while a capture is still judging cancels that pin.
   `bash tools/hooks/asks-hook.test.sh` checks the lock, the deterministic clear and the fail-open paths.
+  It needs bash 4 or later (macOS `/bin/bash` 3.2 hangs on it, so the suite
+  exits at once under it) and runs every case on a private `PATH`: `claude`,
+  `gh` and `curl` there are tripwires that fail the run, and each case's
+  working `curl` is its own Jev stub.
 - **Failure.** Each Jev call has a 3 s cap; curl's exit status decides, and the
   body is parsed only after curl succeeded. A non-zero exit or HTTP error pins
   and clears nothing and logs `jev-failed`. Every other failure (no role

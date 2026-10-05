@@ -2,11 +2,28 @@
 # asks-hook.test.sh: the asks hook's lock (run from the real lock/unlock source) and its
 # deterministic clear (run through the real script). Self-contained: temp dir only, no network
 # (the token file is absent, so a reply that reaches Jev fails fast and logs jev-failed).
+# Needs bash 4 or later: macOS /bin/bash 3.2 hangs on it.
 set -u
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "asks-hook.test.sh needs bash >= 4; run it with a newer bash" >&2; exit 1; }
 
 script=$(cd "$(dirname "$0")" && pwd)/asks-hook.sh
 tmp=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$tmp"' EXIT
+
+# Isolation: every case runs on a private PATH with only the tools the hook and this harness use.
+# claude, gh and curl are tripwires: they record a violation and exit 97. A case's working curl is
+# its own Jev stub, put ahead of $bin.
+bin=$tmp/bin
+mkdir -p "$bin"
+for t in jq sed awk tr cut grep find mktemp rm mv cp cat git dirname head tail sleep mkdir chmod ln perl ls env; do
+	ln -s "$(command -v "$t")" "$bin/$t"
+done
+ln -s "$BASH" "$bin/bash"
+for t in claude gh curl; do
+	printf '#!/bin/sh\necho "tripwire: real %s called: $*" >&2\necho "%s $*" >>"%s/violation"\nexit 97\n' "$t" "$t" "$tmp" >"$bin/$t"
+	chmod +x "$bin/$t"
+done
+export PATH=$bin
 state=$tmp asks=$tmp/asks/sid
 eval "$(sed -n '/^lock() {/,/^unlock() /p' "$script")"
 
@@ -109,7 +126,7 @@ reply "go"
 check "a short reply alone clears the newest ask" asks_are "#1111 #2222 "
 
 # Combined list entries, the Thai-layout "go" and a bare option digit clear the newest ask.
-for r in "yes go" "ok go" "yes, go" "Ok, go ahead!" "เน" "1" "2." "2 go" "1111 เน"; do
+for r in "yes go" "ok go" "yes, go" "Ok, go ahead!" "เน" "1" "2." "2 go" "[Image #3] 1" "1111 เน"; do
 	seed 1111 2222 3333
 	reply "$r"
 	if [ "$r" = "1111 เน" ]; then want="#2222 #3333 "; else want="#1111 #2222 "; fi
@@ -168,7 +185,7 @@ echo fake >"$tmp/token"
 git init -q "$tmp/repo" && git -C "$tmp/repo" remote add origin git@github.com:acme/widgets.git
 capture() { # capture <final assistant message>; $capture_cwd overrides the session cwd
 	jq -nc --arg m "$1" --arg cwd "${capture_cwd:-$tmp/repo}" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:$cwd}' |
-		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
+		env PATH="$stub:$bin" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
 			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" STUB_HOOK="$script" STUB_REPIN="${repin:-}" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
 }
 # same_scores <json of same_<n> scores>: Jev's answer for the next captures, a decision plus these.
@@ -274,7 +291,7 @@ rm -f "$tmp/answers.json"
 # A message that is not a short reply gets one Jev yes/no per open ask; 0.45 or above clears.
 reply_jev() { # reply_jev <text>: through the stubbed Jev, answering with $tmp/answers.json
 	jq -nc --arg p "$1" '{session_id:"s1",hook_event_name:"UserPromptSubmit",prompt:$p,cwd:"/nonexistent"}' |
-		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
+		env PATH="$stub:$bin" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
 			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
 }
 seed_lines "Lock the first mock?" "Ship the second part?" "Hold the third?"
@@ -286,10 +303,11 @@ rm -f "$tmp/answers.json"
 
 # A done ticket drops its ask on a later write, only when it closed after the ask was pinned: its PR
 # is MERGED or CLOSED with a close time after the pin, or its board row is Done and was not at the pin.
-pr_state() { # pr_state <number> <state> [mergedAt]; updatedAt is 2026-01-02, after every seeded pin
+pr_state() { # pr_state <number> <state> [mergedAt] [closedAt]; updatedAt is 2026-01-02, after every seeded pin
 	mkdir -p "$st/gh-status/status"
-	jq -n --argjson n "$1" --arg s "$2" --arg m "${3:-}" '{number:$n, state:$s, title:"say \"state\": \"MERGED\"",
-		updatedAt:"2026-01-02T00:00:00.123Z"} + (if $m != "" then {mergedAt:$m} else {} end)' >"$st/gh-status/status/pr-$1.json"
+	jq -n --argjson n "$1" --arg s "$2" --arg m "${3:-}" --arg c "${4:-}" '{number:$n, state:$s, title:"say \"state\": \"MERGED\"",
+		updatedAt:"2026-01-02T00:00:00.123Z"} + (if $m != "" then {mergedAt:$m} else {} end)
+		+ (if $c != "" then {closedAt:$c} else {} end)' >"$st/gh-status/status/pr-$1.json"
 }
 board_row() { # board_row <number> <status>: Status is found by its header, escaped pipes never split a cell
 	printf '%s\n' '| # | Title | Owner | Status | Due |' '|---|---|---|---|---|' \
@@ -308,9 +326,12 @@ write_with_dismiss
 check "an ask whose PR is MERGED is dropped on the next write" lines_are "plain ask?|"
 check "the dropped ask's detail goes and the survivor's renumbers" detail_is 1 "context 2"
 check "the dismissal is logged" bash -c 'grep -q "\"decision\":\"done-ticket\"" "$0"' "$st/asks/jev-log.jsonl"
+pr_state 460 CLOSED "" 2026-01-02T00:00:00.123Z
+write_with_dismiss
+check "an ask whose PR is CLOSED with a closedAt after the pin is dropped (fractional seconds parse)" lines_are "plain ask?|"
 pr_state 460 CLOSED
 write_with_dismiss
-check "an ask whose PR is CLOSED is dropped (updatedAt with fractional seconds as the close time)" lines_are "plain ask?|"
+check "a CLOSED PR with only updatedAt is kept: updatedAt is no close time" lines_are "#460 run the benchmark once it merges?|plain ask?|"
 pr_state 460 OPEN
 write_with_dismiss
 check "an ask whose PR is OPEN is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
@@ -346,6 +367,14 @@ check "an ask with no board row is kept" lines_are "#460 run the benchmark once 
 printf '%s\n' '| # | Title | Owner | Due |' '|---|---|---|---|' '| #460 | a | sam | Done |' >"$st/board-snapshot.md"
 write_with_dismiss
 check "a board with no Status column dismisses nothing" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+printf '%s\n' '| # | Title | Status | Due |' '|---|---|---|---|' '| #461 | b | Backlog | Friday |' '' \
+	'| # | Title | Done-by | Owner |' '|---|---|---|---|' '| #460 | a | Done | sam |' >"$st/board-snapshot.md"
+write_with_dismiss
+check "a second table with no Status header never reuses the first table's Status column" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+printf '%s\n' '| # | Title | Status | Due |' '|---|---|---|---|' '| #461 | b | Backlog | Friday |' \
+	'| # | Title | Done-by | Owner |' '|---|---|---|---|' '| #460 | a | Done | sam |' >"$st/board-snapshot.md"
+write_with_dismiss
+check "a second header row with no Status column resets it, even with no blank line between" lines_are "#460 run the benchmark once it merges?|plain ask?|"
 rm -f "$st/board-snapshot.md"
 pr_state 460 MERGED 2026-01-02T00:00:00Z
 seed_lines "no ticket, but merged? #460" "plain ask?" "#462 newest?"
@@ -517,11 +546,13 @@ check "no jq, curl or perl on PATH" silent_ok "$(event_json s1 UserPromptSubmit 
 check "no HOME" silent_ok "$(event_json s1 Stop 'Ship it?')" -u HOME ASKS_TOKEN_FILE=
 
 # Every tool but perl: the lock fails, so the clear is skipped and the asks stay.
-bin=$tmp/bin-no-perl
-mkdir -p "$bin"
-for t in jq sed awk tr cut grep find mktemp rm mv cat git dirname head tail curl sleep mkdir; do ln -s "$(command -v $t)" "$bin/$t"; done
+noperl=$tmp/bin-no-perl
+mkdir -p "$noperl"
+for t in jq sed awk tr cut grep find mktemp rm mv cat git dirname head tail sleep mkdir; do ln -s "$bin/$t" "$noperl/$t"; done
 seed 1111 2222
-check "no perl: exits 0" silent_ok "$(event_json s1 UserPromptSubmit go)" PATH="$bin"
+check "no perl: exits 0" silent_ok "$(event_json s1 UserPromptSubmit go)" PATH="$noperl"
 check "no perl: the asks stay" asks_are "#1111 #2222 "
+
+check "no real external binary was invoked" test ! -e "$tmp/violation"
 
 exit $((failures > 0))

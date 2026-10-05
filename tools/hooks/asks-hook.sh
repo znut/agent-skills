@@ -372,14 +372,16 @@ capture() {
 
 # ticket_done <N> <pinned-at µs> <board-done-at-pin flag>: the ticket closed after the ask was pinned.
 # A PR file (gh-status) with a top-level state of MERGED or CLOSED decides by its close time
-# (mergedAt, else closedAt, else updatedAt) against the pin time. Without one, a board row with
+# (mergedAt, else closedAt) against the pin time, and keeps the ask when it has neither: updatedAt
+# moves on later comments, so it is never a close time. Without one, a board row with
 # Status Done ($board_done, set by rewrite_asks) counts unless that row was already Done when the ask
 # was pinned (the meta flag). Local files only; a missing file or time means not done.
 ticket_done() {
 	local f=$gh_dir/status/pr-$1.json closed
 	if [ -n "$gh_dir" ] && [ -r "$f" ]; then
 		closed=$(jq -r 'select(.state == "MERGED" or .state == "CLOSED")
-			| (.mergedAt // .closedAt // .updatedAt // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' "$f" 2>/dev/null)
+			| (.mergedAt // .closedAt // "") | if . == "" then "none" else sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 end' "$f" 2>/dev/null)
+		[ "$closed" != none ] || return 1
 		if [[ $closed =~ ^[0-9]+$ ]]; then
 			[ "${closed}000000" -gt "$2" ]
 			return
@@ -435,8 +437,10 @@ rewrite_asks() {
 	if [ -n "$nums" ] && [ -r "$board_file" ]; then
 		board_done=$(awk -v want="$nums" 'BEGIN { n = split(want, a, " "); for (k = 1; k <= n; k++) w[a[k]] = 1 }
 			/^\|/ { r = $0; gsub(/\\\|/, "", r); m = split(r, c, "|"); for (k = 1; k <= m; k++) gsub(/^[ \t]+|[ \t]+$/, "", c[k]) }
-			/^\|/ && !/^\|[ \t]*#[0-9]+[ \t]*\|/ { for (k = 1; k <= m; k++) if (c[k] == "Status") col = k; next }
-			/^\|/ && col { id = c[2]; sub(/^#/, "", id); if ((id in w) && c[col] == "Done") printf " %s", id }
+			!/^\|/ { col = 0; next }
+			/^\|[ \t:|-]+$/ { next }
+			!/^\|[ \t]*#[0-9]+[ \t]*\|/ { col = 0; for (k = 1; k <= m; k++) if (c[k] == "Status") col = k; next }
+			col { id = c[2]; sub(/^#/, "", id); if ((id in w) && c[col] == "Done") printf " %s", id }
 			END { print " " }' "$board_file")
 	fi
 	if [ -n "$new" ] && [[ ${ids[n]} =~ ^\#[0-9]+$ && $board_done == *" ${ids[n]#\#} "* ]]; then flag[n]=board-done; fi
@@ -559,11 +563,12 @@ NUM_RE='(^|[^[:alnum:]])#?([0-9]+)([^[:alnum:]]|$)'
 # those #N; no number, a bare digit, or numbers that match no open ask clear the newest ask. Returns 1
 # to hand the reply to Jev.
 short_clear() {
-	local rest=$prompt line n targets=() nums=() newest=
+	local rest=$prompt line n targets=() nums=() newest= hash=
 	tick
 	snap=$now
 	[ "${#prompt}" -le 120 ] || return 1
 	while [[ $rest =~ \[Image\ \#[0-9]+\] ]]; do rest=${rest/"${BASH_REMATCH[0]}"/ }; done
+	[[ $rest =~ \#[0-9] ]] && hash=1
 	while [[ $rest =~ $NUM_RE ]]; do
 		nums+=("${BASH_REMATCH[2]}")
 		rest=${rest/"${BASH_REMATCH[0]}"/ }
@@ -574,7 +579,7 @@ short_clear() {
 				[[ $line =~ \#([0-9]+) && ${BASH_REMATCH[1]} == "$n" ]] && targets+=("$line")
 			done <"$asks"
 		done
-	elif [[ ${#nums[@]} -ne 1 || $rest == *[![:space:][:punct:]]* || ${#nums[0]} -gt 2 || $prompt =~ \#[0-9] ]]; then
+	elif [[ ${#nums[@]} -ne 1 || $rest == *[![:space:][:punct:]]* || ${#nums[0]} -gt 2 || -n $hash ]]; then
 		return 1
 	fi
 	if [ "${#targets[@]}" -eq 0 ]; then
