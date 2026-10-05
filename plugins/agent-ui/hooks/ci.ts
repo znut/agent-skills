@@ -137,10 +137,10 @@ export function barParts(run: CiRun, metric: Metric): { job: string; value: numb
 export const barTotal = (run: CiRun, metric: Metric) => barParts(run, metric).reduce((sum, part) => sum + part.value, 0)
 export const barMax = (runs: CiRun[], metric: Metric) => Math.max(1, ...runs.map(run => barTotal(run, metric)))
 
-// The axis's top label, a line each (it is AXIS_COLS wide), and its bottom one.
-export function axisLabels(max: number, metric: Metric): { top: string[]; bottom: string } {
-  if (metric === 'mem') return { top: [max >= 1024 ? `${(max / 1024).toFixed(1)}G` : `${Math.round(max)}M`], bottom: '0' }
-  return { top: metric === 'cpu' ? [`${Math.round(max)}s`, 'cpu'] : [`${Math.round(max)}s`], bottom: '0s' }
+// The axis's top and bottom labels; the selected chip names the metric.
+export function axisLabels(max: number, metric: Metric): { top: string; bottom: string } {
+  if (metric === 'mem') return { top: max >= 1024 ? `${(max / 1024).toFixed(1)}G` : `${Math.round(max)}M`, bottom: '0' }
+  return { top: `${Math.round(max)}s`, bottom: '0s' }
 }
 
 // 3x5 digits for a retry count; 9+ reads "+".

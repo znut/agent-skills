@@ -1186,10 +1186,10 @@ describe('main-ci chart', () => {
     expect(barParts(run, 'wall')).toEqual([{ job: 'lint', value: 10 }, { job: 'test', value: 20 }])
     expect(barParts(run, 'cpu')).toEqual([{ job: 'lint', value: 5 }, { job: 'test', value: 32 }])
     expect(barParts(run, 'mem')).toEqual([{ job: 'test', value: 2458 }])
-    expect(axisLabels(497.4, 'wall')).toEqual({ top: ['497s'], bottom: '0s' })
-    expect(axisLabels(612, 'cpu')).toEqual({ top: ['612s', 'cpu'], bottom: '0s' })
-    expect(axisLabels(2458, 'mem')).toEqual({ top: ['2.4G'], bottom: '0' })
-    expect(axisLabels(900, 'mem')).toEqual({ top: ['900M'], bottom: '0' })
+    expect(axisLabels(497.4, 'wall')).toEqual({ top: '497s', bottom: '0s' })
+    expect(axisLabels(612, 'cpu')).toEqual({ top: '612s', bottom: '0s' })
+    expect(axisLabels(2458, 'mem')).toEqual({ top: '2.4G', bottom: '0' })
+    expect(axisLabels(900, 'mem')).toEqual({ top: '900M', bottom: '0' })
     // the mem bar fills from the base to the top in one colour; a red run keeps its underline and retry digit
     const red = summarize(name(2), parseRows([row(2, 'lint', { exit: 1, max_rss_mb: 50 }), row(2, 'lint', { attempt: 2, exit: 1, max_rss_mb: 50 })].join('\n')))
     const { bytes } = chartBytes([run, red], 'mem')
@@ -1209,7 +1209,9 @@ describe('main-ci chart', () => {
     expect((await ui.find({ key: 'ci-metric:mem' }))?.props.dimColor).toBe(true)
     expect((await ui.find({ key: 'ci' }))?.text).toContain('20s')
     await ui.press({ key: 'ci-metric:cpu' })
-    expect((await ui.find({ key: 'ci' }))?.text).toContain('6scpu')
+    // the axis is the bar row's first box: plain seconds, top and bottom
+    const bars = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
+    expect(textOf(bars.children?.[0])).toBe('6s0s')
     await ui.unmount()
     const again = await $.ui.mount(pane())
     expect((await again.find({ key: 'ci-metric:cpu' }))?.props.dimColor).toBe(false)

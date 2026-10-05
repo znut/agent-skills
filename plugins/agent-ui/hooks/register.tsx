@@ -956,11 +956,7 @@ export const register: Register = (on, options) => {
           <Box key="ci" flexDirection="column">
             <Box flexDirection="row" height={CHART_ROWS}>
               <Box width={AXIS_COLS} height={CHART_ROWS} flexDirection="column" justifyContent="space-between">
-                <Box flexDirection="column">
-                  {axisLabels(chart.max, chart.metric).top.map((line, k) => (
-                    <Text key={`ci-axis-${k}`} dimColor>{line}</Text>
-                  ))}
-                </Box>
+                <Text dimColor>{axisLabels(chart.max, chart.metric).top}</Text>
                 <Text dimColor>{axisLabels(chart.max, chart.metric).bottom}</Text>
               </Box>
               {/* each run column holds its own bar: the hover zone and the bar are one box (runCell) */}
