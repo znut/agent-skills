@@ -470,6 +470,13 @@ function asNative(agent: AgentInfo): NativeRun {
   return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
 }
 
+// The ask's sentence, minus a `#N` at its very start or end (the link beside it carries the
+// number); a mid-sentence `#N` stays, so the sentence reads whole.
+function askBody(text: string, dropUrl: boolean): string {
+  const body = dropUrl ? text.replace(/\s*https?:\/\/\S+$/, '') : text
+  return body.replace(/^#\d+\s*/, '').replace(/\s*#\d+$/, '')
+}
+
 function askOptions(detail: string): string[] {
   const line = detail.split('\n').find(text => /^options?:/i.test(text.trim()))
   return line ? line.replace(/^options?:/i, '').split(/\s*[|;]\s*/).map(text => text.trim()).filter(Boolean).slice(0, 4) : []
@@ -705,18 +712,20 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
-          const body = (trailingHref && !issue ? ask.text.replace(/\s*https?:\/\/\S+$/, '') : ask.text).replace(/#\d+\s*/, '')
+          // The toggle leads every row, ticket or not, so no ask reads as part of the row above.
+          const urlLink = !issue && trailingHref
           return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
-              {!issue && trailingHref ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
               <Button
                 key={`ask-${ask.n}`}
                 plain
-                label={`${ask === shown ? '▾' : '▸'} ${body}`}
+                label={`${ask === shown ? '▾' : '▸'} ${askBody(ask.text, !!urlLink)}`}
                 onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
               />
+              {issue || urlLink ? <Text>{' '}</Text> : null}
+              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
+              {urlLink ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
             </Box>
             {ask === shown &&
               (detail ? (

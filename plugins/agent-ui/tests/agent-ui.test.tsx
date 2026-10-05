@@ -547,6 +547,29 @@ describe('asks band', () => {
     await ui.unmount()
   })
 
+  test('every ask row leads with its own toggle, a ticketless ask included', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: '#123 merge the fold?\npick the panel model?\n',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const line = async (n: number) => (await ui.find({ key: `ask-line-${n}` }))?.text ?? ''
+    expect(await line(1)).toMatch(/^▸ merge the fold\? *#123$/)
+    expect(await line(2)).toBe('▸ pick the panel model?')
+    await ui.unmount()
+  })
+
+  test('a mid-sentence #N keeps the sentence whole and links the ticket beside it', async ($, on) => {
+    world(on, {
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      [ASKS]: 'for #123, should I send it back?\n',
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ for #123, should I send it back?')
+    expect((await ui.find({ type: 'Link', text: '#123' }))?.props.href).toMatch(/\/issues\/123$/)
+    await ui.unmount()
+  })
+
   test('unsafe http links render the asks band as plain text', async ($, on) => {
     world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
