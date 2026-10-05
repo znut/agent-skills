@@ -126,6 +126,9 @@ function encodeCells(frame: string[], main: number, accent: number): string {
 }
 
 function encodeSprite(sprite: string[], main: number, accent: number): string {
+  if (sprite.length !== SPRITE_PX || sprite.some(row => !new RegExp(`^[XBE.]{${SPRITE_PX}}$`).test(row))) {
+    throw new Error(`agent-ui: a sprite frame must be ${SPRITE_PX} rows of ${SPRITE_PX} of X, B, E or .`)
+  }
   const bytes = new Uint8Array(SPRITE_PX * SPRITE_PX * 4)
   for (let y = 0; y < SPRITE_PX; y++) {
     for (let x = 0; x < SPRITE_PX; x++) {
@@ -138,8 +141,11 @@ function encodeSprite(sprite: string[], main: number, accent: number): string {
 }
 
 function encodePicture(avatar: Avatar, i: number, main: number, accent: number): Picture {
-  const alt = brailleCells(FRAMES[avatar][i] ?? [], main, accent).map(({ glyph }) => String.fromCodePoint(glyph)).join('')
-  return { source: { rgba: encodeSprite(SPRITES[avatar][i] ?? [], main, accent), width: SPRITE_PX, height: SPRITE_PX }, alt }
+  const frame = FRAMES[avatar][i]
+  const sprite = SPRITES[avatar][i]
+  if (!frame || !sprite) throw new Error(`agent-ui: ${avatar} has no frame ${i}`)
+  const alt = brailleCells(frame, main, accent).map(({ glyph }) => String.fromCodePoint(glyph)).join('')
+  return { source: { rgba: encodeSprite(sprite, main, accent), width: SPRITE_PX, height: SPRITE_PX }, alt }
 }
 
 export const dim = (rgb: number) => ((((rgb >> 16) & 255) * 0.4) << 16) | ((((rgb >> 8) & 255) * 0.4) << 8) | ((rgb & 255) * 0.4)

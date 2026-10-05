@@ -390,7 +390,9 @@ describe('workers pane', () => {
       w.imageDeny = 'the Image draws its alt here'
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
       await w.clock.advance(250)
-      expect(w.invalidated).toBeGreaterThan(0)
+      await w.clock.advance(1000)
+      // one redraw, no loop: the Raster pane's blits are cells, which never read as alt
+      expect(w.invalidated).toBe(1)
       await ui.unmount()
 
       w.imageDeny = undefined
@@ -408,6 +410,8 @@ describe('workers pane', () => {
       const w = world(on, files, Array.from({ length: 31 }, (_, i) => `70${i}`))
       w.blitOk = true
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      // the plugin loads afresh per test: the alt switch above does not carry over
+      expect((await avatarOf(ui, `${KIDS}/m-0`))?.type).toBe('Image')
       expect((await ui.findAll({})).filter(node => node.key?.startsWith('disk:'))).toHaveLength(31)
       await w.clock.advance(1000)
       expect(new Set(w.blits.map(blit => blit.key)).size).toBe(20)

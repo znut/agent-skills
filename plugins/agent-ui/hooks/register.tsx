@@ -537,7 +537,8 @@ const CHILD_CAP = 8
 // A render lists the rows to animate; the timer cancels itself once the list is empty.
 let frameTimer: Timer | null = null
 let frameTick = 0
-let animating: { key: string; avatar: Avatar; isPicture: boolean }[] = []
+let animating: { key: string; avatar: Avatar }[] = []
+let animatingPictures = false
 // A terminal without pictures draws an Image's alt dim and uncolored; once a blit says so,
 // the pane draws braille Rasters instead.
 let picturesDrawAlt = false
@@ -552,16 +553,19 @@ function syncFrames($: $): void {
   frameTimer = $.clock.every(FRAME_MS, async () => {
     frameTick++
     const batch = animating
+    const pictures = animatingPictures
     const results = await Promise.all(
       batch.map(row => {
         const key = `avatar:${row.key}`
-        const blit = row.isPicture
+        const blit = pictures
           ? $.ui.blit({ requestId: PANE, key, source: avatarPicture(row.avatar, 'running', frameTick).source })
           : $.ui.blit({ requestId: PANE, key, cells: avatarCells(row.avatar, 'running', frameTick) })
         return blit.catch(() => ({ deny: 'blit failed' }))
       }),
     )
-    if (batch.some((row, i) => row.isPicture && /\balt\b/i.test(results[i]?.deny ?? ''))) {
+    // Reads the engine's deny wording (its reasons are "spelled out for a fallback"); not yet
+    // confirmed against a real terminal without pictures.
+    if (pictures && results.some(result => /\balt\b/i.test(result.deny ?? ''))) {
       picturesDrawAlt = true
       animating = []
       $.ui.invalidate('ui.render')
@@ -636,8 +640,9 @@ export const register: Register = (on, options) => {
     ])
     const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
     animating = Image || Raster
-      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar, isPicture: !!Image }] : [])).slice(0, MAX_ANIMATED)
+      ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
+    animatingPictures = !!Image
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
     const repo = await resolveRepo($, options)
