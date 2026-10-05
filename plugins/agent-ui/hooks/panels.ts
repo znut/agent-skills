@@ -98,8 +98,10 @@ const fit = (text: string, width: number, right: boolean) => (right ? text.slice
 // each character inked dark over the fill and light over the track. One segment per run of
 // characters alike.
 export function barSegments(bar: Bar, width: number, dim: boolean): Segment[] {
-  const fill = Math.round(bar.frac * width)
-  const tone = (dim ? TONES.dim : TONES[bar.tone]) ?? (TONES.dim as number)
+  // any work done shows: a non-zero fraction fills at least one cell
+  const fill = bar.frac > 0 ? Math.max(1, Math.round(bar.frac * width)) : 0
+  // own keys only: an inherited name ("constructor") is no tone
+  const tone = (!dim && Object.hasOwn(TONES, bar.tone) ? TONES[bar.tone] : TONES.dim) as number
   const text = bar.text.slice(0, width)
   const line = (text.length + 2 <= width ? `${text} ` : text).padStart(width)
   const out: Segment[] = []

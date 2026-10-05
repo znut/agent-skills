@@ -295,6 +295,8 @@ describe('repo panels', () => {
       { text: '4% ', color: INK_ON_TRACK, background: BAR_TRACK },
     ])
     expect(bar(0)).toEqual([{ text: '      64% ', color: INK_ON_TRACK, background: BAR_TRACK }])
+    // a sliver of work still fills one cell
+    expect(bar(0.04).filter(segment => segment.background === good).map(segment => segment.text.length)).toEqual([1])
     expect(bar(1)).toEqual([{ text: '      64% ', color: INK_ON_FILL, background: good }])
     // no room for the margin: the text runs to the edge; no room for the text: it is cut
     expect(plain(bar(0.5, 4, '100%'))).toBe('100%')
@@ -311,8 +313,9 @@ describe('repo panels', () => {
     }))?.tabs[0]
     if (!tab) throw new Error('no tab')
     expect(tab.rows.map(row => rowSegments(tab, row, 80)[0]?.background)).toEqual([TONES.good, TONES.mid, TONES.bad, TONES.dim, TONES.dim])
-    // a dim row's bar is grey whatever its tone
+    // a dim row's bar is grey whatever its tone; a name every object inherits is no tone
     expect(barSegments({ frac: 1, text: '', tone: 'good' }, 6, true)[0]?.background).toBe(TONES.dim)
+    for (const tone of ['constructor', 'toString', '__proto__']) expect(barSegments({ frac: 1, text: '', tone }, 6, false)[0]?.background).toBe(TONES.dim)
   })
 
   test('rows draw truncated to the pane, bars in their tone, dim rows dimmed, then the note', async ($, on) => {
