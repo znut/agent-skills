@@ -59,6 +59,7 @@ import {
   headerSegments,
   parsePanelOutput,
   parseSpecs,
+  pickOptions,
   pickTab,
   rowSegments,
 } from './panels'
@@ -537,22 +538,55 @@ function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): vo
 }
 
 type PanelRowView = { row: PanelRow; key: string; scope: string; segments: Segment[]; card: { top: number; left: number; width: number; lines: string[] } | null }
-type PanelView = { spec: PanelSpec; isOpen: boolean; summary: string; error: string; data: PanelData | null; tab: PanelTab | null; header: Segment[]; rows: PanelRowView[] }
+// One row of chips: the tabs (`filter` null), or one filter's options.
+type ChipRow = { filter: string | null; chips: { id: string; label: string; selected: boolean }[] }
+type PanelView = {
+  spec: PanelSpec
+  isOpen: boolean
+  summary: string
+  error: string
+  data: PanelData | null
+  tab: PanelTab | null
+  chipRows: ChipRow[]
+  header: Segment[]
+  noData: boolean
+  rows: PanelRowView[]
+}
 const PANEL_INDENT = 2
 
 // The panels as drawn from pane row `top` down, one line each; a row's card goes below it, else
 // above it, never over it.
-function panelViews(root: string, specs: PanelSpec[], open: string[], tabs: Record<string, string>, top: number, bodyColumns: number, paneRows: number): PanelView[] {
+function panelViews(
+  root: string,
+  specs: PanelSpec[],
+  open: string[],
+  tabs: Record<string, string>,
+  filterPicks: Record<string, Record<string, string>>,
+  top: number,
+  bodyColumns: number,
+  paneRows: number,
+): PanelView[] {
   let y = top
   const width = bodyColumns - PANEL_INDENT
   return specs.map(spec => {
     const run = panelRunOf(root, spec)
     const isOpen = open.includes(spec.id)
-    const data = run.data
-    const tab = isOpen && data ? pickTab(data, tabs[spec.id]) : null
-    y += 1 + (run.error ? 1 : 0)
-    if (tab && data && data.tabs.length > 1) y++
-    if (tab) y++
+    const data = isOpen ? run.data : null
+    // with filters, their picks name the tab; a combination the output lacks has no rows
+    const filters = data?.filters ?? []
+    const picked = pickOptions(filters, filterPicks[spec.id])
+    const tab = !data ? null : filters.length > 0 ? (data.tabs.find(one => one.id === picked.join('/')) ?? null) : pickTab(data, tabs[spec.id])
+    const noData = !!data && filters.length > 0 && !tab
+    const columnsOf = tab ?? (noData ? (data?.tabs[0] ?? null) : null)
+    const chipRows: ChipRow[] = !data
+      ? []
+      : filters.length > 0
+        ? filters.map((filter, k) => ({ filter: filter.id, chips: filter.options.map(option => ({ ...option, selected: option.id === picked[k] })) }))
+        : data.tabs.length > 1
+          ? [{ filter: null, chips: data.tabs.map(one => ({ id: one.id, label: one.label, selected: one.id === tab?.id })) }]
+          : []
+    const header = columnsOf ? headerSegments(columnsOf, width) : []
+    y += 1 + (run.error ? 1 : 0) + chipRows.length + (header.length > 0 ? 1 : 0)
     const seen = new Set<string>()
     const rows = (tab?.rows ?? []).map((row, i) => {
       const key = seen.has(row.id) ? `${row.id}#${i}` : row.id
@@ -568,16 +602,19 @@ function panelViews(root: string, specs: PanelSpec[], open: string[], tabs: Reco
         card: row.hover.length === 0 ? null : { top: place.x, left: PANEL_INDENT, width: cardWidth, lines: row.hover.map(line => line.slice(0, Math.max(1, cardWidth - 4))) },
       }
     })
+    if (noData) y++
     if (tab?.note) y++
     const title = `▸ ${spec.title}`
     return {
       spec,
       isOpen,
-      summary: !isOpen && data?.summary ? clip([{ text: `  ${data.summary}` }], bodyColumns - title.length)[0]?.text ?? '' : '',
+      summary: !isOpen && run.data?.summary ? clip([{ text: `  ${run.data.summary}` }], bodyColumns - title.length)[0]?.text ?? '' : '',
       error: run.error ? clip([{ text: `panel error: ${run.error}` }], width)[0]?.text ?? '' : '',
       data,
       tab,
-      header: tab ? headerSegments(tab, width) : [],
+      chipRows,
+      header,
+      noData,
       rows,
     }
   })
@@ -802,6 +839,7 @@ const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
 const ciMetric = atom({ plugin: 'agent-ui', key: 'ciMetric' } as const, 'wall' as Metric)
 const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
 const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
+const panelFilters = atom({ plugin: 'agent-ui', key: 'panelFilters' } as const, {} as Record<string, Record<string, string>>)
 
 const FRAME_MS = 250
 const MAX_ANIMATED = 20
@@ -937,12 +975,12 @@ export const register: Register = (on, options) => {
     const repo = await resolveRepo($, options)
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
-    const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
+    const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
     if (root && specs.length > 0) schedulePanels($, root, specs, now)
     // a card's top counts pane rows: the panels start below the main strip (1 row) and the
     // open chart (CHART_ROWS bars, its metric chips and its legend line), the only rows above them
     const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 2 : 0)
-    const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
+    const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
       segments.map((segment, k) => (
         <Text
@@ -1001,7 +1039,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{`last ${chart.runs.length} runs · line = load · red = retry`}</Text>
           </Box>
         )}
-        {panels.map(({ spec, isOpen, summary, error, data, tab, header, rows: panelRows }) => (
+        {panels.map(({ spec, isOpen, summary, error, data, tab, chipRows, header, noData, rows: panelRows }) => (
           <Box key={`panel:${spec.id}`} flexDirection="column">
             <Box key="panel-head" flexDirection="row">
               <Button
@@ -1017,33 +1055,44 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{error}</Text>
               </Box>
             )}
-            {tab && data && (
+            {data && (
               <Box key="panel-body" flexDirection="column" marginLeft={PANEL_INDENT}>
-                {data.tabs.length > 1 && (
-                  <Box key="panel-tabs" flexDirection="row">
-                    {data.tabs.map((one, k) => (
-                      <Box key={`panel-tab-box:${one.id}`} flexDirection="row">
+                {chipRows.map(({ filter, chips }) => (
+                  <Box key={filter === null ? 'panel-tabs' : `panel-filter:${filter}`} flexDirection="row">
+                    {chips.map((chip, k) => (
+                      <Box key={`panel-chip-box:${chip.id}`} flexDirection="row">
                         {k > 0 && <Text>{'  '}</Text>}
                         <Button
-                          key={`panel-tab:${spec.id}:${one.id}`}
+                          key={filter === null ? `panel-tab:${spec.id}:${chip.id}` : `panel-filter:${spec.id}:${filter}:${chip.id}`}
                           plain
-                          dimColor={one.id !== tab.id}
-                          label={one.label}
-                          onPress={() => update($, panelTabs, picks => ({ ...picks, [spec.id]: one.id }))}
+                          dimColor={!chip.selected}
+                          label={chip.label}
+                          onPress={() =>
+                            filter === null
+                              ? update($, panelTabs, picks => ({ ...picks, [spec.id]: chip.id }))
+                              : update($, panelFilters, picks => ({ ...picks, [spec.id]: { ...picks[spec.id], [filter]: chip.id } }))
+                          }
                         />
                       </Box>
                     ))}
                   </Box>
+                ))}
+                {header.length > 0 && (
+                  <Box key="panel-columns" flexDirection="row">
+                    {segmentTexts(header, true, 'panel-col')}
+                  </Box>
                 )}
-                <Box key="panel-columns" flexDirection="row">
-                  {segmentTexts(header, true, 'panel-col')}
-                </Box>
+                {noData && (
+                  <Box key="panel-no-data">
+                    <Text dimColor>no data</Text>
+                  </Box>
+                )}
                 {panelRows.map(({ row, key, scope, segments }) => (
                   <Box key={`panel-row:${spec.id}:${key}`} flexDirection="row" hover={{ scope, backgroundColor: COLUMN_LIT }}>
                     {segmentTexts(segments, row.dim, 'panel-cell')}
                   </Box>
                 ))}
-                {tab.note && <Text dimColor>{clip([{ text: tab.note }], e.props.bodyColumns - PANEL_INDENT)[0]?.text ?? ''}</Text>}
+                {tab?.note && <Text dimColor>{clip([{ text: tab.note }], e.props.bodyColumns - PANEL_INDENT)[0]?.text ?? ''}</Text>}
               </Box>
             )}
           </Box>

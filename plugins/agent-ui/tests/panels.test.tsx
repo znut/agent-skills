@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { TONES, placeBeside } from '../hooks/ci'
-import { BAR_TRACK, INK_ON_FILL, INK_ON_TRACK, barSegments, headerSegments, parsePanelOutput, parseSpecs, rowSegments } from '../hooks/panels'
+import { BAR_TRACK, INK_ON_FILL, INK_ON_TRACK, barSegments, headerSegments, parsePanelOutput, parseSpecs, pickOptions, rowSegments } from '../hooks/panels'
 import { GIT_CONFIG, KIDS, type PanelResult, RUN_FILES, STATE, type World, world } from './world'
 
 const CONFIG = '/fx/repo/.agent/pane-panels.json'
@@ -420,5 +420,97 @@ describe('repo panels', () => {
     expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(30)
     expect(textOf(card).length).toBeLessThanOrEqual(24)
     await ui.unmount()
+  })
+
+  describe('filters (v1.1)', () => {
+    const columns = [{ key: 'name', label: 'name', width: 8 }]
+    const tabOf = (id: string, rows: string[]) => ({ id, columns, rows: rows.map(name => ({ id: name, cells: { name }, hover: [`${name} card`] })) })
+    const FILTERED = {
+      summary: 'worker  all',
+      filters: [
+        { id: 'role', options: [{ id: 'worker', label: 'worker' }, { id: 'reviewer', label: 'reviewer' }], default: 'worker' },
+        { id: 'class', options: [{ id: 'all', label: 'all' }, { id: 'docs', label: 'docs' }] },
+      ],
+      tabs: [tabOf('worker/all', ['w1', 'w2']), tabOf('worker/docs', ['d1']), tabOf('reviewer/docs', ['rd1'])],
+    }
+    const rowKeys = async (ui: { drawn: () => Promise<unknown> }) =>
+      walk(await ui.drawn()).map(node => node.props?.key).filter((key): key is string => typeof key === 'string' && key.startsWith('panel-row:'))
+
+    test('filters parse with their caps: 3 filters, 12 options, 48 tabs; v1 output keeps 12 tabs', () => {
+      const options = (n: number) => Array.from({ length: n }, (_, k) => ({ id: `o${k}`, label: `o${k}` }))
+      const tabs = (n: number) => Array.from({ length: n }, (_, k) => tabOf(`t${k}`, []))
+      const data = parsePanelOutput(JSON.stringify({
+        filters: [
+          { id: 'a', options: options(20), default: 'o3' },
+          { id: 'empty', options: [] },
+          { options: options(2) },
+          { id: 'b', options: [{ id: 'x' }, { id: 'x' }, { label: 'no id' }] },
+          { id: 'c', options: options(2) },
+          { id: 'd', options: options(2) },
+        ],
+        tabs: tabs(60),
+      }))
+      expect(data?.filters.map(filter => [filter.id, filter.options.length, filter.default])).toEqual([['a', 12, 'o3'], ['b', 1, ''], ['c', 2, '']])
+      expect(data?.filters[1]?.options).toEqual([{ id: 'x', label: 'x' }])
+      expect(data?.tabs).toHaveLength(48)
+      const v1 = parsePanelOutput(JSON.stringify({ tabs: tabs(60) }))
+      expect(v1?.filters).toEqual([])
+      expect(v1?.tabs).toHaveLength(12)
+    })
+
+    test('a filter picks the user pick while offered, else its default, else its first option', () => {
+      const filters = parsePanelOutput(JSON.stringify(FILTERED))?.filters ?? []
+      expect(pickOptions(filters, undefined)).toEqual(['worker', 'all'])
+      expect(pickOptions(filters, { role: 'reviewer', class: 'docs' })).toEqual(['reviewer', 'docs'])
+      expect(pickOptions(filters, { role: 'gone', class: 'gone' })).toEqual(['worker', 'all'])
+      const noDefault = parsePanelOutput(JSON.stringify({ ...FILTERED, filters: [{ ...FILTERED.filters[0], default: 'gone' }] }))?.filters ?? []
+      expect(pickOptions(noDefault, {})).toEqual(['worker'])
+    })
+
+    test('one chip row per filter and no tab row; the picks name the tab; each pick persists per panel and filter', async ($, on) => {
+      setup(on, () => ok(FILTERED))
+      const ui = await shown($.ui.mount(PANE()))
+      await ui.press({ key: 'panel-toggle:acme' })
+      expect(await ui.find({ key: 'panel-tabs' })).toBeUndefined()
+      expect(await ui.find({ key: 'panel-filter:role' })).toBeDefined()
+      expect(await ui.find({ key: 'panel-filter:class' })).toBeDefined()
+      const dim = async (filter: string, option: string) => (await ui.find({ key: `panel-filter:acme:${filter}:${option}` }))?.props.dimColor
+      expect([await dim('role', 'worker'), await dim('role', 'reviewer'), await dim('class', 'all'), await dim('class', 'docs')]).toEqual([false, true, false, true])
+      expect(await rowKeys(ui)).toEqual(['panel-row:acme:w1', 'panel-row:acme:w2'])
+      await ui.press({ key: 'panel-filter:acme:class:docs' })
+      expect(await rowKeys(ui)).toEqual(['panel-row:acme:d1'])
+      await ui.press({ key: 'panel-filter:acme:role:reviewer' })
+      expect(await rowKeys(ui)).toEqual(['panel-row:acme:rd1'])
+      await ui.unmount()
+      const again = await shown($.ui.mount(PANE()))
+      expect(await rowKeys(again)).toEqual(['panel-row:acme:rd1'])
+      expect((await again.find({ key: 'panel-filter:acme:role:reviewer' }))?.props.dimColor).toBe(false)
+      await again.unmount()
+    })
+
+    test('a combination the output lacks draws the columns header and no data, dimmed', async ($, on) => {
+      setup(on, () => ok(FILTERED))
+      const ui = await shown($.ui.mount(PANE()))
+      await ui.press({ key: 'panel-toggle:acme' })
+      await ui.press({ key: 'panel-filter:acme:role:reviewer' })
+      expect(await rowKeys(ui)).toEqual([])
+      const all = walk(await ui.drawn())
+      expect(textOf(keyed(all, 'panel-columns')).trim()).toBe('name')
+      const noData = keyed(all, 'panel-no-data')
+      expect((noData?.children?.[0] as Drawn | undefined)?.props?.dimColor).toBe(true)
+      expect(textOf(noData)).toBe('no data')
+      await ui.unmount()
+    })
+
+    test('with two filter rows a row card still lands just below its row', async ($, on) => {
+      setup(on, () => ok(FILTERED))
+      const ui = await shown($.ui.mount(PANE()))
+      await ui.press({ key: 'panel-toggle:acme' })
+      // head 0, role chips 1, class chips 2, columns 3, w1 4, w2 5
+      const all = walk(await ui.drawn())
+      expect(keyed(all, 'panel-card:acme:w1')?.props?.top).toBe(5)
+      expect(keyed(all, 'panel-card:acme:w2')?.props?.top).toBe(6)
+      await ui.unmount()
+    })
   })
 })

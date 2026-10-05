@@ -7,7 +7,9 @@ export type Bar = { frac: number; text: string; tone: string }
 export type Column = { key: string; label: string; width: number; align: 'left' | 'right'; isBar: boolean }
 export type PanelRow = { id: string; dim: boolean; cells: Record<string, string | Bar>; hover: string[] }
 export type PanelTab = { id: string; label: string; columns: Column[]; rows: PanelRow[]; note: string }
-export type PanelData = { summary: string; tab: string; tabs: PanelTab[] }
+export type FilterOption = { id: string; label: string }
+export type Filter = { id: string; options: FilterOption[]; default: string }
+export type PanelData = { summary: string; tab: string; tabs: PanelTab[]; filters: Filter[] }
 export type Segment = { text: string; color?: number; background?: number }
 
 export const PANEL_TIMEOUT_MS = 10_000
@@ -19,6 +21,10 @@ const HOVER_LINES = 6
 const MAX_WIDTH = 200
 const MAX_COLUMNS = 12
 const MAX_TABS = 12
+// with filters, one tab per option combination
+const MAX_FILTERS = 3
+const MAX_OPTIONS = 12
+const MAX_FILTER_TABS = 48
 const MAX_ROWS = 100
 // one space between columns
 const GAP = 1
@@ -63,10 +69,29 @@ function parseCell(value: unknown): string | Bar {
 }
 
 // One JSON object with a list of tabs, else null; a tab without an id, columns or rows is dropped.
+// v1.1 filters: chip rows that together pick a tab, its id their picks joined by `/`. A filter
+// without an id or an option, and an option without an id or seen before, is dropped; the caps
+// count what is left.
+function parseFilters(value: unknown): Filter[] {
+  if (!Array.isArray(value)) return []
+  const filters = value.flatMap((filter): Filter[] => {
+    if (!isObject(filter) || typeof filter.id !== 'string' || filter.id === '' || !Array.isArray(filter.options)) return []
+    const seen = new Set<string>()
+    const options = filter.options.flatMap((option): FilterOption[] => {
+      if (!isObject(option) || typeof option.id !== 'string' || option.id === '' || seen.has(option.id)) return []
+      seen.add(option.id)
+      return [{ id: option.id, label: str(option.label, option.id) }]
+    })
+    return options.length === 0 ? [] : [{ id: filter.id, options: options.slice(0, MAX_OPTIONS), default: typeof filter.default === 'string' ? filter.default : '' }]
+  })
+  return filters.slice(0, MAX_FILTERS)
+}
+
 export function parsePanelOutput(stdout: string): PanelData | null {
   const value = parseJson(stdout.trim())
   if (!isObject(value) || !Array.isArray(value.tabs)) return null
-  const tabs = value.tabs.slice(0, MAX_TABS).flatMap((tab): PanelTab[] => {
+  const filters = parseFilters(value.filters)
+  const tabs = value.tabs.slice(0, filters.length > 0 ? MAX_FILTER_TABS : MAX_TABS).flatMap((tab): PanelTab[] => {
     if (!isObject(tab) || typeof tab.id !== 'string' || !Array.isArray(tab.columns) || !Array.isArray(tab.rows)) return []
     const columns = tab.columns.slice(0, MAX_COLUMNS).filter(isObject).map(column => ({
       key: str(column.key),
@@ -83,7 +108,16 @@ export function parsePanelOutput(stdout: string): PanelData | null {
     }))
     return [{ id: tab.id, label: str(tab.label, tab.id), columns, rows, note: str(tab.note) }]
   })
-  return { summary: str(value.summary), tab: str(value.tab), tabs }
+  return { summary: str(value.summary), tab: str(value.tab), tabs, filters }
+}
+
+// Each filter's option: the user's pick while still offered, else its default, else its first.
+export function pickOptions(filters: Filter[], picks: Record<string, string> | undefined): string[] {
+  const offered = (filter: Filter, id: string | undefined) => filter.options.some(option => option.id === id)
+  return filters.map(filter => {
+    const pick = picks?.[filter.id]
+    return offered(filter, pick) ? (pick as string) : offered(filter, filter.default) ? filter.default : (filter.options[0] as FilterOption).id
+  })
 }
 
 // The user's pick if the output still has it, else the output's default, else the first tab.

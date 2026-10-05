@@ -25,6 +25,7 @@ declare module 'claude-code' {
       ciMetric: 'wall' | 'cpu' | 'mem'
       panelsOpen: string[]
       panelTabs: Record<string, string>
+      panelFilters: Record<string, Record<string, string>>
     }
   }
 }
