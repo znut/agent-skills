@@ -896,6 +896,7 @@ export const register: Register = (on, options) => {
           const card = chart.cards[i] as CiCard
           return (
             <Box
+              key={`ci-card:${run.run}`}
               position="absolute"
               top={2}
               left={card.left}
@@ -909,11 +910,16 @@ export const register: Register = (on, options) => {
             >
               {card.lines.map((line, k) => {
                 const job = card.jobs[k - 2]
-                if (job === undefined) return <Text key={`ci-line-${k}`} color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>
                 return (
-                  <Box flexDirection="row">
-                    <Text color={hex(jobColor(job))}>{line.slice(0, card.nameWidth)}</Text>
-                    <Text color={CARD_TEXT}>{line.slice(card.nameWidth)}</Text>
+                  <Box key={`ci-line-${k}`} flexDirection="row">
+                    {job === undefined ? (
+                      <Text color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>
+                    ) : (
+                      <>
+                        <Text color={hex(jobColor(job))}>{line.slice(0, card.nameWidth)}</Text>
+                        <Text color={CARD_TEXT}>{line.slice(card.nameWidth)}</Text>
+                      </>
+                    )}
                   </Box>
                 )
               })}

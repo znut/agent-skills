@@ -143,12 +143,7 @@ export function chartTiles(runs: CiRun[]): Picture[] {
   })
 }
 
-export function encodeChart(runs: CiRun[]): Picture {
-  const { bytes, width, height } = chartBytes(runs)
-  return { rgba: toBase64(bytes), width, height }
-}
-
-function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; height: number } {
+export function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; height: number } {
   const width = Math.max(1, runs.length) * 2 * PX_COL
   const height = CHART_ROWS * PX_ROW
   const bytes = new Uint8Array(width * height * 4)

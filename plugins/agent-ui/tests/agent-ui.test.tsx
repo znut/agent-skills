@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cardPlace, chartTiles, encodeChart, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
+import { cardPlace, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -873,7 +873,7 @@ describe('main-ci chart', () => {
   test('a job keeps its color whatever other jobs exist', () => {
     expect(jobColor('test')).toBe(jobColor('test'))
     const pixelOf = (jobs: string[]) => {
-      const bytes = Uint8Array.from(atob(encodeChart([summarize(name(1), parseRows(jobs.map(job => row(1, job)).join('\n')))]).rgba), ch => ch.charCodeAt(0))
+      const { bytes } = chartBytes([summarize(name(1), parseRows(jobs.map(job => row(1, job)).join('\n')))])
       return [...bytes.slice((67 * 12 + 5) * 4, (67 * 12 + 5) * 4 + 3)]
     }
     const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255]
@@ -883,9 +883,8 @@ describe('main-ci chart', () => {
 
   test('the picture is 12x72 pixels a run; a red run is underlined, a retry counted in red', () => {
     const red = summarize(name(1), parseRows([row(1, 'lint', { exit: 1 }), row(1, 'lint', { attempt: 2, exit: 1 })].join('\n')))
-    const chart = encodeChart([red, summarize(name(2), parseRows(runRows(2)))])
-    expect(chart).toMatchObject({ width: 24, height: 72 })
-    const bytes = Uint8Array.from(atob(chart.rgba), ch => ch.charCodeAt(0))
+    const { bytes, width, height } = chartBytes([red, summarize(name(2), parseRows(runRows(2)))])
+    expect([width, height]).toEqual([24, 72])
     const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
     expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
     expect(at(17, 70)[3]).toBe(0)
@@ -1086,7 +1085,7 @@ describe('main-ci chart', () => {
 
     const runs = markCancelled([1, 2].map(i => summarize(name(i), parseRows(row(i, 'lint', { exit: 1 })))), [{ sha8: 'cafe0002', at: '20260101T000030' }])
     expect(runs.map(run => run.cancelled)).toEqual([false, true])
-    const bytes = Uint8Array.from(atob(encodeChart(runs).rgba), ch => ch.charCodeAt(0))
+    const { bytes } = chartBytes(runs)
     const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
     expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
     expect(at(17, 70)[3]).toBe(0)
@@ -1127,7 +1126,11 @@ describe('main-ci chart', () => {
     expect(lastRow).toBeGreaterThan(-1)
     expect(cardAt).toBeGreaterThan(needsYou)
     expect(cardAt).toBeGreaterThan(lastRow)
-    expect(await ui.find({ key: 'ci-jobs' })).toBeUndefined()
+    // keyed by run, rows by line, so a run window that shifts keeps each card with its run
+    const card = all[cardAt]
+    expect(card?.props?.key).toBe(`ci-card:${name(3)}`)
+    expect(((card?.children ?? []) as Drawn[]).map(line => line.props?.key)).toEqual(Array.from({ length: 4 }, (_, k) => `ci-line-${k}`))
+    expect(all.filter(node => typeof node.props?.key === 'string' && (node.props.key as string).startsWith('ci-card:')).map(node => node.props?.key)).toEqual([1, 2, 3].map(i => `ci-card:${name(i)}`))
     await ui.unmount()
   })
 })
