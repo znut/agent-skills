@@ -332,6 +332,15 @@ describe('workers pane', () => {
       expect(avatarPicture('claude', 'running', 1).source.rgba).not.toBe(run.source.rgba)
     })
 
+    test('the gpt knot is 32x32 and spins through four frames that loop', () => {
+      const frames = [0, 1, 2, 3, 4].map(tick => avatarPicture('gpt', 'running', tick))
+      expect(frames[0]?.source).toMatchObject({ width: 32, height: 32 })
+      expect(bytes(frames[0]?.source.rgba ?? '')).toHaveLength(32 * 32 * 4)
+      expect(new Set(frames.slice(0, 4).map(frame => frame.source.rgba)).size).toBe(4)
+      expect(frames[4]?.source.rgba).toBe(frames[0]?.source.rgba)
+      expect(bytes(avatarPicture('gpt', 'done', 0).source.rgba)).toHaveLength(32 * 32 * 4)
+    })
+
     test('the alt text is the braille the Raster draws, two cells wide', () => {
       for (const avatar of ['claude', 'gpt', 'kimi'] as const) {
         const words = new Uint32Array(bytes(avatarCells(avatar, 'running', 0)).buffer)
