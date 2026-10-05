@@ -3,10 +3,10 @@
 #   Stop             pins the final question of the turn as an ask, and clears the open
 #                    asks the message settles
 #   UserPromptSubmit clears the open asks the user's message answers
-# Scope: sessions with a /tmp/cc-session-roles marker (boot-report writes it at
-# every PM and TL boot). Silent and fail-open: any failure pins nothing, clears
-# nothing, exits 0. A candidate is the last "?" line of the final assistant
-# message; Jev (TypeSafe) judges it, with a hard 3 s cap per call, detached so the
+# Scope: sessions whose /tmp/cc-session-roles marker names a manager role, `pm` or any
+# `tl-<lane>` (boot-report writes it at every PM and TL boot). Silent and fail-open: any
+# failure pins nothing, clears nothing, exits 0. A candidate is the last "?" line of the
+# final assistant message; Jev (TypeSafe) judges it, with a hard 3 s cap per call, detached so the
 # hook itself never waits on it.
 # File format (orchestrate/SKILL.md §Pinned asks): <state>/asks/<sid> holds one
 # line per ask; <state>/asks/<sid>.d/<n>.md its context, renumbered on delete.
@@ -20,10 +20,10 @@ set -u
 trap 'exit 0' EXIT
 
 PIN_MIN=0.6      # yes-probability that the final question is a decision
-CLEAR_MIN=0.6    # yes-probability that a message answers an ask
+CLEAR_MIN=0.45   # yes-probability that a message answers an ask
 PICK_MIN=0.4     # confidence to keep a context-line pick
-SAME_MIN=0.7     # yes-probability that a new question is the same decision as an open ask
-SETTLED_MIN=0.7  # yes-probability that the assistant's message settles an open ask
+SAME_MIN=0.6     # yes-probability that a new question is the same decision as an open ask
+SETTLED_MIN=0.6  # yes-probability that the assistant's message settles an open ask
 OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
@@ -38,7 +38,7 @@ sid= event= cwd= msg= prompt= tp= role=
 eval "$(printf '%s' "$input" | jq -r '@sh "sid=\(.session_id // "") event=\(.hook_event_name // "") cwd=\(.cwd // "") msg=\(.last_assistant_message // "") prompt=\(.prompt // "") tp=\(.transcript_path // "")"')"
 case "$sid" in ""|*/*|*..*) exit 0 ;; esac
 read -r role <"$ROLE_DIR/$sid" 2>/dev/null
-case "$role" in pm|tl-product|tl-platform) ;; *) exit 0 ;; esac
+[[ $role =~ ^(pm|tl-[a-z0-9-]+)$ ]] || exit 0
 [ -n "$cwd" ] || cwd=$PWD
 
 # Repo config, constant for a session: cached (three lines) after the first git lookup.
@@ -97,12 +97,21 @@ lock() {
 }
 unlock() { exec 9>&-; }
 
-log() { # log <hook> <candidate> <decision> [scores-json]
-	local line=${2//\\/\\\\} ts
-	line=${line//\"/\\\"}; line=${line//$'\t'/ }; line=${line//$'\r'/ }
+jstr() { # jstr <text>: $REPLY = the text as a JSON string body
+	REPLY=${1//\\/\\\\}
+	REPLY=${REPLY//\"/\\\"}; REPLY=${REPLY//$'\t'/ }; REPLY=${REPLY//$'\r'/ }; REPLY=${REPLY//$'\n'/ }
+}
+
+log() { # log <hook> <candidate> <decision> [scores-json] [replaced ask text...]
+	local ts t extra=
+	if [ "$#" -gt 4 ]; then
+		for t in "${@:5}"; do jstr "$t"; extra="$extra,\"$REPLY\""; done
+		extra=",\"replaced\":[${extra#,}]"
+	fi
+	jstr "$2"
 	TZ=UTC printf -v ts '%(%FT%TZ)T' -1
-	printf '{"ts":"%s","sid":"%s","hook":"%s","candidate":"%s","decision":"%s","scores":%s}\n' \
-		"$ts" "$sid" "$1" "$line" "$3" "${4:-null}" >>"$logfile"
+	printf '{"ts":"%s","sid":"%s","hook":"%s","candidate":"%s","decision":"%s","scores":%s%s}\n' \
+		"$ts" "$sid" "$1" "$REPLY" "$3" "${4:-null}" "$extra" >>"$logfile"
 }
 
 # jev <questions-json-file> <state-json-file>: prints the answers object; curl's exit
@@ -166,9 +175,12 @@ build_ctx() {
 		esac
 		ctx="$ctx$label ${text:0:200}"$'\n'
 	done
+	# The link's repo is the session's GitHub origin remote; any other remote, or none, gets no link.
 	if [ -n "$num" ]; then
-		slug=$(git -C "$cwd" remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')
-		ctx="${ctx}link: https://github.com/${slug:-EZ-OPD/ez-opd-services}/issues/${num#\#}"$'\n'
+		slug=$(git -C "$cwd" remote get-url origin)
+		slug=${slug%.git}
+		[[ $slug =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)([^/]+/[^/]+)$ ]] &&
+			ctx="${ctx}link: https://github.com/${BASH_REMATCH[2]}/issues/${num#\#}"$'\n'
 	fi
 }
 
@@ -290,25 +302,31 @@ capture() {
 		fi
 	fi
 
-	local ctx="" replace= decision=pin same_n= same_s=
+	# The new ask replaces every open ask with a same-decision score at SAME_MIN or above, and (the
+	# #N rule) an open ask with its first #N.
+	local ctx="" replaces=() decision=pin
 	if [ -n "$cand" ]; then
 		build_ctx
-		# The best same-decision score at SAME_MIN or above names the open ask this one replaces.
 		if [ "$same" = true ]; then
-			IFS=$'\t' read -r same_n same_s < <(printf '%s' "$ans" | jq -r '[to_entries[] | select(.key | startswith("same_"))
-				| {n: (.key | ltrimstr("same_")), s: .value.noul}] | max_by(.s) // empty | [.n, .s] | @tsv')
-			if [[ $same_n =~ ^[0-9]+$ ]] && awk -v s="$same_s" -v m="$SAME_MIN" 'BEGIN { exit !(s + 0 >= m + 0) }'; then
-				replace=$(sed -n "${same_n}p" "$tmp/asks.txt")
-				[ -z "$replace" ] || decision=replace
-			fi
+			while IFS= read -r n; do
+				[[ $n =~ ^[0-9]+$ ]] || continue
+				t=$(sed -n "${n}p" "$tmp/asks.txt")
+				[ -z "$t" ] || replaces+=("$t")
+			done < <(printf '%s' "$ans" | jq -r --argjson m "$SAME_MIN" '[to_entries[] | select(.key | startswith("same_"))
+				| select(.value.noul >= $m) | .key | ltrimstr("same_")] | .[]')
+		elif [ -n "$num" ]; then
+			while IFS= read -r line; do
+				[[ $line =~ \#[0-9]+ && ${BASH_REMATCH[0]} == "$num" ]] && replaces+=("$line")
+			done <"$tmp/asks.txt"
 		fi
+		[ "${#replaces[@]}" -eq 0 ] || decision=replace
 	fi
 
 	if [ -n "$DRY" ]; then
 		if [ -n "$cand" ]; then
 			log capture "$cand" "$decision-dry" "$scores"
 			printf '%s %s\n%s' "$([ "$decision" = pin ] && echo PIN || echo REPLACE)" "$cand" "$(printf '%s' "$ctx" | sed 's/^/     | /')"
-			[ -z "$replace" ] || printf '\n     replaces %s' "$replace"
+			for t in ${replaces[@]+"${replaces[@]}"}; do printf '\n     replaces %s' "$t"; done
 			printf '\n'
 		fi
 		for t in ${drops[@]+"${drops[@]}"}; do printf 'SETTLED %s\n' "$t"; done
@@ -327,26 +345,49 @@ capture() {
 	if [ -n "$cand" ]; then
 		if [ "$asks.seen" -nt "${stamp:-/nonexistent}" ]; then # a prompt landed while Jev ran: it may have answered this
 			log capture "$cand" answered-first "$scores"
-			cand= ctx= replace=
-		elif grep -qxF -- "$cand" "$asks" 2>/dev/null; then cand= ctx= replace=
+			cand= ctx= replaces=()
+		elif grep -qxF -- "$cand" "$asks" 2>/dev/null; then cand= ctx= replaces=()
 		fi
 	fi
+	removed=() superseded=()
 	if [ -n "$cand" ] || [ "${#drops[@]}" -gt 0 ]; then
-		rewrite_asks "$cand" "$ctx" ${replace:+"$replace"} ${drops[@]+"${drops[@]}"}
+		rewrite_asks "$cand" "$ctx" ${replaces[@]+"${replaces[@]}"} ${drops[@]+"${drops[@]}"}
 	fi
 	unlock
-	[ -z "$cand" ] || log capture "$cand" "$decision" "$scores"
-	for t in ${removed[@]+"${removed[@]}"}; do [ "$t" = "$replace" ] || log capture "$t" settled "$scores"; done
+	# Each removal is logged once: under the new ask's replace line, or as settled.
+	local replaced=(${superseded[@]+"${superseded[@]}"}) settled=() r is
+	for t in ${removed[@]+"${removed[@]}"}; do
+		is=
+		for r in ${replaces[@]+"${replaces[@]}"}; do [ "$t" != "$r" ] || is=1; done
+		if [ -n "$is" ]; then replaced+=("$t"); else settled+=("$t"); fi
+	done
+	if [ -n "$cand" ]; then
+		if [ "${#replaced[@]}" -gt 0 ]; then log capture "$cand" replace "$scores" "${replaced[@]}"
+		else log capture "$cand" pin "$scores"
+		fi
+	fi
+	for t in ${settled[@]+"${settled[@]}"}; do log capture "$t" settled "$scores"; done
 	log_dismissed
 }
 
-# ticket_done <N>: its PR is MERGED or CLOSED in the gh-status files, or its board row is Done
-# ($board_done, set by rewrite_asks). Local files only; a missing file means not done.
+# ticket_done <N> <pinned-at µs> <board-done-at-pin flag>: the ticket closed after the ask was pinned.
+# A PR file (gh-status) with a top-level state of MERGED or CLOSED decides by its close time
+# (mergedAt, else closedAt) against the pin time, and keeps the ask when it has neither: updatedAt
+# moves on later comments, so it is never a close time. Without one, a board row with
+# Status Done ($board_done, set by rewrite_asks) counts unless that row was already Done when the ask
+# was pinned (the meta flag). Local files only; a missing file or time means not done.
 ticket_done() {
-	if [ -n "$gh_dir" ] && [ -r "$gh_dir/status/pr-$1.json" ]; then
-		case $(jq -r '.state // empty' "$gh_dir/status/pr-$1.json" 2>/dev/null) in MERGED|CLOSED) return 0 ;; esac
+	local f=$gh_dir/status/pr-$1.json closed
+	if [ -n "$gh_dir" ] && [ -r "$f" ]; then
+		closed=$(jq -r 'select(.state == "MERGED" or .state == "CLOSED")
+			| (.mergedAt // .closedAt // "") | if . == "" then "none" else sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 end' "$f" 2>/dev/null)
+		[ "$closed" != none ] || return 1
+		if [[ $closed =~ ^[0-9]+$ ]]; then
+			[ "${closed}000000" -gt "$2" ]
+			return
+		fi
 	fi
-	[[ $board_done == *" $1 "* ]]
+	[ -z "$3" ] && [[ $board_done == *" $1 "* ]]
 }
 
 log_dismissed() {
@@ -361,44 +402,54 @@ tick() { now=${EPOCHREALTIME//[.,]/}; [ -n "$now" ] || printf -v now '%(%s)T0000
 # rewrite_asks <new ask or ""> <its context> <dropped ask text>...: append the new ask, keep only
 # the newest ask per ticket (its first #N; without one, its whole text), drop the lines with exactly
 # the dropped texts, and renumber the detail files to follow their lines. Texts, not line numbers:
-# the file may have changed since a judgment. Dropped lines land in $removed. An ask whose first #N
-# is a done ticket is dropped too (into $dismissed): its PR is MERGED or CLOSED in the gh-status
-# files, or its board row is Done.
-# Every line has a pinned-at stamp (microseconds) in the sidecar $asks.meta, parallel to the file; a
-# line with no stamp is old. A dropped text only removes a line stamped at or before $snap, the time
-# its judgment read the file: an identical ask pinned while Jev ran is not touched.
+# the file may have changed since a judgment. Dropped lines land in $removed; older lines with the
+# new ask's #N in $superseded. An ask whose first #N is a ticket closed after the ask was pinned is
+# dropped too (into $dismissed), never in the write that pins it (see ticket_done).
+# Every line has a pinned-at stamp (microseconds) in the sidecar $asks.meta, parallel to the file,
+# plus ` board-done` when its ticket's board row was Done at the pin; a line with no stamp is old. A
+# dropped text only removes a line stamped at or before $snap, the time its judgment read the file:
+# an identical ask pinned while Jev ran is not touched.
 rewrite_asks() {
-	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop nums='' k=0 st
-	local -a text keep ids stamp
+	local new=$1 ctx=$2 n=0 i m=0 id t line seen=$'\n' drop nums='' k=0 st fl
+	local -a text keep ids stamp flag
 	shift 2
-	removed=() dismissed=() board_done=''
+	removed=() superseded=() dismissed=() board_done=''
 	while IFS= read -r line; do
 		n=$((n + 1))
 		text[n]=$line
 	done <"$asks"
-	while IFS= read -r line; do
+	while read -r st fl; do
 		k=$((k + 1))
-		stamp[k]=$line
+		stamp[k]=$st flag[k]=$fl
 	done <"$asks.meta"
-	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; tick; stamp[n]=$now; }
+	[ -z "$new" ] || { n=$((n + 1)); text[n]=$new; tick; stamp[n]=$now; flag[n]=; }
 	for ((i = n; i >= 1; i--)); do
 		line=${text[i]}
 		[ -n "$line" ] || continue
 		if [[ $line =~ \#[0-9]+ ]]; then id=${BASH_REMATCH[0]}; nums="$nums ${id#\#}"; else id=$line; fi
+		ids[i]=$id
 		case "$seen" in *$'\n'"$id"$'\n'*) continue ;; esac
 		seen="$seen$id"$'\n'
 		keep[i]=1
-		ids[i]=$id
 	done
+	# Board rows are `| #N | ... |`; the Status column is found by its header cell, and escaped
+	# pipes (`\|`) inside a cell never split it.
 	if [ -n "$nums" ] && [ -r "$board_file" ]; then
 		board_done=$(awk -v want="$nums" 'BEGIN { n = split(want, a, " "); for (k = 1; k <= n; k++) w[a[k]] = 1 }
-			/^\| #[0-9]+ / { id = $2; sub(/^#/, "", id); m = split($0, c, "|"); st = c[m - 6]; gsub(/^ +| +$/, "", st)
-				if ((id in w) && st == "Done") printf " %s", id }
+			/^\|/ { r = $0; gsub(/\\\|/, "", r); m = split(r, c, "|"); for (k = 1; k <= m; k++) gsub(/^[ \t]+|[ \t]+$/, "", c[k]) }
+			!/^\|/ { col = 0; next }
+			/^\|[ \t:|-]+$/ { next }
+			!/^\|[ \t]*#[0-9]+[ \t]*\|/ { col = 0; for (k = 1; k <= m; k++) if (c[k] == "Status") col = k; next }
+			col { id = c[2]; sub(/^#/, "", id); if ((id in w) && c[col] == "Done") printf " %s", id }
 			END { print " " }' "$board_file")
 	fi
+	if [ -n "$new" ] && [[ ${ids[n]} =~ ^\#[0-9]+$ && $board_done == *" ${ids[n]#\#} "* ]]; then flag[n]=board-done; fi
 	for ((i = 1; i <= n; i++)); do
 		[ -n "${keep[i]:-}" ] || continue
-		[[ ${ids[i]} =~ ^\#[0-9]+$ ]] && ticket_done "${ids[i]#\#}" || continue
+		[ -z "$new" ] || [ "$i" -ne "$n" ] || continue
+		st=${stamp[i]:-0}
+		[[ $st =~ ^[0-9]+$ ]] || st=0
+		[[ ${ids[i]} =~ ^\#[0-9]+$ ]] && ticket_done "${ids[i]#\#}" "$st" "${flag[i]:-}" || continue
 		unset 'keep[i]'
 		dismissed+=("${text[i]}")
 	done
@@ -415,13 +466,15 @@ rewrite_asks() {
 			[ "$st" -le "$snap" ] || drop=
 		fi
 		if [ -z "${keep[i]:-}" ] || [ -n "$drop" ]; then
-			[ -z "$drop" ] || removed+=("$line")
+			if [ -n "$drop" ]; then removed+=("$line")
+			elif [ -n "$new" ] && [ "$i" -lt "$n" ] && [ "${ids[i]:-}" = "${ids[n]}" ]; then superseded+=("$line")
+			fi
 			[ ! -f "$detail/$i.md" ] || rm -f "$detail/$i.md"
 			continue
 		fi
 		m=$((m + 1))
 		printf '%s\n' "$line" >>"$asks.new"
-		printf '%s\n' "${stamp[i]:-0}" >>"$asks.meta.new"
+		printf '%s\n' "${stamp[i]:-0}${flag[i]:+ ${flag[i]}}" >>"$asks.meta.new"
 		if [ -n "$new" ] && [ "$i" -eq "$n" ]; then
 			if [ -n "$ctx" ]; then printf '%s' "$ctx" >"$detail/$m.md"; elif [ -f "$detail/$m.md" ]; then rm -f "$detail/$m.md"; fi
 		elif [ "$m" -ne "$i" ] && [ -f "$detail/$i.md" ]; then
@@ -479,8 +532,9 @@ clear_jev() {
 	apply_clear "$scores" "${drop[@]}"
 }
 
-# The fixed short replies that clear an ask without a Jev call, one per line. A reply matches
-# whole (compared in lower case, edge punctuation ignored); anything else goes to Jev.
+# The fixed short replies that clear an ask without a Jev call, one per line. A reply matches when it
+# is one or more entries in a row (`yes go`, `ok, go`), compared in lower case with punctuation as a
+# word break; anything else goes to Jev.
 SHORT_REPLIES='go
 go ahead
 do it
@@ -498,38 +552,51 @@ ship
 merge
 no
 n
-nope'
-TRIM_RE='^[[:space:][:punct:]]*(.*[^[:space:][:punct:]])[[:space:][:punct:]]*$'
+nope
+เน'
+SHORT_ALTS=${SHORT_REPLIES//$'\n'/|}
+SHORT_RE="^[[:space:][:punct:]]*($SHORT_ALTS)([[:space:][:punct:]]+($SHORT_ALTS))*[[:space:][:punct:]]*$"
 NUM_RE='(^|[^[:alnum:]])#?([0-9]+)([^[:alnum:]]|$)'
 
-# short_clear: a reply that is only one short reply plus optional ticket numbers (`1111`, `#1111`)
-# clears without Jev: no number = the newest ask; numbers = the asks with those #N, and every number
-# must match an open ask. Returns 1 to hand the reply to Jev.
+# short_clear: a reply that is only short replies plus optional ticket numbers (`1111`, `#1111`), or
+# a bare option digit under 100 with no `#` (`1`), clears without Jev. Numbers name the asks with
+# those #N; no number, a bare digit, or numbers that match no open ask clear the newest ask. Returns 1
+# to hand the reply to Jev.
 short_clear() {
-	local rest=$prompt reply= line n found targets=() nums=()
+	local rest=$prompt line n targets=() nums=() newest= hash=
 	tick
 	snap=$now
 	[ "${#prompt}" -le 120 ] || return 1
+	while [[ $rest =~ \[Image\ \#[0-9]+\] ]]; do rest=${rest/"${BASH_REMATCH[0]}"/ }; done
+	[[ $rest =~ \#[0-9] ]] && hash=1
 	while [[ $rest =~ $NUM_RE ]]; do
 		nums+=("${BASH_REMATCH[2]}")
 		rest=${rest/"${BASH_REMATCH[0]}"/ }
 	done
-	[[ $rest =~ $TRIM_RE ]] && reply=${BASH_REMATCH[1]}
-	reply=${reply,,}
-	[[ -n $reply && $reply != *$'\n'* && $'\n'$SHORT_REPLIES$'\n' == *$'\n'"$reply"$'\n'* ]] || return 1
-	if [ "${#nums[@]}" -eq 0 ]; then
-		while IFS= read -r line; do [ -z "$line" ] || targets=("$line"); done <"$asks"
-		[ "${#targets[@]}" -gt 0 ] || return 0
-	else
-		for n in "${nums[@]}"; do
-			found=
+	if [[ ${rest,,} =~ $SHORT_RE ]]; then
+		for n in ${nums[@]+"${nums[@]}"}; do
 			while IFS= read -r line; do
-				[[ $line =~ \#([0-9]+) && ${BASH_REMATCH[1]} == "$n" ]] && { targets+=("$line"); found=1; }
+				[[ $line =~ \#([0-9]+) && ${BASH_REMATCH[1]} == "$n" ]] && targets+=("$line")
 			done <"$asks"
-			[ -n "$found" ] || return 1
 		done
+	elif [[ ${#nums[@]} -ne 1 || $rest == *[![:space:][:punct:]]* || ${#nums[0]} -gt 2 || -n $hash ]]; then
+		return 1
+	fi
+	if [ "${#targets[@]}" -eq 0 ]; then
+		while IFS= read -r line; do [ -z "$line" ] || newest=$line; done <"$asks"
+		[ -n "$newest" ] || return 0
+		targets=("$newest")
 	fi
 	apply_clear '"deterministic"' "${targets[@]}"
+}
+
+# machine_prompt: the prompt is not the user's own words: a task notification, a message from
+# another session, Stop-hook feedback, or images with no text.
+machine_prompt() {
+	local p=${prompt#"${prompt%%[![:space:]]*}"}
+	case "$p" in "<task-notification>"* | "Another Claude session sent a message"* | "Stop hook feedback"*) return 0 ;; esac
+	while [[ $p =~ \[Image\ \#[0-9]+\] ]]; do p=${p/"${BASH_REMATCH[0]}"/}; done
+	[[ $p != *[![:space:]]* ]]
 }
 
 case "$event" in
@@ -543,10 +610,11 @@ Stop)
 	job capture
 	;;
 UserPromptSubmit)
+	machine_prompt && exit 0
 	resolve_state || exit 0
 	[ -d "$state/asks" ] || mkdir -p "$state/asks"
 	: >"$asks.seen"
-	[ -n "$prompt" ] && [ -s "$asks" ] || exit 0
+	[ -s "$asks" ] || exit 0
 	case "$prompt" in /*) exit 0 ;; esac
 	short_clear || job clear_jev
 	;;
