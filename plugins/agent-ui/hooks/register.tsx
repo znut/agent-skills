@@ -519,12 +519,26 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
 }
 
 // Each panel, collapsed or expanded, runs at most once per refresh, and never twice at once.
-// The render does not wait: it draws the last data, and the run's end draws the pane again.
-function refreshPanels($: $, root: string, specs: PanelSpec[], now: number): void {
-  for (const spec of specs) {
-    const run = panelRunOf(root, spec)
-    if (!run.running && (run.startedAt === null || now - run.startedAt >= spec.refreshMs)) void runPanel($, root, spec, run, now)
-  }
+const isDue = (run: PanelRun, spec: PanelSpec, now: number) => !run.running && (run.startedAt === null || now - run.startedAt >= spec.refreshMs)
+
+// The render only schedules: a run it started itself would be cut when its dispatch ends, as
+// every `$` call in flight with a dispatch is ("Work that outlives a dispatch", plugin-authoring
+// reference), so the due panels start on a module timer. The render draws the last data; a
+// run's end draws the pane again. A timer that never fired (refused, or lost) is replaced after
+// a few seconds; `isDue` keeps a late one from starting a second run.
+const KICK_STALE_MS = 5000
+let kickedAt: number | null = null
+
+function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): void {
+  if ((kickedAt !== null && now - kickedAt < KICK_STALE_MS) || !specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
+  kickedAt = now
+  $.clock.after(1, () => {
+    kickedAt = null
+    for (const spec of specs) {
+      const run = panelRunOf(root, spec)
+      if (isDue(run, spec, now)) void runPanel($, root, spec, run, now)
+    }
+  })
 }
 
 type PanelRowView = { row: PanelRow; key: string; scope: string; segments: Segment[]; card: { top: number; left: number; width: number; lines: string[] } | null }
@@ -929,7 +943,7 @@ export const register: Register = (on, options) => {
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
-    if (root && specs.length > 0) refreshPanels($, root, specs, now)
+    if (root && specs.length > 0) schedulePanels($, root, specs, now)
     // a card's top counts pane rows: the panels start below the main strip (1 row) and the
     // open chart (CHART_ROWS bars, its metric chips and its legend line), the only rows above them
     const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 2 : 0)
