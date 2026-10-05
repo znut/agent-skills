@@ -110,12 +110,17 @@ export const runCell = (i: number) => AXIS_COLS + i * 2
 
 export const runsFit = (bodyColumns: number) => Math.max(0, Math.floor((bodyColumns - AXIS_COLS) / 2))
 
-// FNV-1a of the name: a job keeps its color whatever other jobs exist.
-export function jobColor(job: string): number {
+export function fnv1a(text: string): number {
   let hash = 0x811c9dc5
-  for (let i = 0; i < job.length; i++) hash = Math.imul(hash ^ job.charCodeAt(i), 0x01000193)
-  return PALETTE[(hash >>> 0) % PALETTE.length] as number
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  return hash >>> 0
 }
+
+// Hashed from the name: a job keeps its color whatever other jobs exist.
+export const jobColor = (job: string): number => PALETTE[fnv1a(job) % PALETTE.length] as number
+
+// A repo panel's bar tones, in the chart's colors.
+export const TONES: Record<string, number> = { good: PALETTE[3] as number, mid: PALETTE[2] as number, bad: RED, dim: DIM }
 
 export const totalWall = (run: CiRun) => run.jobs.reduce((sum, job) => sum + job.wall, 0)
 export const maxWall = (runs: CiRun[]) => Math.max(1, ...runs.map(totalWall))
@@ -234,12 +239,15 @@ export function cardLines(run: CiRun, width = Infinity): { lines: string[]; jobs
   return { lines, jobs: slowest.map(job => job.job), nameWidth }
 }
 
-// Where a run's card goes: right of its column, else left of it, never over it; when it fits on
-// neither side whole, on the roomier side, narrowed to fit.
-export function cardPlace(column: number, cardWidth: number, bodyColumns: number): { x: number; width: number } {
-  const at = runCell(column)
-  const right = bodyColumns - (at + 2)
-  if (cardWidth <= right) return { x: at + 2, width: cardWidth }
-  if (cardWidth <= at) return { x: at - cardWidth, width: cardWidth }
-  return right >= at ? { x: at + 2, width: right } : { x: 0, width: at }
+// Where a card goes along one axis of `span` cells, beside the `size` cells it describes at `at`:
+// after them, else before them, never over them; when it fits on neither side whole, on the
+// roomier side, cut to fit.
+export function placeBeside(at: number, size: number, card: number, span: number): { x: number; width: number } {
+  const after = span - (at + size)
+  if (card <= after) return { x: at + size, width: card }
+  if (card <= at) return { x: at - card, width: card }
+  return after >= at ? { x: at + size, width: after } : { x: 0, width: at }
 }
+
+// A run's card: right of its column, else left of it.
+export const cardPlace = (column: number, cardWidth: number, bodyColumns: number) => placeBeside(runCell(column), 2, cardWidth, bodyColumns)

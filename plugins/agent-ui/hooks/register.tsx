@@ -15,10 +15,12 @@ import {
   chartCells,
   chartTiles,
   encodeCells,
+  fnv1a,
   jobColor,
   markCancelled,
   maxWall,
   parseRows,
+  placeBeside,
   runsFit,
   summarize,
   tileCells,
@@ -42,6 +44,21 @@ import {
   resultJsonMessage,
   statusOf,
 } from './lib'
+import {
+  PANEL_TIMEOUT_MS,
+  type PanelData,
+  type PanelRow,
+  type PanelSpec,
+  type PanelTab,
+  type Segment,
+  clip,
+  firstLine,
+  headerSegments,
+  parsePanelOutput,
+  parseSpecs,
+  pickTab,
+  rowSegments,
+} from './panels'
 
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
@@ -452,6 +469,101 @@ function fallbackOf(chart: CiChart): { grids: Cell[][][]; cells: string[] } {
   return chart.fallback
 }
 
+// Repo panels: the list re-read when its file changes; each panel's last good output and last
+// error kept per root, id and argv.
+type PanelRun = { data: PanelData | null; error: string | null; startedAt: number | null; running: boolean }
+let panelList = { key: '', specs: [] as PanelSpec[] }
+const panelRuns = new Map<string, PanelRun>()
+
+async function readPanelSpecs($: $, root: string): Promise<PanelSpec[]> {
+  const stat = (await listDir($, `${root}/.agent`)).find(entry => entry.name === 'pane-panels.json' && entry.kind === 'file')
+  if (!stat) return []
+  const key = `${root}|${stat.mtimeMs}|${stat.size}`
+  if (panelList.key !== key) panelList = { key, specs: parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) }
+  return panelList.specs
+}
+
+const panelRunOf = (root: string, spec: PanelSpec): PanelRun => {
+  const key = [root, spec.id, ...spec.cmd].join('\0')
+  let run = panelRuns.get(key)
+  if (!run) panelRuns.set(key, (run = { data: null, error: null, startedAt: null, running: false }))
+  return run
+}
+
+async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now: number): Promise<void> {
+  run.running = true
+  run.startedAt = now
+  try {
+    const ran = await $.process.run(spec.cmd, { cwd: root, stdin: '', timeoutMs: PANEL_TIMEOUT_MS })
+    const data = ran.exitCode === 0 ? parsePanelOutput(ran.stdout) : null
+    if (data) {
+      run.data = data
+      run.error = null
+    } else run.error = firstLine(ran.stderr) || (ran.exitCode === 0 ? 'stdout is not one panel JSON object' : `exit ${ran.exitCode}`)
+  } catch (error) {
+    run.error = firstLine(error instanceof Error ? error.message : String(error)) || 'did not run'
+  } finally {
+    run.running = false
+  }
+}
+
+// Each panel runs once for its summary, then, while expanded, at most once per refresh; never
+// twice at once. A render waits for the runs it started; one drawn meanwhile keeps the last data.
+async function refreshPanels($: $, root: string, specs: PanelSpec[], open: string[], now: number): Promise<void> {
+  await Promise.all(specs.flatMap(spec => {
+    const run = panelRunOf(root, spec)
+    const due = !run.running && (run.startedAt === null || (open.includes(spec.id) && now - run.startedAt >= spec.refreshMs))
+    return due ? [runPanel($, root, spec, run, now)] : []
+  }))
+}
+
+type PanelRowView = { row: PanelRow; key: string; scope: string; segments: Segment[]; card: { top: number; left: number; width: number; lines: string[] } | null }
+type PanelView = { spec: PanelSpec; isOpen: boolean; summary: string; error: string; data: PanelData | null; tab: PanelTab | null; header: Segment[]; rows: PanelRowView[] }
+const PANEL_INDENT = 2
+
+// The panels as drawn from pane row `top` down, one line each; a row's card goes below it, else
+// above it, never over it.
+function panelViews(root: string, specs: PanelSpec[], open: string[], tabs: Record<string, string>, top: number, bodyColumns: number, paneRows: number): PanelView[] {
+  let y = top
+  const width = bodyColumns - PANEL_INDENT
+  return specs.map(spec => {
+    const run = panelRunOf(root, spec)
+    const isOpen = open.includes(spec.id)
+    const data = run.data
+    const tab = isOpen && data ? pickTab(data, tabs[spec.id]) : null
+    y += 1 + (run.error ? 1 : 0)
+    if (tab && data && data.tabs.length > 1) y++
+    if (tab) y++
+    const seen = new Set<string>()
+    const rows = (tab?.rows ?? []).map((row, i) => {
+      const key = seen.has(row.id) ? `${row.id}#${i}` : row.id
+      seen.add(key)
+      const at = y++
+      const cardWidth = Math.min(width, Math.max(0, ...row.hover.map(line => line.length)) + 4)
+      const place = placeBeside(at, 1, row.hover.length + 2, paneRows)
+      return {
+        row,
+        key,
+        scope: `panel:${fnv1a(`${spec.id}\0${key}`).toString(36)}`,
+        segments: rowSegments(tab as PanelTab, row, width),
+        card: row.hover.length === 0 ? null : { top: place.x, left: PANEL_INDENT, width: cardWidth, lines: row.hover.map(line => line.slice(0, Math.max(1, cardWidth - 4))) },
+      }
+    })
+    if (tab?.note) y++
+    const title = `▸ ${spec.title}`
+    return {
+      spec,
+      isOpen,
+      summary: !isOpen && data?.summary ? clip([{ text: `  ${data.summary}` }], bodyColumns - title.length)[0]?.text ?? '' : '',
+      error: run.error ? clip([{ text: `panel error: ${run.error}` }], width)[0]?.text ?? '' : '',
+      data,
+      tab,
+      header: tab ? headerSegments(tab, width) : [],
+      rows,
+    }
+  })
+}
+
 const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
 
 function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
@@ -491,8 +603,13 @@ function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
   return [...shown, ...orphans]
 }
 
+// The main checkout of the session's clone: its git common dir's parent.
+async function repoRoot($: $): Promise<string | null> {
+  return (await gitCommonDir($))?.replace(/\/\.git$/, '') ?? null
+}
+
 async function localMdOf($: $): Promise<string> {
-  const main = (await gitCommonDir($))?.replace(/\/\.git$/, '')
+  const main = await repoRoot($)
   return main ? readText($, `${main}/.agent/orchestrate.local.md`) : ''
 }
 
@@ -663,6 +780,8 @@ const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as st
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
+const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
+const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
 
 const FRAME_MS = 250
 const MAX_ANIMATED = 20
@@ -720,6 +839,9 @@ const barGlyphs = (run: CiRun, max: number) => String.fromCharCode(0x2581 + Math
 const CARD_TEXT = '#e1e1e6'
 const CARD_DIM = '#9a9cab'
 const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
+// A hover card, the chart's and a panel row's: hidden until its scope is hovered, painted over
+// the pane at its place.
+const CARD = { position: 'absolute', display: 'none', flexDirection: 'column', borderStyle: 'round', backgroundColor: '#2c2e3c', paddingX: 1 } as const
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
@@ -792,6 +914,16 @@ export const register: Register = (on, options) => {
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
     const repo = await resolveRepo($, options)
+    const root = await repoRoot($)
+    const specs = root ? await readPanelSpecs($, root) : []
+    const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
+    if (root && specs.length > 0) await refreshPanels($, root, specs, openPanels, now)
+    const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 1 : 0)
+    const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
+    const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
+      segments.map((segment, k) => (
+        <Text key={`${prefix}-${k}`} color={segment.color === undefined ? undefined : hex(segment.color)} dimColor={dim}>{segment.text}</Text>
+      ))
     const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
@@ -831,6 +963,53 @@ export const register: Register = (on, options) => {
             <Text dimColor>{`last ${chart.runs.length} runs · line = load · red = retry`}</Text>
           </Box>
         )}
+        {panels.map(({ spec, isOpen, summary, error, data, tab, header, rows: panelRows }) => (
+          <Box key={`panel:${spec.id}`} flexDirection="column">
+            <Box key="panel-head" flexDirection="row">
+              <Button
+                key={`panel-toggle:${spec.id}`}
+                plain
+                label={`${isOpen ? '▾' : '▸'} ${spec.title}`}
+                onPress={() => update($, panelsOpen, ids => (ids.includes(spec.id) ? ids.filter(id => id !== spec.id) : [...ids, spec.id]))}
+              />
+              {summary && <Text dimColor>{summary}</Text>}
+            </Box>
+            {error && (
+              <Box key="panel-error" marginLeft={PANEL_INDENT}>
+                <Text dimColor>{error}</Text>
+              </Box>
+            )}
+            {tab && data && (
+              <Box key="panel-body" flexDirection="column" marginLeft={PANEL_INDENT}>
+                {data.tabs.length > 1 && (
+                  <Box key="panel-tabs" flexDirection="row">
+                    {data.tabs.map((one, k) => (
+                      <Box key={`panel-tab-box:${one.id}`} flexDirection="row">
+                        {k > 0 && <Text>{'  '}</Text>}
+                        <Button
+                          key={`panel-tab:${spec.id}:${one.id}`}
+                          plain
+                          dimColor={one.id !== tab.id}
+                          label={one.label}
+                          onPress={() => update($, panelTabs, picks => ({ ...picks, [spec.id]: one.id }))}
+                        />
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+                <Box key="panel-columns" flexDirection="row">
+                  {segmentTexts(header, true, 'panel-col')}
+                </Box>
+                {panelRows.map(({ row, key, scope, segments }) => (
+                  <Box key={`panel-row:${spec.id}:${key}`} flexDirection="row" hover={{ scope, backgroundColor: COLUMN_LIT }}>
+                    {segmentTexts(segments, row.dim, 'panel-cell')}
+                  </Box>
+                ))}
+                {tab.note && <Text dimColor>{clip([{ text: tab.note }], e.props.bodyColumns - PANEL_INDENT)[0]?.text ?? ''}</Text>}
+              </Box>
+            )}
+          </Box>
+        ))}
         {prState.prs.length > 0 && (
           <Box key="needs-you" flexDirection="column" marginBottom={1}>
             <Text bold>Needs you</Text>
@@ -895,19 +1074,7 @@ export const register: Register = (on, options) => {
         {chart?.runs.map((run, i) => {
           const card = chart.cards[i] as CiCard
           return (
-            <Box
-              key={`ci-card:${run.run}`}
-              position="absolute"
-              top={2}
-              left={card.left}
-              width={card.width}
-              display="none"
-              hover={{ display: 'flex', scope: `ci:${run.run}` }}
-              flexDirection="column"
-              borderStyle="round"
-              backgroundColor="#2c2e3c"
-              paddingX={1}
-            >
+            <Box key={`ci-card:${run.run}`} {...CARD} top={2} left={card.left} width={card.width} hover={{ display: 'flex', scope: `ci:${run.run}` }}>
               {card.lines.map((line, k) => {
                 const job = card.jobs[k - 2]
                 return (
@@ -926,6 +1093,19 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
+        {panels.flatMap(({ spec, rows: panelRows }) =>
+          panelRows.flatMap(({ key, scope, card }) =>
+            card
+              ? [
+                  <Box key={`panel-card:${spec.id}:${key}`} {...CARD} top={card.top} left={card.left} width={card.width} hover={{ display: 'flex', scope }}>
+                    {card.lines.map((line, k) => (
+                      <Text key={`panel-line-${k}`} color={CARD_TEXT}>{line}</Text>
+                    ))}
+                  </Box>,
+                ]
+              : [],
+          ),
+        )}
       </Box>
     )
   })

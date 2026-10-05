@@ -22,6 +22,8 @@ declare module 'claude-code' {
       openAsk: OpenAsk | null
       expanded: string[]
       ciOpen: boolean
+      panelsOpen: string[]
+      panelTabs: Record<string, string>
     }
   }
 }

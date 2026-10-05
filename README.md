@@ -88,3 +88,41 @@ to the GitHub repository of the session clone's `origin` remote (`repoSlug`; no
 GitHub remote, no link). A repo whose layout differs sets these options.
 Check it with `claude plugin validate`, `claude plugin test` and `tsc -p` on
 that folder.
+
+A repo adds its own panels below the main-ci chart by listing them in
+`.agent/pane-panels.json` at the main checkout's root (no file, no panels):
+`[{ "id": "acme", "title": "Acme", "cmd": ["bun", "scripts/pane/acme.mjs"], "refresh_s": 60 }]`.
+The pane runs `cmd` as an argv (no shell) in that root, stdin closed, 10 s
+limit: once for the collapsed summary, then while the panel is expanded at most
+once per `refresh_s` (default 60, at least 5), never two runs at once. The
+command prints one JSON object on stdout and exits 0; anything else shows
+`panel error: <first stderr line>` and keeps the last good rows:
+
+```json
+{
+  "summary": "north  alpha 78%",
+  "tab": "north",
+  "tabs": [{
+    "id": "north", "label": "north",
+    "columns": [
+      { "key": "name", "label": "cell", "width": 11 },
+      { "key": "n", "label": "n", "width": 3, "align": "right" },
+      { "key": "pass", "label": "pass", "width": 10, "kind": "bar" }
+    ],
+    "rows": [{
+      "id": "alpha", "dim": false,
+      "cells": { "name": "alpha@med", "n": "9", "pass": { "frac": 0.78, "text": "78%", "tone": "good" } },
+      "hover": ["alpha@med · north", "pass 7 / fail 2"]
+    }],
+    "note": "dim = few runs"
+  }]
+}
+```
+
+`summary` follows the title while collapsed; `tab` is the default tab, and the
+user's pick persists per panel id. Cells are strings, or for a `bar` column
+`{ frac 0..1, text, tone }`: a bar `width − 4` cells wide in `good`, `mid`,
+`bad` or `dim`, its text right of it. A `dim` row draws dimmed; `hover` (up to
+6 lines) is the row's hover card, as on a main-ci bar. Only `tabs[].id`,
+`columns` and `rows` are required; a row is cut to the pane width, never
+wrapped.

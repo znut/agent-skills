@@ -76,7 +76,12 @@ export type World = {
   cwd: string
   repos: Set<string>
   gitRuns: number
+  // each repo-panel command run, and what it answers: a result, or a deny (the call rejects, as on a timeout)
+  panelRuns: { argv: readonly string[]; cwd?: string; stdin?: string; timeoutMs?: number }[]
+  panel: (argv: readonly string[]) => PanelResult | Promise<PanelResult>
 }
+
+export type PanelResult = { exitCode?: number; stdout?: string; stderr?: string; deny?: string }
 
 // Answers the nouns beneath the plugin from `files`: no disk, no processes, no waits.
 // The test mutates the returned world (files, alive pids) to stage a change.
@@ -92,6 +97,7 @@ export function world(
     files: { ...files }, alive: new Set(alive), reads: [], clock,
     mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, tails: [],
     cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
+    panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
   on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: SID }))
@@ -143,7 +149,7 @@ export function world(
     if (seen.size === 0) return { deny: `ENOENT: ${e.path}` }
     return { value: [...seen.values()] }
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     const [command, ...args] = e.argv
     const ok = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -159,6 +165,12 @@ export function world(
       w.tails.push(`${args[1]} ${args.at(-1)}`)
       const from = args[1] ?? ''
       return ok(from.startsWith('+') ? text.slice(Number(from.slice(1)) - 1) : text.slice(-Number(from)))
+    }
+    if (command === 'acme-panel') {
+      w.panelRuns.push({ argv: e.argv, ...e.init })
+      const result = await w.panel(e.argv)
+      if (result.deny) return { deny: result.deny }
+      return { value: { exitCode: result.exitCode ?? 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     throw new Error(`unexpected command ${command}`)
   })
