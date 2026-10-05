@@ -93,8 +93,8 @@ A repo adds its own panels below the main-ci chart by listing them in
 `.agent/pane-panels.json` at the main checkout's root (no file, no panels):
 `[{ "id": "acme", "title": "Acme", "cmd": ["bun", "scripts/pane/acme.mjs"], "refresh_s": 60 }]`.
 The pane runs `cmd` as an argv (no shell) in that root, stdin closed, 10 s
-limit: once for the collapsed summary, then while the panel is expanded at most
-once per `refresh_s` (default 60, at least 5), never two runs at once. The
+limit: at most once per `refresh_s` (default 60, at least 5), collapsed or
+expanded, so the collapsed summary stays fresh too; never two runs at once. The
 command prints one JSON object on stdout and exits 0; anything else shows
 `panel error: <first stderr line>` and keeps the last good rows:
 

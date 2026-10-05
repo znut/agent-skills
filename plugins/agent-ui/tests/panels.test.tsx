@@ -85,18 +85,23 @@ describe('repo panels', () => {
     expect(parseSpecs('not json')).toEqual([])
   })
 
-  test('collapsed: one run for the summary, by argv in the repo root with stdin closed and a 10 s limit', async ($, on) => {
+  test('collapsed: the summary runs by argv in the repo root with stdin closed and a 10 s limit, again only after refresh_s', async ($, on) => {
     const w = setup(on)
     const ui = await $.ui.mount(PANE())
     expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 75%')
     expect(w.panelRuns).toEqual([{ argv: CMD, cwd: '/fx/repo', stdin: '', timeoutMs: 10_000 }])
     expect(await ui.find({ key: 'panel-columns' })).toBeUndefined()
     await ui.unmount()
-    // a collapsed panel does not run again, however long it waits
-    await w.clock.advance(10 * 60_000)
-    const later = await $.ui.mount(PANE())
+    await w.clock.advance(29_000)
+    const early = await $.ui.mount(PANE())
+    await early.unmount()
     expect(w.panelRuns).toHaveLength(1)
-    await later.unmount()
+    w.panel = () => ok({ ...OUTPUT, summary: 'north  alpha 80%' })
+    await w.clock.advance(1_000)
+    const due = await $.ui.mount(PANE())
+    expect(w.panelRuns).toHaveLength(2)
+    expect((await due.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 80%')
+    await due.unmount()
   })
 
   test('expanded: at most one run per refresh_s', async ($, on) => {

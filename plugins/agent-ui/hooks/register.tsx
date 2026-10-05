@@ -507,12 +507,12 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
   }
 }
 
-// Each panel runs once for its summary, then, while expanded, at most once per refresh; never
-// twice at once. A render waits for the runs it started; one drawn meanwhile keeps the last data.
-async function refreshPanels($: $, root: string, specs: PanelSpec[], open: string[], now: number): Promise<void> {
+// Each panel, collapsed or expanded, runs at most once per refresh, and never twice at once.
+// A render waits for the runs it started; one drawn meanwhile keeps the last data.
+async function refreshPanels($: $, root: string, specs: PanelSpec[], now: number): Promise<void> {
   await Promise.all(specs.flatMap(spec => {
     const run = panelRunOf(root, spec)
-    const due = !run.running && (run.startedAt === null || (open.includes(spec.id) && now - run.startedAt >= spec.refreshMs))
+    const due = !run.running && (run.startedAt === null || now - run.startedAt >= spec.refreshMs)
     return due ? [runPanel($, root, spec, run, now)] : []
   }))
 }
@@ -917,7 +917,7 @@ export const register: Register = (on, options) => {
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
-    if (root && specs.length > 0) await refreshPanels($, root, specs, openPanels, now)
+    if (root && specs.length > 0) await refreshPanels($, root, specs, now)
     const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 1 : 0)
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
