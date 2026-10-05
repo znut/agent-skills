@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cardLeft, encodeChart, jobColor, parseRows, runsFit, summarize, withPending } from '../hooks/ci'
+import { cardX, encodeChart, jobColor, parseRows, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -832,6 +832,19 @@ describe('main-ci chart', () => {
   const pane = (bodyColumns = 120, surface: 'terminal' | 'desktop' = 'terminal') => ({ ...PANE, surface, props: { ...PANE.props, bodyColumns } })
   const cards = async (ui: { findAll: (q: object) => Promise<{ key?: string }[]> }) =>
     (await ui.findAll({})).map(node => node.key ?? '').filter(key => key.startsWith('ci-run:'))
+  // The drawn tree in document order; `find` leaves out an element's hover, the tree keeps it.
+  type Drawn = { type?: string; props?: Record<string, unknown>; hover?: { scope?: string; display?: string }; children?: unknown[] }
+  const walk = (node: unknown, out: Drawn[] = []): Drawn[] => {
+    if (typeof node !== 'object' || node === null) return out
+    out.push(node as Drawn)
+    for (const child of (node as Drawn).children ?? []) walk(child, out)
+    return out
+  }
+  const textOf = (node: unknown): string =>
+    typeof node === 'string' ? node : typeof node === 'object' && node !== null ? ((node as Drawn).children ?? []).map(textOf).join('') : ''
+  // a run's card: the hidden Box its run column's hover scope reveals
+  const cardOf = async (ui: { drawn: () => Promise<unknown> }, run: string) =>
+    walk(await ui.drawn()).find(node => node.hover?.scope === `ci:${run}` && node.props?.display === 'none')
 
   test('a run keeps each job at its final attempt and counts its retries', () => {
     const rows = parseRows([
@@ -938,23 +951,25 @@ describe('main-ci chart', () => {
     world(on, files(text))
     const ui = await $.ui.mount(pane(60))
     await ui.press({ key: 'ci-toggle' })
-    const cardOf = async (run: string) => (await ui.find({ key: `ci-run:${run}` }))?.children[0] as { props: Record<string, unknown>; children: unknown[] } | undefined
-    const card = await cardOf(name(3))
-    const cardText = (await ui.find({ key: `ci-run:${name(3)}` }))?.text
-    const lines = (card?.children ?? []).filter((child): child is { type: string } => typeof child === 'object' && child !== null)
+    const card = await cardOf(ui, name(3))
+    const cardText = textOf(card)
+    expect(walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(3)}`)?.hover).toEqual({ scope: `ci:${name(3)}` })
+    const lines = (card?.children ?? []).filter(child => typeof child === 'object' && child !== null)
     expect(lines).toHaveLength(2 + 8)
+    const slowest = (await ui.findAll({ type: 'Text', text: 'job-9' })).at(-1)
+    expect(slowest?.props.color).toBe(`#${jobColor('job-9').toString(16).padStart(6, '0')}`)
     expect(cardText).toContain('cafe0003 · load1 2.0 · peak 100 MB')
     expect(cardText).toContain('job-9')
     expect(cardText).not.toContain('job-0 ')
-    const width = Number(card?.props.width)
-    for (const [i, key] of [[0, name(1)], [2, name(3)]] as const) {
-      const left = Number((await cardOf(key))?.props.left)
-      expect(6 + i * 2 + left).toBeGreaterThanOrEqual(0)
-      expect(6 + i * 2 + left + width).toBeLessThanOrEqual(60)
+    const width = Number(card?.props?.width)
+    for (const key of [name(1), name(3)]) {
+      const left = Number((await cardOf(ui, key))?.props?.left)
+      expect(left).toBeGreaterThanOrEqual(0)
+      expect(left + width).toBeLessThanOrEqual(60)
     }
-    expect(cardLeft(0, 40, 120)).toBe(2)
-    expect(cardLeft(50, 40, 120)).toBe(120 - 40 - 106)
-    expect(cardLeft(0, 200, 120)).toBe(-6)
+    expect(cardX(0, 40, 120)).toBe(8)
+    expect(cardX(50, 40, 120)).toBe(80)
+    expect(cardX(0, 200, 120)).toBe(0)
     await ui.unmount()
   })
 
@@ -1019,21 +1034,30 @@ describe('main-ci chart', () => {
     world(on, files(`${runRows(1, ['a-very-long-job-name-indeed', 'test'])}\n`))
     const ui = await $.ui.mount(pane(30))
     await ui.press({ key: 'ci-toggle' })
-    const card = (await ui.find({ key: `ci-run:${name(1)}` }))?.children[0] as { props: Record<string, unknown>; children: { children?: unknown[] }[] }
-    expect(Number(card.props.width)).toBeLessThanOrEqual(30)
-    for (const line of card.children) expect(String(line.children?.[0] ?? '').length).toBeLessThanOrEqual(26)
-    expect(6 + Number(card.props.left) + Number(card.props.width)).toBeLessThanOrEqual(30)
+    const card = await cardOf(ui, name(1))
+    expect(Number(card?.props?.width)).toBeLessThanOrEqual(30)
+    for (const line of card?.children ?? []) expect(textOf(line).length).toBeLessThanOrEqual(26)
+    expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(30)
     await ui.unmount()
   })
 
-  test('the jobs row expands to the color key', async ($, on) => {
-    world(on, files(metrics(2)))
+  test('the cards are drawn after the rest of the pane, so they paint over it', async ($, on) => {
+    world(on, {
+      ...RUN_FILES,
+      ...files(metrics(3)),
+      [`${STATE}/gh-status/status/pr-123.json`]: JSON.stringify({ number: 123, state: 'OPEN', isDraft: false, title: 'widgets', headOid: '12345678abcdef' }),
+    })
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
-    expect((await ui.find({ key: 'ci-jobs' }))?.text).toContain('▸ jobs (2)')
-    expect(await ui.find({ key: 'ci-legend' })).toBeUndefined()
-    await ui.press({ key: 'ci-jobs' })
-    expect((await ui.find({ type: 'Text', text: '■ test' }))?.props.color).toBe(`#${jobColor('test').toString(16).padStart(6, '0')}`)
+    const all = walk(await ui.drawn())
+    const needsYou = all.findIndex(node => node.props?.key === 'needs-you')
+    const lastRow = all.findIndex(node => node.props?.key === `disk:${KIDS}/e-failed`)
+    const cardAt = all.findIndex(node => node.props?.display === 'none' && node.hover?.scope === `ci:${name(3)}`)
+    expect(needsYou).toBeGreaterThan(-1)
+    expect(lastRow).toBeGreaterThan(-1)
+    expect(cardAt).toBeGreaterThan(needsYou)
+    expect(cardAt).toBeGreaterThan(lastRow)
+    expect(await ui.find({ key: 'ci-jobs' })).toBeUndefined()
     await ui.unmount()
   })
 })

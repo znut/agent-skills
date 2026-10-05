@@ -10,8 +10,8 @@ import {
   type CiRun,
   type MainState,
   type MetricRow,
-  cardLeft,
   cardLines,
+  cardX,
   chartCells,
   encodeCells,
   encodeChart,
@@ -397,8 +397,8 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
   return feed
 }
 
-type CiCard = { lines: string[]; width: number; left: number }
-type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; cards: CiCard[]; jobs: string[]; fallback?: { grid: Cell[][]; cells: string } }
+type CiCard = ReturnType<typeof cardLines> & { width: number; left: number }
+type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; cards: CiCard[]; fallback?: { grid: Cell[][]; cells: string } }
 let ciChart: CiChart | null = null
 
 // Encoded again only when a run is added or changes, main-ci's state moves, or the width does.
@@ -411,12 +411,11 @@ async function readCiChart($: $, main: MainStrip, bodyColumns: number): Promise<
   const runs = withPending(feed.runs, main.ci).slice(-fit)
   if (runs.length === 0) return null
   const cards = runs.map((run, i) => {
-    const lines = cardLines(run, bodyColumns - 4)
-    const width = Math.min(bodyColumns, Math.max(...lines.map(line => line.length)) + 4)
-    return { lines, width, left: cardLeft(i, width, bodyColumns) }
+    const card = cardLines(run, bodyColumns - 4)
+    const width = Math.min(bodyColumns, Math.max(...card.lines.map(line => line.length)) + 4)
+    return { ...card, width, left: cardX(i, width, bodyColumns) }
   })
-  const jobs = [...new Set(runs.flatMap(run => run.jobs.map(job => job.job)))].sort()
-  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), cards, jobs }
+  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), cards }
   return ciChart
 }
 
@@ -640,7 +639,6 @@ const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as st
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
-const ciJobsOpen = atom({ plugin: 'agent-ui', key: 'ciJobsOpen' } as const, false)
 
 const FRAME_MS = 250
 const MAX_ANIMATED = 20
@@ -751,7 +749,7 @@ export const register: Register = (on, options) => {
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
     const prState = await readReadyPrs($, options, main?.sha ?? '')
-    const [chosen, open, isCiOpen, isJobsOpen] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen), read($, ciJobsOpen)])
+    const [chosen, open, isCiOpen] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen)])
     const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns) : null
     const visible = rows.flatMap(row => [
       { row, isChild: false },
@@ -801,37 +799,11 @@ export const register: Register = (on, options) => {
                   )}
                 </Box>
                 <Box flexDirection="row">
-                  {chart.runs.map((run, i) => {
-                    const card = chart.cards[i] as CiCard
-                    return (
-                      <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS}>
-                        <Box
-                          position="absolute"
-                          top={1}
-                          left={card.left}
-                          width={card.width}
-                          display="none"
-                          hover={{ display: 'flex' }}
-                          flexDirection="column"
-                          borderStyle="round"
-                          backgroundColor="#2c2e3c"
-                          paddingX={1}
-                        >
-                          {card.lines.map((line, k) => <Text key={`ci-line-${k}`} color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>)}
-                        </Box>
-                      </Box>
-                    )
-                  })}
+                  {chart.runs.map(run => <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} hover={{ scope: `ci:${run.run}` }} />)}
                 </Box>
               </Box>
             </Box>
             <Text dimColor>{`last ${chart.runs.length} runs · line = load1 · red = retry`}</Text>
-            <Button key="ci-jobs" plain dimColor label={`${isJobsOpen ? '▾' : '▸'} jobs (${chart.jobs.length})`} onPress={() => update($, ciJobsOpen, was => !was)} />
-            {isJobsOpen && (
-              <Box key="ci-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
-                {chart.jobs.map(job => <Text key={`ci-job:${job}`} color={hex(jobColor(job))}>{`■ ${job}`}</Text>)}
-              </Box>
-            )}
           </Box>
         )}
         {prState.prs.length > 0 && (
@@ -893,6 +865,36 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         )}
+        {/* drawn last so each card paints over the rows below the chart; its run column, in
+            the same hover scope, reveals it */}
+        {chart?.runs.map((run, i) => {
+          const card = chart.cards[i] as CiCard
+          return (
+            <Box
+              position="absolute"
+              top={2}
+              left={card.left}
+              width={card.width}
+              display="none"
+              hover={{ display: 'flex', scope: `ci:${run.run}` }}
+              flexDirection="column"
+              borderStyle="round"
+              backgroundColor="#2c2e3c"
+              paddingX={1}
+            >
+              {card.lines.map((line, k) => {
+                const job = card.jobs[k - 2]
+                if (job === undefined) return <Text key={`ci-line-${k}`} color={k === 1 ? CARD_DIM : CARD_TEXT}>{line}</Text>
+                return (
+                  <Box flexDirection="row">
+                    <Text color={hex(jobColor(job))}>{line.slice(0, card.nameWidth)}</Text>
+                    <Text color={CARD_TEXT}>{line.slice(card.nameWidth)}</Text>
+                  </Box>
+                )
+              })}
+            </Box>
+          )
+        })}
       </Box>
     )
   })

@@ -185,19 +185,19 @@ export function encodeCells(grid: Cell[][]): string {
 const pad = (text: string, width: number, right = false) => (right ? text.padStart(width) : text.padEnd(width))
 
 // The hover card: a heading, then job / wall / cpu / MB / re for the run's 8 slowest jobs, each
-// line at most `width` columns (the job name gives way first).
-export function cardLines(run: CiRun, width = Infinity): string[] {
+// line at most `width` columns (the job name gives way first). `jobs[k]` is line k + 2's job,
+// its name the line's first `nameWidth` columns.
+export function cardLines(run: CiRun, width = Infinity): { lines: string[]; jobs: string[]; nameWidth: number } {
   const nameWidth = Math.max(4, Math.min(16, width - 21))
   const line = (job: string, ...cells: [string, number][]) => `${pad(job.slice(0, nameWidth - 1), nameWidth)}${cells.map(([text, w]) => pad(text, w, true)).join('')}`
   const head = `${run.sha8} · load1 ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
-  const table = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8).map(job =>
-    line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]),
-  )
-  return [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
+  const slowest = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8)
+  const table = slowest.map(job => line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]))
+  const lines = [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
+  return { lines, jobs: slowest.map(job => job.job), nameWidth }
 }
 
-// The card's left offset from its run column, clamped so the card stays inside the pane.
-export function cardLeft(column: number, cardWidth: number, bodyColumns: number): number {
-  const at = AXIS_COLS + column * 2
-  return Math.max(-at, Math.min(2, bodyColumns - cardWidth - at))
+// The card's pane column: two right of its run column, clamped so the card stays inside the pane.
+export function cardX(column: number, cardWidth: number, bodyColumns: number): number {
+  return Math.max(0, Math.min(AXIS_COLS + column * 2 + 2, bodyColumns - cardWidth))
 }
