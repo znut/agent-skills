@@ -828,7 +828,7 @@ export const register: Register = (on, options) => {
                 </Box>
               ))}
             </Box>
-            <Text dimColor>{`last ${chart.runs.length} runs · line = load1 · red = retry`}</Text>
+            <Text dimColor>{`last ${chart.runs.length} runs · line = load · red = retry`}</Text>
           </Box>
         )}
         {prState.prs.length > 0 && (

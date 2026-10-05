@@ -958,7 +958,7 @@ describe('main-ci chart', () => {
     expect(lines).toHaveLength(2 + 8)
     const slowest = (await ui.findAll({ type: 'Text', text: 'job-9' })).at(-1)
     expect(slowest?.props.color).toBe(`#${jobColor('job-9').toString(16).padStart(6, '0')}`)
-    expect(cardText).toContain('cafe0003 · load1 2.0 · peak 100 MB')
+    expect(cardText).toContain('cafe0003 · load 2.0 · peak 100 MB')
     expect(cardText).toContain('job-9')
     expect(cardText).not.toContain('job-0 ')
     const width = Number(card?.props?.width)
@@ -1080,7 +1080,7 @@ describe('main-ci chart', () => {
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
     const card = await cardOf(ui, name(2))
-    expect(textOf(card)).toContain('cafe0002 · cancelled (tip moved) · load1 2.0 · peak 100 MB')
+    expect(textOf(card)).toContain('cafe0002 · cancelled (tip moved) · load 2.0 · peak 100 MB')
     expect(textOf(await cardOf(ui, name(3)))).not.toContain('cancelled')
     await ui.unmount()
 

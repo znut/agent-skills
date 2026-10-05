@@ -129,7 +129,7 @@ const DIGITS: Record<string, string> = {
 
 type Picture = { rgba: string; width: number; height: number }
 
-// One picture per run, 2 cells by CHART_ROWS, cut from the whole chart so the load1 line runs on
+// One picture per run, 2 cells by CHART_ROWS, cut from the whole chart so the load line runs on
 // across them. A terminal fits a picture to its cell box keeping its aspect ratio, so one wide
 // picture drifts off the cell grid wherever the cells are not exactly 1:2; one per run column
 // keeps each bar inside its own hover column.
@@ -232,7 +232,7 @@ const pad = (text: string, width: number, right = false) => (right ? text.padSta
 export function cardLines(run: CiRun, width = Infinity): { lines: string[]; jobs: string[]; nameWidth: number } {
   const nameWidth = Math.max(4, Math.min(16, width - 21))
   const line = (job: string, ...cells: [string, number][]) => `${pad(job.slice(0, nameWidth - 1), nameWidth)}${cells.map(([text, w]) => pad(text, w, true)).join('')}`
-  const head = `${run.sha8}${run.cancelled ? ' · cancelled (tip moved)' : ''} · load1 ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
+  const head = `${run.sha8}${run.cancelled ? ' · cancelled (tip moved)' : ''} · load ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
   const slowest = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8)
   const table = slowest.map(job => line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]))
   const lines = [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
