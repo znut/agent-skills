@@ -11,15 +11,18 @@ import {
   type MainState,
   type MetricRow,
   cardLines,
-  cardX,
+  cardPlace,
   chartCells,
+  chartTiles,
   encodeCells,
-  encodeChart,
   jobColor,
+  markCancelled,
   maxWall,
   parseRows,
   runsFit,
   summarize,
+  tileCells,
+  totalWall,
   withPending,
 } from './ci'
 import {
@@ -32,7 +35,10 @@ import {
   labelOf,
   lines,
   parentDir,
+  applyRunLog,
+  freshRunLog,
   previewQueue,
+  type RunLog,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -75,7 +81,6 @@ const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
 let boardCache = { key: '', done: new Set<number>() }
-let mainLog = { key: '', sha: '', queue: { running: 0, queued: 0 } }
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -315,7 +320,40 @@ async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Prom
   return { prs, gates }
 }
 
-type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null }
+type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null; log: LogFeed | null }
+
+// A file read as it grows: the first read takes the last `window` bytes from a line start, each
+// later one only the whole lines appended since. The offset stays on a line boundary, so a
+// partial last line is read again whole next time. A caller starts over on a shorter file.
+type Cursor = { path: string; offset: number }
+
+// Bytes of `text` as read from the file: a read that starts inside a character decodes each of
+// its stray bytes as one U+FFFD, which TextEncoder would count as three.
+function fileBytes(text: string, fromMidFile: boolean): number {
+  const stray = fromMidFile ? (/^\uFFFD*/.exec(text)?.[0].length ?? 0) : 0
+  return new TextEncoder().encode(text).length - 2 * stray
+}
+
+async function readAppended($: $, cursor: Cursor, size: number, window: number): Promise<{ text: string; midFile: boolean } | null> {
+  if (size === cursor.offset) return null
+  const offset = cursor.offset
+  const start = offset < 0 ? Math.max(0, size - window) : offset
+  const ran = await $.process.run(['tail', '-c', `+${start + 1}`, cursor.path]).catch(() => null)
+  // another render read these bytes while this one waited
+  if (cursor.offset !== offset || ran?.exitCode !== 0) return null
+  const midFile = offset < 0 && start > 0
+  const text = ran.stdout
+  const from = midFile ? text.indexOf('\n') + 1 : 0
+  const cut = text.lastIndexOf('\n') + 1
+  if (cut <= from) return null
+  cursor.offset = start + fileBytes(text.slice(0, cut), midFile)
+  return { text: text.slice(from, cut), midFile }
+}
+
+// run.log replayed as it grows; `version` moves when a cancel is added.
+type LogFeed = Cursor & { log: RunLog; version: number }
+const LOG_WINDOW = 1_048_576
+let logFeed: LogFeed | null = null
 
 async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | null> {
   const ghDir = await resolveGhStatusDir($, options)
@@ -328,41 +366,35 @@ async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | 
   const logPath = `${root}/main-ci/run.log`
   const listing = await listDir($, `${root}/main-ci`)
   const logStat = listing.find(entry => entry.name === 'run.log' && entry.kind === 'file')
-  let queue = { running: 0, queued: 0 }
   if (logStat) {
-    const key = `${logStat.mtimeMs}:${logStat.size}`
-    if (mainLog.key === key && mainLog.sha === main8) queue = mainLog.queue
-    else {
-      queue = previewQueue(await readText($, logPath), main8)
-      mainLog = { key, sha: main8, queue }
+    if (!logFeed || logFeed.path !== logPath || logStat.size < logFeed.offset) logFeed = { path: logPath, offset: -1, log: freshRunLog(), version: ++ciVersion }
+    const feed = logFeed
+    const read = await readAppended($, feed, logStat.size, LOG_WINDOW)
+    if (read && logFeed === feed) {
+      const cancels = feed.log.cancels.length
+      applyRunLog(feed.log, read.text)
+      if (feed.log.cancels.length !== cancels) feed.version = ++ciVersion
     }
   }
+  const log = logStat ? logFeed : null
   return {
     sha: main8,
     state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'),
-    queue,
+    queue: log ? previewQueue(log.log, main8) : { running: 0, queued: 0 },
+    log,
     ciDir: `${root}/main-ci`,
     ci: { sha: state.sha, phase: String(state.phase ?? '') },
     metrics: listing.find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file') ?? null,
   }
 }
 
-// metrics.jsonl read incrementally: the first read takes the tail that holds `cap` runs, each
-// later one only the whole lines appended since; a shorter file (rotated) starts over. The
-// offset stays on a line boundary, so a partial last line is read again next time.
-type CiFeed = { path: string; cap: number; offset: number; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
+// metrics.jsonl as it grows: the first read takes the tail that holds `cap` runs.
+type CiFeed = Cursor & { cap: number; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
 const RUN_BYTES = 16_384
 let ciFeed: CiFeed | null = null
 // Feed versions never repeat, a fresh feed's included, so a chart cached on one cannot match.
 let ciVersion = 0
 const freshFeed = (path: string, cap: number): CiFeed => ({ path, cap, offset: -1, rows: new Map(), runs: [], version: ++ciVersion })
-
-// Bytes of `text` as read from the file: a read that starts inside a character decodes each of
-// its stray bytes as one U+FFFD, which TextEncoder would count as three.
-function fileBytes(text: string, fromMidFile: boolean): number {
-  const stray = fromMidFile ? (/^\uFFFD*/.exec(text)?.[0].length ?? 0) : 0
-  return new TextEncoder().encode(text).length - 2 * stray
-}
 
 async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed | null> {
   const path = `${main.ciDir}/metrics.jsonl`
@@ -370,18 +402,9 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
   if (!stat) return null
   if (!ciFeed || ciFeed.path !== path || need > ciFeed.cap || stat.size < ciFeed.offset) ciFeed = freshFeed(path, Math.max(need, ciFeed?.cap ?? 0))
   const feed = ciFeed
-  if (stat.size === feed.offset) return feed
-  const offset = feed.offset
-  const start = offset < 0 ? Math.max(0, stat.size - feed.cap * RUN_BYTES) : offset
-  const ran = await $.process.run(['tail', '-c', `+${start + 1}`, path]).catch(() => null)
-  // another render read these bytes while this one waited
-  if (ciFeed !== feed || feed.offset !== offset || ran?.exitCode !== 0) return feed
-  const text = ran.stdout
-  const from = offset < 0 && start > 0 ? text.indexOf('\n') + 1 : 0
-  const cut = text.lastIndexOf('\n') + 1
-  if (cut <= from) return feed
-  feed.offset = start + fileBytes(text.slice(0, cut), offset < 0 && start > 0)
-  const rows = parseRows(text.slice(from, cut))
+  const read = await readAppended($, feed, stat.size, feed.cap * RUN_BYTES)
+  if (!read || ciFeed !== feed) return ciFeed
+  const rows = parseRows(read.text)
   if (rows.length === 0) return feed
   for (const row of rows) {
     const list = feed.rows.get(row.run)
@@ -390,7 +413,7 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
   }
   const names = [...feed.rows.keys()].sort()
   // a read from mid-file can begin inside its oldest run
-  if (offset < 0 && start > 0 && names.length > 0) feed.rows.delete(names.shift() as string)
+  if (read.midFile && names.length > 0) feed.rows.delete(names.shift() as string)
   for (const name of names.splice(0, Math.max(0, names.length - feed.cap))) feed.rows.delete(name)
   feed.runs = names.map(name => summarize(name, feed.rows.get(name) ?? []))
   feed.version = ++ciVersion
@@ -398,7 +421,7 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
 }
 
 type CiCard = ReturnType<typeof cardLines> & { width: number; left: number }
-type CiChart = { key: string; runs: CiRun[]; max: number; source: { rgba: string; width: number; height: number }; cards: CiCard[]; fallback?: { grid: Cell[][]; cells: string } }
+type CiChart = { key: string; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: { grids: Cell[][][]; cells: string[] } }
 let ciChart: CiChart | null = null
 
 // Encoded again only when a run is added or changes, main-ci's state moves, or the width does.
@@ -406,24 +429,25 @@ async function readCiChart($: $, main: MainStrip, bodyColumns: number): Promise<
   const fit = runsFit(bodyColumns)
   const feed = fit > 0 ? await readCiRuns($, main, fit) : null
   if (!feed) return null
-  const key = `${feed.version}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}`
+  const key = `${feed.version}|${main.log?.version ?? 0}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}`
   if (ciChart?.key === key) return ciChart
-  const runs = withPending(feed.runs, main.ci).slice(-fit)
+  const runs = markCancelled(withPending(feed.runs, main.ci), main.log?.log.cancels ?? []).slice(-fit)
   if (runs.length === 0) return null
   const cards = runs.map((run, i) => {
-    const card = cardLines(run, bodyColumns - 4)
-    const width = Math.min(bodyColumns, Math.max(...card.lines.map(line => line.length)) + 4)
-    return { ...card, width, left: cardX(i, width, bodyColumns) }
+    const natural = cardLines(run, bodyColumns - 4)
+    const place = cardPlace(i, Math.min(bodyColumns, Math.max(...natural.lines.map(line => line.length)) + 4), bodyColumns)
+    return { ...cardLines(run, place.width - 4), width: place.width, left: place.x }
   })
-  ciChart = { key, runs, max: maxWall(runs), source: encodeChart(runs), cards }
+  ciChart = { key, runs, max: maxWall(runs), tiles: chartTiles(runs), cards }
   return ciChart
 }
 
 // Block-glyph cells, built only where a picture cannot be drawn.
-function fallbackOf(chart: CiChart): { grid: Cell[][]; cells: string } {
+function fallbackOf(chart: CiChart): { grids: Cell[][][]; cells: string[] } {
   if (!chart.fallback) {
     const grid = chartCells(chart.runs)
-    chart.fallback = { grid, cells: encodeCells(grid) }
+    const grids = chart.runs.map((_, i) => tileCells(grid, i))
+    chart.fallback = { grids, cells: grids.map(encodeCells) }
   }
   return chart.fallback
 }
@@ -687,6 +711,11 @@ function syncFrames($: $): void {
   })
 }
 
+// A hovered run column's background, behind its bar's transparent pixels.
+const COLUMN_LIT = '#3a3d50'
+// A bar's alt text where a picture cannot be drawn: its height as a block glyph, twice.
+const barGlyphs = (run: CiRun, max: number) => String.fromCharCode(0x2581 + Math.min(7, Math.floor((totalWall(run) / max) * 8))).repeat(2)
+
 // The card draws on its own dark background, so its text colors are fixed, not the theme's.
 const CARD_TEXT = '#e1e1e6'
 const CARD_DIM = '#9a9cab'
@@ -784,24 +813,20 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{`${Math.round(chart.max)}s`}</Text>
                 <Text dimColor>0s</Text>
               </Box>
-              <Box width={chart.runs.length * 2} height={CHART_ROWS}>
-                <Box position="absolute" top={0} left={0} flexDirection="column">
+              {/* each run column holds its own bar: the hover zone and the bar are one box (runCell) */}
+              {chart.runs.map((run, i) => (
+                <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} flexDirection="column" hover={{ scope: `ci:${run.run}`, backgroundColor: COLUMN_LIT }}>
                   {Image ? (
-                    <Image key="ci-chart" source={chart.source} columns={chart.runs.length * 2} rows={CHART_ROWS} alt={`last ${chart.runs.length} main-ci runs`} />
+                    <Image key={`ci-bar:${run.run}`} source={chart.tiles[i] as CiChart['tiles'][number]} columns={2} rows={CHART_ROWS} alt={barGlyphs(run, chart.max)} />
                   ) : Raster ? (
-                    <Raster key="ci-chart" columns={chart.runs.length * 2} rows={CHART_ROWS} cells={fallbackOf(chart).cells} />
+                    <Raster key={`ci-bar:${run.run}`} columns={2} rows={CHART_ROWS} cells={fallbackOf(chart).cells[i] ?? ''} />
                   ) : (
-                    fallbackOf(chart).grid.map((row, y) => (
-                      <Box key={`ci-text-${y}`} flexDirection="row">
-                        {row.map((cell, x) => <Text key={`ci-cell-${y}-${x}`} color={hex(cell.color)}>{String.fromCharCode(cell.glyph)}</Text>)}
-                      </Box>
+                    (fallbackOf(chart).grids[i] ?? []).map((row, y) => (
+                      <Text key={`ci-cell-${i}-${y}`} color={hex(row[0]?.color ?? 0)}>{row.map(cell => String.fromCharCode(cell.glyph)).join('')}</Text>
                     ))
                   )}
                 </Box>
-                <Box flexDirection="row">
-                  {chart.runs.map(run => <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} hover={{ scope: `ci:${run.run}` }} />)}
-                </Box>
-              </Box>
+              ))}
             </Box>
             <Text dimColor>{`last ${chart.runs.length} runs · line = load1 · red = retry`}</Text>
           </Box>

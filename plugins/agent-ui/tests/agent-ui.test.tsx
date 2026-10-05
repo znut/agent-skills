@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cardX, encodeChart, jobColor, parseRows, runsFit, summarize, withPending } from '../hooks/ci'
+import { cardPlace, chartTiles, encodeChart, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
 import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -264,7 +264,7 @@ describe('workers pane', () => {
       ['an older main is excluded', ['preview #4390 11111110-ffffffff: queued (ready)'], '0/0'],
     ] as const) {
       test(name, async ($, on) => {
-        world(on, queueFiles(log.join('\n')))
+        world(on, queueFiles(`${log.join('\n')}\n`))
         const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
         expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe(expected)
         await ui.unmount()
@@ -914,7 +914,7 @@ describe('main-ci chart', () => {
     const ui = await $.ui.mount(pane(26))
     await ui.press({ key: 'ci-toggle' })
     expect(await cards(ui)).toHaveLength(10)
-    expect((await ui.find({ key: 'ci-chart' }))?.props).toMatchObject({ columns: 20, rows: 6 })
+    expect((await ui.find({ key: `ci-bar:${name(15)}` }))?.props).toMatchObject({ columns: 2, rows: 6 })
     expect((await cards(ui)).at(-1)).toBe(`ci-run:${name(15)}`)
     await ui.unmount()
   })
@@ -953,7 +953,7 @@ describe('main-ci chart', () => {
     await ui.press({ key: 'ci-toggle' })
     const card = await cardOf(ui, name(3))
     const cardText = textOf(card)
-    expect(walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(3)}`)?.hover).toEqual({ scope: `ci:${name(3)}` })
+    expect(walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(3)}`)?.hover).toMatchObject({ scope: `ci:${name(3)}` })
     const lines = (card?.children ?? []).filter(child => typeof child === 'object' && child !== null)
     expect(lines).toHaveLength(2 + 8)
     const slowest = (await ui.findAll({ type: 'Text', text: 'job-9' })).at(-1)
@@ -967,9 +967,6 @@ describe('main-ci chart', () => {
       expect(left).toBeGreaterThanOrEqual(0)
       expect(left + width).toBeLessThanOrEqual(60)
     }
-    expect(cardX(0, 40, 120)).toBe(8)
-    expect(cardX(50, 40, 120)).toBe(80)
-    expect(cardX(0, 200, 120)).toBe(0)
     await ui.unmount()
   })
 
@@ -979,16 +976,16 @@ describe('main-ci chart', () => {
     w.imageDeny = 'the Image draws its alt here'
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
-    expect((await ui.find({ key: 'ci-chart' }))?.type).toBe('Image')
+    expect((await ui.find({ key: `ci-bar:${name(3)}` }))?.type).toBe('Image')
     await w.clock.advance(250)
     await ui.unmount()
     const again = await $.ui.mount(pane())
-    expect((await again.find({ key: 'ci-chart' }))?.type).toBe('Raster')
+    expect((await again.find({ key: `ci-bar:${name(3)}` }))?.type).toBe('Raster')
     await again.unmount()
 
     const desktop = await $.ui.mount(pane(120, 'desktop'))
-    expect(await desktop.find({ key: 'ci-chart' })).toBeUndefined()
-    expect((await desktop.find({ key: 'ci-text-5' }))?.text).toContain('█')
+    expect(await desktop.find({ key: `ci-bar:${name(3)}` })).toBeUndefined()
+    expect((await desktop.find({ key: `ci-run:${name(3)}` }))?.text).toContain('█')
     await desktop.unmount()
   })
 
@@ -1015,7 +1012,7 @@ describe('main-ci chart', () => {
     await two.unmount()
     expect(w.tails).toHaveLength(3)
     const after = await $.ui.mount(pane(120, 'desktop'))
-    const chartText = (await Promise.all([0, 1, 2, 3, 4, 5].map(async y => (await after.find({ key: `ci-text-${y}` }))?.text ?? ''))).join('')
+    const chartText = (await Promise.all([1, 2, 3].map(async i => (await after.find({ key: `ci-run:${name(i)}` }))?.text ?? ''))).join('')
     expect(chartText.match(/[0-9+]/g)).toEqual(['1'])
     await after.unmount()
   })
@@ -1040,6 +1037,79 @@ describe('main-ci chart', () => {
     expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(30)
     await ui.unmount()
   })
+
+  for (const bodyColumns of [30, 50]) {
+    test(`at ${bodyColumns} columns each run's bar is drawn inside its own hover column`, async ($, on) => {
+      world(on, files(metrics(30)))
+      const ui = await $.ui.mount(pane(bodyColumns))
+      await ui.press({ key: 'ci-toggle' })
+      const keys = await cards(ui)
+      const shown = keys.map(key => key.slice('ci-run:'.length))
+      expect(shown).toHaveLength(runsFit(bodyColumns))
+      const tiles = chartTiles(shown.map(run => summarize(run, parseRows(runRows(Number(run.slice(13, 15)))))))
+      const row = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
+      const columns = (row.children ?? []) as Drawn[]
+      // the axis, then one 2-cell column per run, in order: column i starts at runCell(i)
+      expect(columns[0]?.props?.width).toBe(6)
+      let at = Number(columns[0]?.props?.width)
+      for (const [i, run] of shown.entries()) {
+        const column = columns[i + 1] as Drawn
+        expect(column.props?.key).toBe(`ci-run:${run}`)
+        expect(at).toBe(runCell(i))
+        at += Number(column.props?.width)
+        const bar = (column.children ?? [])[0] as Drawn
+        expect(bar.props).toMatchObject({ key: `ci-bar:${run}`, columns: 2, rows: 6, source: tiles[i] })
+      }
+      await ui.unmount()
+    })
+  }
+
+  test('a hovered run column lights its background', async ($, on) => {
+    world(on, files(metrics(3)))
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    const column = walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(2)}`)
+    expect(column?.hover?.scope).toBe(`ci:${name(2)}`)
+    expect((column?.hover as { backgroundColor?: string } | undefined)?.backgroundColor).toMatch(/^#[0-9a-f]{6}$/)
+    await ui.unmount()
+  })
+
+  test('a run cancelled when the tip moved draws faded, with no red underline, and says so on its card', async ($, on) => {
+    const log = `2026-01-01T00:00:30.000Z cancel run sha=${sha(2)} groups=123\n`
+    world(on, { ...files(`${runRows(1)}\n${row(2, 'lint', { exit: 1 })}\n${runRows(3)}\n`), [`${CI}/run.log`]: log })
+    const ui = await $.ui.mount(pane())
+    await ui.press({ key: 'ci-toggle' })
+    const card = await cardOf(ui, name(2))
+    expect(textOf(card)).toContain('cafe0002 · cancelled (tip moved) · load1 2.0 · peak 100 MB')
+    expect(textOf(await cardOf(ui, name(3)))).not.toContain('cancelled')
+    await ui.unmount()
+
+    const runs = markCancelled([1, 2].map(i => summarize(name(i), parseRows(row(i, 'lint', { exit: 1 })))), [{ sha8: 'cafe0002', at: '20260101T000030' }])
+    expect(runs.map(run => run.cancelled)).toEqual([false, true])
+    const bytes = Uint8Array.from(atob(encodeChart(runs).rgba), ch => ch.charCodeAt(0))
+    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
+    expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
+    expect(at(17, 70)[3]).toBe(0)
+    expect(at(17, 60)[3]).toBe(128)
+    // a cancel before a run started is not that run's
+    expect(markCancelled(runs.slice(0, 1), [{ sha8: 'cafe0001', at: '20251231T235959' }])[0]?.cancelled).toBe(false)
+  })
+
+  for (const bodyColumns of [30, 50]) {
+    test(`at ${bodyColumns} columns a card never covers its own run column`, () => {
+      const fit = runsFit(bodyColumns)
+      for (const column of [0, Math.floor(fit / 2), fit - 1]) {
+        for (const width of [12, 41, bodyColumns]) {
+          const place = cardPlace(column, width, bodyColumns)
+          const at = runCell(column)
+          expect(place.x).toBeGreaterThanOrEqual(0)
+          expect(place.x + place.width).toBeLessThanOrEqual(bodyColumns)
+          expect(place.x >= at + 2 || place.x + place.width <= at).toBe(true)
+          expect(place.width).toBeGreaterThan(0)
+        }
+      }
+    })
+  }
 
   test('the cards are drawn after the rest of the pane, so they paint over it', async ($, on) => {
     world(on, {

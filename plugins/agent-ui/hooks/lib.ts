@@ -97,18 +97,31 @@ export function busStateDir(localMd: string, home: string): string | null {
   return parentDir(match[1].replace(/^~(?=\/|$)/, home))
 }
 
-// Previews still queued or running on `main8`, replayed from main-ci's run.log. A PR's
-// entry ends with its result, a cancel, or a head move (the last two carry no sha pair).
-export function previewQueue(log: string, main8: string): { running: number; queued: number } {
-  const active = new Map<number, { main: string; state: 'queued' | 'running' }>()
-  for (const line of log.split('\n')) {
+// main-ci's run.log, replayed a chunk of lines at a time: the previews still queued or running
+// (a PR's entry ends with its result, a cancel, or a head move; the last two carry no sha
+// pair), and each run cancelled because the tip moved (`<ts> cancel run sha=<sha>`).
+export type RunLog = { previews: Map<number, { main: string; state: 'queued' | 'running' }>; cancels: { sha8: string; at: string }[] }
+
+export const freshRunLog = (): RunLog => ({ previews: new Map(), cancels: [] })
+
+export function applyRunLog(log: RunLog, text: string): void {
+  for (const line of text.split('\n')) {
+    const cancel = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)\S* cancel run sha=([0-9a-f]{8})/.exec(line)
+    if (cancel) {
+      const [, y, mo, d, h, mi, s, sha8 = ''] = cancel
+      log.cancels.push({ sha8, at: `${y}${mo}${d}T${h}${mi}${s}` })
+      continue
+    }
     const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|canceled|head moved)/i.exec(line)
     if (!match) continue
     const [, pr = '', main, event = ''] = match
     if (/^(queued|start)$/i.test(event)) {
-      if (main) active.set(Number(pr), { main, state: /^start$/i.test(event) ? 'running' : 'queued' })
-    } else active.delete(Number(pr))
+      if (main) log.previews.set(Number(pr), { main, state: /^start$/i.test(event) ? 'running' : 'queued' })
+    } else log.previews.delete(Number(pr))
   }
-  const current = [...active.values()].filter(entry => entry.main === main8)
+}
+
+export function previewQueue(log: RunLog, main8: string): { running: number; queued: number } {
+  const current = [...log.previews.values()].filter(entry => entry.main === main8)
   return { running: current.filter(entry => entry.state === 'running').length, queued: current.filter(entry => entry.state === 'queued').length }
 }

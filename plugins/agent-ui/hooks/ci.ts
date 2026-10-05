@@ -14,7 +14,7 @@ export type MetricRow = {
   load: number | null
 }
 export type CiJob = { job: string; wall: number; cpu: number; mb: number; retries: number }
-export type CiRun = { run: string; sha8: string; jobs: CiJob[]; green: boolean; retries: number; load: number | null; peak: number; pending: boolean }
+export type CiRun = { run: string; sha8: string; jobs: CiJob[]; green: boolean; retries: number; load: number | null; peak: number; pending: boolean; cancelled: boolean }
 export type MainState = { sha: string; phase: string }
 export type Cell = { glyph: number; color: number }
 
@@ -74,7 +74,20 @@ export function summarize(run: string, rows: MetricRow[]): CiRun {
     load: rows.find(row => row.load !== null)?.load ?? null,
     peak: Math.max(0, ...rows.map(row => row.mb)),
     pending: false,
+    cancelled: false,
   }
+}
+
+// A cancel (run.log: the tip moved) ends the latest run of its sha that started before it; the
+// run name starts with its start time, `YYYYMMDDTHHMMSS`, as `at` does.
+export function markCancelled(runs: CiRun[], cancels: { sha8: string; at: string }[]): CiRun[] {
+  const hit = new Set<string>()
+  for (const cancel of cancels) {
+    let latest: CiRun | undefined
+    for (const run of runs) if (run.sha8 === cancel.sha8 && run.run.slice(0, 15) <= cancel.at && (!latest || run.run > latest.run)) latest = run
+    if (latest) hit.add(latest.run)
+  }
+  return hit.size === 0 ? runs : runs.map(run => (hit.has(run.run) ? { ...run, cancelled: true, pending: false } : run))
 }
 
 // The run main-ci is on: state.json's run while its lanes build, or a run newer than state.json's
@@ -88,8 +101,12 @@ export function withPending(runs: CiRun[], state: MainState | null): CiRun[] {
   if (last && at >= 0 && at < runs.length - 1) return pendLast()
   if (state.phase !== 'builds') return runs
   if (at >= 0) return pendLast()
-  return [...runs, { run: `pending-${sha8}`, sha8, jobs: [], green: false, retries: 0, load: null, peak: 0, pending: true }]
+  return [...runs, { run: `pending-${sha8}`, sha8, jobs: [], green: false, retries: 0, load: null, peak: 0, pending: true, cancelled: false }]
 }
+
+// Run i's first cell, counted from the chart's left edge (the axis included): its bar, its
+// hover column and its card's placement all start here.
+export const runCell = (i: number) => AXIS_COLS + i * 2
 
 export const runsFit = (bodyColumns: number) => Math.max(0, Math.floor((bodyColumns - AXIS_COLS) / 2))
 
@@ -110,7 +127,28 @@ const DIGITS: Record<string, string> = {
   '9': '.X.X.X.XX..X.X.', '+': '....X.XXX.X....',
 }
 
-export function encodeChart(runs: CiRun[]): { rgba: string; width: number; height: number } {
+type Picture = { rgba: string; width: number; height: number }
+
+// One picture per run, 2 cells by CHART_ROWS, cut from the whole chart so the load1 line runs on
+// across them. A terminal fits a picture to its cell box keeping its aspect ratio, so one wide
+// picture drifts off the cell grid wherever the cells are not exactly 1:2; one per run column
+// keeps each bar inside its own hover column.
+export function chartTiles(runs: CiRun[]): Picture[] {
+  const whole = chartBytes(runs)
+  const tile = 2 * PX_COL
+  return runs.map((_, i) => {
+    const bytes = new Uint8Array(tile * whole.height * 4)
+    for (let y = 0; y < whole.height; y++) bytes.set(whole.bytes.subarray((y * whole.width + i * tile) * 4, (y * whole.width + (i + 1) * tile) * 4), y * tile * 4)
+    return { rgba: toBase64(bytes), width: tile, height: whole.height }
+  })
+}
+
+export function encodeChart(runs: CiRun[]): Picture {
+  const { bytes, width, height } = chartBytes(runs)
+  return { rgba: toBase64(bytes), width, height }
+}
+
+function chartBytes(runs: CiRun[]): { bytes: Uint8Array; width: number; height: number } {
   const width = Math.max(1, runs.length) * 2 * PX_COL
   const height = CHART_ROWS * PX_ROW
   const bytes = new Uint8Array(width * height * 4)
@@ -124,17 +162,18 @@ export function encodeChart(runs: CiRun[]): { rgba: string; width: number; heigh
   const loadMax = Math.max(1, ...runs.map(run => run.load ?? 0))
   const points: [number, number][] = []
   runs.forEach((run, i) => {
-    const x0 = i * 2 * PX_COL + BAR_PAD
-    const x1 = (i + 1) * 2 * PX_COL - BAR_PAD
+    const x0 = (runCell(i) - AXIS_COLS) * PX_COL + BAR_PAD
+    const x1 = (runCell(i) - AXIS_COLS + 2) * PX_COL - BAR_PAD
     let sum = 0
     let top = base + 1
+    const faded = run.pending || run.cancelled
     for (const job of run.jobs) {
       const from = base - Math.round((sum + job.wall) * scale) + 1
-      for (let y = from; y < top; y++) for (let x = x0; x < x1; x++) put(x, y, jobColor(job.job), run.pending ? 128 : 255)
+      for (let y = from; y < top; y++) for (let x = x0; x < x1; x++) put(x, y, jobColor(job.job), faded ? 128 : 255)
       sum += job.wall
       top = Math.min(top, from)
     }
-    if (run.pending) {
+    if (faded) {
       for (let y = TOP; y <= base; y += 2) {
         put(x0, y, DIM)
         put(x1 - 1, y, DIM)
@@ -145,7 +184,7 @@ export function encodeChart(runs: CiRun[]): { rgba: string; width: number; heigh
       const gx = Math.floor((x0 + x1) / 2) - 1
       for (let k = 0; k < 15; k++) if (glyph[k] === 'X') put(gx + (k % 3), top - 6 + Math.floor(k / 3), RED)
     }
-    if (!run.green && !run.pending) for (let y = base + 2; y < height; y++) for (let x = x0; x < x1; x++) put(x, y, RED)
+    if (!run.green && !faded) for (let y = base + 2; y < height; y++) for (let x = x0; x < x1; x++) put(x, y, RED)
     if (run.load !== null) points.push([Math.floor((x0 + x1) / 2), base - Math.round((run.load / loadMax) * span)])
   })
   for (let k = 1; k < points.length; k++) {
@@ -154,7 +193,7 @@ export function encodeChart(runs: CiRun[]): { rgba: string; width: number; heigh
     const steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay), 1)
     for (let s = 0; s <= steps; s++) put(Math.round(ax + ((bx - ax) * s) / steps), Math.round(ay + ((by - ay) * s) / steps), LOAD)
   }
-  return { rgba: toBase64(bytes), width, height }
+  return { bytes, width, height }
 }
 
 // The fallback: rows x (2 per run) cells of ▁..█, colored by the run's slowest job; a retry
@@ -177,6 +216,9 @@ export function chartCells(runs: CiRun[]): Cell[][] {
   return grid
 }
 
+// Run i's 2 columns of the fallback grid.
+export const tileCells = (grid: Cell[][], i: number): Cell[][] => grid.map(row => row.slice(i * 2, i * 2 + 2))
+
 export function encodeCells(grid: Cell[][]): string {
   const words = Uint32Array.from(grid.flatMap(row => row.flatMap(cell => [cell.glyph, cell.color, 0x01000000])))
   return toBase64(new Uint8Array(words.buffer))
@@ -190,14 +232,19 @@ const pad = (text: string, width: number, right = false) => (right ? text.padSta
 export function cardLines(run: CiRun, width = Infinity): { lines: string[]; jobs: string[]; nameWidth: number } {
   const nameWidth = Math.max(4, Math.min(16, width - 21))
   const line = (job: string, ...cells: [string, number][]) => `${pad(job.slice(0, nameWidth - 1), nameWidth)}${cells.map(([text, w]) => pad(text, w, true)).join('')}`
-  const head = `${run.sha8} · load1 ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
+  const head = `${run.sha8}${run.cancelled ? ' · cancelled (tip moved)' : ''} · load1 ${run.load === null ? '-' : run.load.toFixed(1)} · peak ${Math.round(run.peak)} MB${run.pending ? ' · running' : ''}`
   const slowest = [...run.jobs].sort((a, b) => b.wall - a.wall).slice(0, 8)
   const table = slowest.map(job => line(job.job, [job.wall.toFixed(1), 6], [job.cpu.toFixed(1), 6], [String(Math.round(job.mb)), 6], [String(job.retries), 3]))
   const lines = [head, line('job', ['wall', 6], ['cpu', 6], ['MB', 6], ['re', 3]), ...table].map(text => text.slice(0, Math.max(1, width)))
   return { lines, jobs: slowest.map(job => job.job), nameWidth }
 }
 
-// The card's pane column: two right of its run column, clamped so the card stays inside the pane.
-export function cardX(column: number, cardWidth: number, bodyColumns: number): number {
-  return Math.max(0, Math.min(AXIS_COLS + column * 2 + 2, bodyColumns - cardWidth))
+// Where a run's card goes: right of its column, else left of it, never over it; when it fits on
+// neither side whole, on the roomier side, narrowed to fit.
+export function cardPlace(column: number, cardWidth: number, bodyColumns: number): { x: number; width: number } {
+  const at = runCell(column)
+  const right = bodyColumns - (at + 2)
+  if (cardWidth <= right) return { x: at + 2, width: cardWidth }
+  if (cardWidth <= at) return { x: at - cardWidth, width: cardWidth }
+  return right >= at ? { x: at + 2, width: right } : { x: 0, width: at }
 }
