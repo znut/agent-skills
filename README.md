@@ -128,9 +128,9 @@ user's pick persists per panel id. Cells are strings, or for a `bar` column
 `dim` over a dark track, its text right-aligned inside it. A `dim` row draws
 dimmed; `hover` (up to 6 lines) is the row's hover card, as on a main-ci bar.
 Only `tabs[].id`, `columns` and `rows` are required; a row is cut to the pane
-width, never wrapped. Keep cells to narrow single-width text: a wide glyph
-(CJK, emoji) can wrap a row. A panel draws at most 12 tabs, 12 columns up to
-200 wide, and 100 rows; control characters in any text draw as spaces.
+width, never wrapped. Keep cells to narrow single-width text: a wide glyph (CJK, emoji) can
+wrap a row. A panel draws at most 12 tabs, 12 columns up to 200 wide, and 100
+rows; control characters in any text draw as spaces.
 
 An optional `filters` list replaces the tab chips with one chip row per filter;
 together the picks name the tab, whose `id` is the picked option ids joined by

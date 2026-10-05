@@ -445,6 +445,7 @@ describe('repo panels', () => {
           { id: 'empty', options: [] },
           { options: options(2) },
           { id: 'b', options: [{ id: 'x' }, { id: 'x' }, { label: 'no id' }] },
+          { id: 'a', options: options(2) },
           { id: 'c', options: options(2) },
           { id: 'd', options: options(2) },
         ],

@@ -70,19 +70,22 @@ function parseCell(value: unknown): string | Bar {
 
 // One JSON object with a list of tabs, else null; a tab without an id, columns or rows is dropped.
 // v1.1 filters: chip rows that together pick a tab, its id their picks joined by `/`. A filter
-// without an id or an option, and an option without an id or seen before, is dropped; the caps
-// count what is left.
+// without an id or an option, and a filter or option whose id was seen before, is dropped; the
+// caps count what is left.
 function parseFilters(value: unknown): Filter[] {
   if (!Array.isArray(value)) return []
+  const ids = new Set<string>()
   const filters = value.flatMap((filter): Filter[] => {
-    if (!isObject(filter) || typeof filter.id !== 'string' || filter.id === '' || !Array.isArray(filter.options)) return []
+    if (!isObject(filter) || typeof filter.id !== 'string' || filter.id === '' || ids.has(filter.id) || !Array.isArray(filter.options)) return []
     const seen = new Set<string>()
     const options = filter.options.flatMap((option): FilterOption[] => {
       if (!isObject(option) || typeof option.id !== 'string' || option.id === '' || seen.has(option.id)) return []
       seen.add(option.id)
       return [{ id: option.id, label: str(option.label, option.id) }]
     })
-    return options.length === 0 ? [] : [{ id: filter.id, options: options.slice(0, MAX_OPTIONS), default: typeof filter.default === 'string' ? filter.default : '' }]
+    if (options.length === 0) return []
+    ids.add(filter.id)
+    return [{ id: filter.id, options: options.slice(0, MAX_OPTIONS), default: typeof filter.default === 'string' ? filter.default : '' }]
   })
   return filters.slice(0, MAX_FILTERS)
 }

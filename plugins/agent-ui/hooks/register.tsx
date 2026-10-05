@@ -577,7 +577,7 @@ function panelViews(
     const picked = pickOptions(filters, filterPicks[spec.id])
     const tab = !data ? null : filters.length > 0 ? (data.tabs.find(one => one.id === picked.join('/')) ?? null) : pickTab(data, tabs[spec.id])
     const noData = !!data && filters.length > 0 && !tab
-    const columnsOf = tab ?? (noData ? (data?.tabs[0] ?? null) : null)
+    const columnsOf = tab ?? (noData ? (data.tabs[0] ?? null) : null)
     const chipRows: ChipRow[] = !data
       ? []
       : filters.length > 0
