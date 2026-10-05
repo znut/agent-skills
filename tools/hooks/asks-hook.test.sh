@@ -56,7 +56,7 @@ check "the contender after the kill entered" exclusive 1
 # ---------- deterministic clear: short replies and ticket numbers ----------
 roles=$tmp/roles st=$tmp/state
 mkdir -p "$roles" "$st/asks"
-echo pm >"$roles/s1"
+echo tl-widgets >"$roles/s1"
 
 # seed <ticket>...: one open ask per ticket, each with a detail file naming it.
 seed() {
@@ -76,6 +76,7 @@ reply() { # reply <text>
 }
 open_asks() { sed 's/ ask?//' "$st/asks/s1" | tr '\n' ' '; }
 went_to_jev() { grep -q '"decision":"jev-failed"' "$st/asks/jev-log.jsonl" 2>/dev/null; }
+no_jev() { ! went_to_jev; }
 asks_are() { [ "$(open_asks)" = "$1" ]; }
 
 seed 1111 2222 3333
@@ -84,10 +85,10 @@ check "a number plus a short reply clears only that ask" asks_are "#2222 #3333 "
 check "the survivors' details renumber" test "$(cat "$st/asks/s1.d/1.md")" = "context 2222"
 check "the number path never calls Jev" bash -c '! grep -q jev-failed "$0" 2>/dev/null' "$st/asks/jev-log.jsonl"
 
-seed 4405 4406 4407
-reply "4405 4407 go"
-check "two numbers plus a short reply clear both" asks_are "#4406 "
-check "the lone survivor's detail is renumbered to 1" test "$(cat "$st/asks/s1.d/1.md")" = "context 4406"
+seed 405 406 407
+reply "405 407 go"
+check "two numbers plus a short reply clear both" asks_are "#406 "
+check "the lone survivor's detail is renumbered to 1" test "$(cat "$st/asks/s1.d/1.md")" = "context 406"
 
 seed 1111 2222 3333
 reply "1111 go, and what about 2222?"
@@ -95,12 +96,48 @@ check "numbers plus extra words keep every ask" asks_are "#1111 #2222 #3333 "
 check "numbers plus extra words go to Jev" went_to_jev
 
 seed 1111 2222 3333
-reply "9999 go"
-check "an unmatched number keeps every ask and goes to Jev" went_to_jev
+reply "999 go"
+check "a number that matches no open ask clears the newest ask" asks_are "#1111 #2222 "
+check "the unmatched number never calls Jev" no_jev
+
+seed 1111 2222 3333
+reply "1111 999 go"
+check "matched and unmatched numbers clear only the matched ask" asks_are "#2222 #3333 "
 
 seed 1111 2222 3333
 reply "go"
 check "a short reply alone clears the newest ask" asks_are "#1111 #2222 "
+
+# Combined list entries, the Thai-layout "go" and a bare option digit clear the newest ask.
+for r in "yes go" "ok go" "yes, go" "Ok, go ahead!" "เน" "1" "2." "2 go" "1111 เน"; do
+	seed 1111 2222 3333
+	reply "$r"
+	if [ "$r" = "1111 เน" ]; then want="#2222 #3333 "; else want="#1111 #2222 "; fi
+	check "\"$r\" clears without Jev" asks_are "$want"
+	check "\"$r\" never calls Jev" no_jev
+done
+for r in "1111" "#5" "12 34" "100" "yes maybe" "1 and 2"; do
+	seed 1111 2222 3333
+	reply "$r"
+	check "\"$r\" keeps every ask and goes to Jev" asks_are "#1111 #2222 #3333 "
+	check "\"$r\" goes to Jev" went_to_jev
+done
+
+# Text that is not the user's own words: no .seen touch, no Jev call, no clear.
+for r in $'<task-notification>\n<task-id>abc</task-id> go' $'Another Claude session sent a message:\n<agent-message from="x">go</agent-message>' \
+	$'Stop hook feedback:\n[bash x]: go' "[Image #3]" " [Image #1] [Image #2] " ""; do
+	label=$(printf '%s' "${r:0:24}" | tr '\n' ' ')
+	seed 1111 2222 3333
+	rm -f "$st/asks/s1.seen"
+	reply "$r"
+	check "machine prompt [$label]: every ask stays" asks_are "#1111 #2222 #3333 "
+	check "machine prompt [$label]: no .seen touch" test ! -e "$st/asks/s1.seen"
+	check "machine prompt [$label]: no Jev call" test ! -e "$st/asks/jev-log.jsonl"
+done
+seed 1111 2222 3333
+reply "[Image #1] go"
+check "an image with a short reply is the user's: it clears the newest ask" asks_are "#1111 #2222 "
+check "the user's prompt touches .seen" test -e "$st/asks/s1.seen"
 
 # ---------- capture: one ask per ticket, newest wins ----------
 # Jev is stubbed: curl keeps the last request in $STUB_REQ and answers with $STUB_ANSWERS, else a
@@ -127,8 +164,10 @@ else printf '%s' '{"answers":{"decision":{"noul":0.9},"problem":{"choice":"none"
 STUB
 chmod +x "$stub/curl"
 echo fake >"$tmp/token"
-capture() { # capture <final assistant message>
-	jq -nc --arg m "$1" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:"/nonexistent"}' |
+# The session's repo: its GitHub origin names the link's repo.
+git init -q "$tmp/repo" && git -C "$tmp/repo" remote add origin git@github.com:acme/widgets.git
+capture() { # capture <final assistant message>; $capture_cwd overrides the session cwd
+	jq -nc --arg m "$1" --arg cwd "${capture_cwd:-$tmp/repo}" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:$cwd}' |
 		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
 			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" STUB_HOOK="$script" STUB_REPIN="${repin:-}" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
 }
@@ -153,6 +192,7 @@ jqt() { jq -e "$@" >/dev/null; }
 lines_are() { [ "$(tr '\n' '|' <"$st/asks/s1")" = "$1" ]; }
 detail_is() { [ "$(cat "$st/asks/s1.d/$1.md" 2>/dev/null)" = "$2" ]; }
 detail_links() { grep -q "issues/$2\$" "$st/asks/s1.d/$1.md" 2>/dev/null; }
+log_last() { jqt -s "last | $1" "$st/asks/jev-log.jsonl"; }
 
 seed_lines "#1111 first?" "#2222 second?"
 capture "Ship #1111 as one PR?"
@@ -160,6 +200,22 @@ check "a capture with an open ticket's #N replaces that ask" lines_are "#2222 se
 check "the survivor's detail follows its line" detail_is 1 "context 2"
 check "the replaced ask's detail is replaced, not kept" detail_links 2 1111
 check "no detail of the replaced ask is left" bash -c '! grep -rq "context 1" "$0"' "$st/asks/s1.d"
+check "the #N replace is logged as replace with the removed ask" log_last '.decision == "replace" and .candidate == "Ship #1111 as one PR?" and .replaced == ["#1111 first?"]'
+check "the link names the session's GitHub repo" grep -qx 'link: https://github.com/acme/widgets/issues/1111' "$st/asks/s1.d/2.md"
+
+# The link: an https GitHub origin works too; a non-GitHub origin or no repo gets no link line.
+git -C "$tmp/repo" remote set-url origin https://github.com/acme/widgets
+seed_lines "#1111 first?"
+capture "Ship #2222 now?"
+check "an https GitHub origin gives the link" grep -qx 'link: https://github.com/acme/widgets/issues/2222' "$st/asks/s1.d/2.md"
+git -C "$tmp/repo" remote set-url origin git@git.example.com:acme/widgets.git
+seed_lines "#1111 first?"
+capture "Ship #2222 now?"
+check "a non-GitHub origin gives no link" bash -c '! grep -qs link: "$0"' "$st/asks/s1.d/2.md"
+git -C "$tmp/repo" remote set-url origin git@github.com:acme/widgets.git
+seed_lines "#1111 first?"
+capture_cwd=/nonexistent capture "Ship #2222 now?"
+check "a cwd outside any repo gives no link" bash -c '! grep -qs link: "$0"' "$st/asks/s1.d/2.md"
 
 seed_lines "#1111 old?" "#2222 mid?" "#1111 new?"
 capture "Hold #3333 a week?"
@@ -178,7 +234,7 @@ check "the deduped ask keeps its detail" detail_is 1 "context 1"
 capture "Another question here?"
 check "a different ask with no #N is appended" lines_are "Ship it now or wait?|Another question here?|"
 
-# A re-ask in other words: Jev scores each open ask as the same decision, 0.7 or above replaces the best.
+# A re-ask in other words: Jev scores each open ask as the same decision; every ask at 0.6 or above is replaced.
 seed_lines "#1111 first?" "Shall we do the thing?" "#3333 third?"
 same_scores '{"same_1":{"noul":0.1},"same_2":{"noul":0.9},"same_3":{"noul":0.2}}'
 capture "Should we do that thing a new way?"
@@ -188,17 +244,25 @@ check "no detail of the replaced ask is left" bash -c '! grep -rq "context 2" "$
 check "Jev got one same-decision question per open ask" test "$(jq '[.questions | keys[] | select(startswith("same_"))] | length' "$tmp/req.last")" = 3
 check "Jev got the open ask line, no context" jqt '.questions.same_2.instructions | keys == ["open_ask","question"] and .open_ask == "Shall we do the thing?"' "$tmp/req.last"
 check "the log keeps every ask's score" jqt -s 'last | .decision == "replace" and .scores.same == {"1":0.1,"2":0.9,"3":0.2}' "$st/asks/jev-log.jsonl"
+check "the replace log names the removed ask" log_last '.replaced == ["Shall we do the thing?"]'
 
 seed_lines "#1111 first?" "Shall we do the thing?"
-same_scores '{"same_1":{"noul":0.2},"same_2":{"noul":0.5}}'
+same_scores '{"same_1":{"noul":0.2},"same_2":{"noul":0.59}}'
 capture "Should we do that thing a new way?"
-check "a re-ask scored 0.5 is appended" lines_are "#1111 first?|Shall we do the thing?|Should we do that thing a new way?|"
-check "an appended re-ask is logged as a pin" jqt -s 'last | .decision == "pin"' "$st/asks/jev-log.jsonl"
+check "a re-ask scored 0.59 is appended" lines_are "#1111 first?|Shall we do the thing?|Should we do that thing a new way?|"
+check "an appended re-ask is logged as a pin with no removal" log_last '.decision == "pin" and (has("replaced") | not)'
 
 seed_lines "Shall we do the thing?" "#3333 third?"
-same_scores '{"same_1":{"noul":0.7},"same_2":{"noul":0.2}}'
+same_scores '{"same_1":{"noul":0.6},"same_2":{"noul":0.2}}'
 capture "Should we do that thing a new way?"
-check "a re-ask scored exactly 0.7 replaces" lines_are "#3333 third?|Should we do that thing a new way?|"
+check "a re-ask scored exactly 0.6 replaces" lines_are "#3333 third?|Should we do that thing a new way?|"
+
+seed_lines "Shall we do it?" "Do the thing now?" "Ship the other part?"
+same_scores '{"same_1":{"noul":0.73},"same_2":{"noul":0.61},"same_3":{"noul":0.41}}'
+capture "Should we do that thing a new way?"
+check "a re-ask replaces every open ask at 0.6 or above, not only the best" lines_are "Ship the other part?|Should we do that thing a new way?|"
+check "the replace log names every removed ask" log_last '.decision == "replace" and .replaced == ["Shall we do it?","Do the thing now?"]'
+check "a replace logs no settled line" bash -c '! grep -q "\"decision\":\"settled\"" "$0"' "$st/asks/jev-log.jsonl"
 
 seed_lines "#1111 first?" "other?"
 same_scores '{"same_1":{"noul":0.9},"same_2":{"noul":0.9}}'
@@ -207,63 +271,129 @@ check "a #N match replaces without a Jev same-decision question" lines_are "othe
 check "the #N match sent no same-decision question" bash -c '! grep -q same_ "$0"' "$tmp/req.last"
 rm -f "$tmp/answers.json"
 
-# A done ticket drops its ask on the next write: its PR is MERGED or CLOSED, or its board row is Done.
-pr_state() { # pr_state <number> <state>
+# A message that is not a short reply gets one Jev yes/no per open ask; 0.45 or above clears.
+reply_jev() { # reply_jev <text>: through the stubbed Jev, answering with $tmp/answers.json
+	jq -nc --arg p "$1" '{session_id:"s1",hook_event_name:"UserPromptSubmit",prompt:$p,cwd:"/nonexistent"}' |
+		env PATH="$stub:$PATH" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" ASKS_TOKEN_FILE="$tmp/token" \
+			STUB_REQ="$tmp/req.last" STUB_ANSWERS="$tmp/answers.json" ASKS_SYNC=1 TMPDIR="$tmp" bash "$script"
+}
+seed_lines "Lock the first mock?" "Ship the second part?" "Hold the third?"
+echo '{"answers":{"1":{"noul":0.45},"2":{"noul":0.44},"3":{"noul":0.1}}}' >"$tmp/answers.json"
+reply_jev "lock the mock as drawn, fine by me"
+check "a Jev clear score of exactly 0.45 clears that ask, 0.44 keeps it" lines_are "Ship the second part?|Hold the third?|"
+check "the clear is logged with every ask's score" log_last '.decision == "clear" and .scores == {"1":0.45,"2":0.44,"3":0.1}'
+rm -f "$tmp/answers.json"
+
+# A done ticket drops its ask on a later write, only when it closed after the ask was pinned: its PR
+# is MERGED or CLOSED with a close time after the pin, or its board row is Done and was not at the pin.
+pr_state() { # pr_state <number> <state> [mergedAt]; updatedAt is 2026-01-02, after every seeded pin
 	mkdir -p "$st/gh-status/status"
-	echo "{\"number\": $1, \"state\": \"$2\", \"title\": \"say \\\"state\\\": \\\"MERGED\\\"\"}" >"$st/gh-status/status/pr-$1.json"
+	jq -n --argjson n "$1" --arg s "$2" --arg m "${3:-}" '{number:$n, state:$s, title:"say \"state\": \"MERGED\"",
+		updatedAt:"2026-01-02T00:00:00.123Z"} + (if $m != "" then {mergedAt:$m} else {} end)' >"$st/gh-status/status/pr-$1.json"
 }
-board_row() { # board_row <number> <status>
-	printf '%s\n' '| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |' \
-		"| #$1 | a \\| Done \\| title | $2 | Practice | Free | Week 16 | M7 | — |" >"$st/board-snapshot.md"
+board_row() { # board_row <number> <status>: Status is found by its header, escaped pipes never split a cell
+	printf '%s\n' '| # | Title | Owner | Status | Due |' '|---|---|---|---|---|' \
+		"| #$1 | a \\| Done \\| title | sam | $2 | Friday |" >"$st/board-snapshot.md"
 }
+pinned_at() { printf '%s\n' "$@" >"$st/asks/s1.meta"; } # pinned_at <meta line>...: one per seeded ask
 write_with_dismiss() { # the ask under test, a plain ask and a newest ask that a bare "go" clears
-	seed_lines "#4460 run the bake-off once it merges?" "plain ask?" "#4462 newest?"
+	seed_lines "#460 run the benchmark once it merges?" "plain ask?" "#462 newest?"
+	[ -z "${meta:-}" ] || pinned_at "$meta" 0 0
 	reply "go"
 }
+JAN1=1767225600000000 # 2026-01-01T00:00:00Z in microseconds
 rm -rf "$st/gh-status" "$st/board-snapshot.md"
-pr_state 4460 MERGED
+pr_state 460 MERGED 2026-01-02T00:00:00Z
 write_with_dismiss
 check "an ask whose PR is MERGED is dropped on the next write" lines_are "plain ask?|"
 check "the dropped ask's detail goes and the survivor's renumbers" detail_is 1 "context 2"
 check "the dismissal is logged" bash -c 'grep -q "\"decision\":\"done-ticket\"" "$0"' "$st/asks/jev-log.jsonl"
-pr_state 4460 CLOSED
+pr_state 460 CLOSED
 write_with_dismiss
-check "an ask whose PR is CLOSED is dropped" lines_are "plain ask?|"
-pr_state 4460 OPEN
+check "an ask whose PR is CLOSED is dropped (updatedAt with fractional seconds as the close time)" lines_are "plain ask?|"
+pr_state 460 OPEN
 write_with_dismiss
-check "an ask whose PR is OPEN is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
+check "an ask whose PR is OPEN is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+echo '{"number":460,"state":"MERGED"}' >"$st/gh-status/status/pr-460.json"
+write_with_dismiss
+check "a MERGED PR with no close time is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+meta=$JAN1
+pr_state 460 MERGED 2025-12-31T23:59:59Z
+write_with_dismiss
+check "an ask pinned after its PR merged is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+check "the kept ask's pin stamp stays" test "$(head -1 "$st/asks/s1.meta")" = "$JAN1"
+pr_state 460 MERGED 2026-01-01T00:00:01Z
+write_with_dismiss
+check "an ask pinned before its PR merged is dropped" lines_are "plain ask?|"
+meta=
 rm -rf "$st/gh-status"
 write_with_dismiss
-check "an ask with no status file is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
-board_row 4460 Done
+check "an ask with no status file is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+board_row 460 Done
 write_with_dismiss
 check "an ask whose board row is Done is dropped" lines_are "plain ask?|"
-board_row 4460 Backlog
+meta="$JAN1 board-done"
 write_with_dismiss
-check "an ask whose board row is not Done is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
-board_row 4461 Done
+check "an ask whose board row was already Done at its pin is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+check "the board-done flag stays with the ask" test "$(head -1 "$st/asks/s1.meta")" = "$JAN1 board-done"
+meta=
+board_row 460 Backlog
 write_with_dismiss
-check "an ask with no board row is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
-pr_state 4460 MERGED
-seed_lines "no ticket, but merged? #4460" "plain ask?" "#4462 newest?"
+check "an ask whose board row is not Done is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+board_row 461 Done
+write_with_dismiss
+check "an ask with no board row is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+printf '%s\n' '| # | Title | Owner | Due |' '|---|---|---|---|' '| #460 | a | sam | Done |' >"$st/board-snapshot.md"
+write_with_dismiss
+check "a board with no Status column dismisses nothing" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+rm -f "$st/board-snapshot.md"
+pr_state 460 MERGED 2026-01-02T00:00:00Z
+seed_lines "no ticket, but merged? #460" "plain ask?" "#462 newest?"
 reply "go"
 check "only the first #N keys an ask" lines_are "plain ask?|"
 rm -rf "$st/gh-status" "$st/board-snapshot.md"
 
+# A pin is never dismissed in the write that pins it, and a ticket already done at the pin never
+# dismisses it later.
+rm -f "$tmp/answers.json"
+board_row 777 Done
+seed_lines "#1111 first?"
+capture "Should I reopen #777?"
+check "an ask about a board-Done ticket is pinned" lines_are "#1111 first?|Should I reopen #777?|"
+check "its meta line carries the board-done flag" bash -c '[[ $(sed -n 2p "$0") =~ ^[0-9]+\ board-done$ ]]' "$st/asks/s1.meta"
+reply "1111 go"
+check "a later write keeps it while the row stays Done" lines_are "Should I reopen #777?|"
+rm -f "$st/board-snapshot.md"
+pr_state 778 MERGED 2026-01-02T00:00:00Z
+seed_lines "#1111 first?"
+capture "Should I follow up on #778?"
+check "an ask about an already-merged PR is pinned" lines_are "#1111 first?|Should I follow up on #778?|"
+reply "1111 go"
+check "a later write keeps it: the PR merged before the pin" lines_are "Should I follow up on #778?|"
+pr_state 778 MERGED 2099-01-01T00:00:00Z
+seed_lines "#1111 first?" "#2222 second?"
+capture "Should I follow up on #778?"
+reply "2222 go"
+check "a PR that merges after the pin dismisses the ask on a later write" lines_are "#1111 first?|"
+rm -rf "$st/gh-status"
+
 # The assistant's own message settles asks: a no-? Stop still asks Jev, once, about every open ask.
 rm -f "$tmp/req.last"
-seed_lines "Starting with 1: should I make the skills edit?" "Shall I dispatch the PRD change?" "#4464 go ahead?"
-same_scores '{"settled_1":{"noul":0.9},"settled_2":{"noul":0.4},"settled_3":{"noul":0.69}}'
+seed_lines "Starting with 1: should I make the skills edit?" "Shall I dispatch the PRD change?" "#464 go ahead?"
+same_scores '{"settled_1":{"noul":0.9},"settled_2":{"noul":0.4},"settled_3":{"noul":0.59}}'
 capture $'You merged it, so the PRD now says it.\nNothing else is waiting on you from this lane.'
-check "a no-? message scored 0.9 for ask 1 clears ask 1" lines_are "Shall I dispatch the PRD change?|#4464 go ahead?|"
+check "a no-? message scored 0.9 for ask 1 clears ask 1" lines_are "Shall I dispatch the PRD change?|#464 go ahead?|"
 check "the others keep their details, renumbered" detail_is 1 "context 2"
 check "the request had one settled question per open ask and no gate" jqt '[.questions | keys[]] == ["settled_1","settled_2","settled_3"]' "$tmp/req.last"
 check "the request carried the message tail and no final question" jqt '.state | keys == ["assistant_message"]' "$tmp/req.last"
-check "the log keeps each ask's settled score" jqt -s 'last | .decision == "settled" and .scores.settled == {"1":0.9,"2":0.4,"3":0.69}' "$st/asks/jev-log.jsonl"
-same_scores '{"settled_1":{"noul":0.5},"settled_2":{"noul":0.5}}'
+check "the log keeps each ask's settled score" jqt -s 'last | .decision == "settled" and .scores.settled == {"1":0.9,"2":0.4,"3":0.59}' "$st/asks/jev-log.jsonl"
+same_scores '{"settled_1":{"noul":0.59},"settled_2":{"noul":0.5}}'
 seed_lines "first?" "second?"
 capture "Nothing to report."
-check "settled scores under 0.7 keep every ask" lines_are "first?|second?|"
+check "settled scores under 0.6 keep every ask" lines_are "first?|second?|"
+same_scores '{"settled_1":{"noul":0.5},"settled_2":{"noul":0.6}}'
+capture "Nothing to report."
+check "a settled score of exactly 0.6 clears that ask" lines_are "first?|"
 rm -f "$tmp/req.last"
 seed_lines "first?" "second?"
 same_scores '{"settled_1":{"noul":0.9}}'
@@ -275,17 +405,17 @@ capture "Done, nothing to ask."
 check "a no-? message with no open ask makes no Jev call" test ! -e "$tmp/req.last"
 seed_lines "first?" "second?"
 same_scores '{"settled_1":{"noul":0.9}}'
-capture $'It is merged.\nShip #8888 next?'
-check "a message with a question pins it and clears the settled ask" lines_are "second?|Ship #8888 next?|"
+capture $'It is merged.\nShip #888 next?'
+check "a message with a question pins it and clears the settled ask" lines_are "second?|Ship #888 next?|"
 rm -f "$tmp/answers.json"
 
 # A done PR is read by its top-level state only: nested objects with a state never decide.
 rm -rf "$st/gh-status" "$st/board-snapshot.md"
 mkdir -p "$st/gh-status/status"
-echo '{"checks":{"state":"CLOSED"},"reviews":[{"state":"CLOSED"}],"number":4460,"state":"OPEN"}' >"$st/gh-status/status/pr-4460.json"
+echo '{"checks":{"state":"CLOSED"},"reviews":[{"state":"CLOSED"}],"number":460,"state":"OPEN"}' >"$st/gh-status/status/pr-460.json"
 write_with_dismiss
-check "an OPEN PR with a nested CLOSED state is kept" lines_are "#4460 run the bake-off once it merges?|plain ask?|"
-echo '{"reviews":[{"state":"OPEN"}],"number":4460,"state":"MERGED"}' >"$st/gh-status/status/pr-4460.json"
+check "an OPEN PR with a nested CLOSED state is kept" lines_are "#460 run the benchmark once it merges?|plain ask?|"
+echo '{"reviews":[{"state":"OPEN"}],"number":460,"state":"MERGED","mergedAt":"2026-01-02T00:00:00Z"}' >"$st/gh-status/status/pr-460.json"
 write_with_dismiss
 check "a MERGED PR with a nested OPEN state is dropped" lines_are "plain ask?|"
 rm -rf "$st/gh-status"
@@ -306,14 +436,14 @@ rm -f "$tmp/answers.json"
 
 # The ask is the question sentence alone, so a done ticket named in a lead-in sentence cannot dismiss it.
 rm -rf "$st/gh-status" "$st/board-snapshot.md"
-pr_state 4465 MERGED
+pr_state 465 MERGED 2026-01-02T00:00:00Z
 seed_lines "#1111 first?"
-capture "Merged #4465. Should I start #4466?"
-check "a lead-in naming a merged ticket does not key the ask: it pins as #4466 and survives" lines_are "#1111 first?|Should I start #4466?|"
-check "the pinned ask links the ticket of its question sentence" detail_links 2 4466
+capture "Merged #465. Should I start #466?"
+check "a lead-in naming a merged ticket does not key the ask: it pins as #466 and survives" lines_are "#1111 first?|Should I start #466?|"
+check "the pinned ask links the ticket of its question sentence" detail_links 2 466
 seed_lines "#1111 first?"
-capture "Should I start #4465?"
-check "a question whose own first #N is merged is dismissed" lines_are "#1111 first?|"
+capture "Should I start #465?"
+check "a question whose own first #N is merged is pinned, never dismissed in the same write" lines_are "#1111 first?|Should I start #465?|"
 rm -rf "$st/gh-status"
 seed_lines "#1111 first?"
 capture "Should we ship the schema change now?"
@@ -324,8 +454,8 @@ check "a lead-in clause before a colon is not part of the ask" lines_are "#1111 
 
 # An over-length question keeps its last full sentence; one still too long is cut at a word with …?
 seed_lines "#1111 first?"
-capture 'Should platform own both, with tl-product closing #4466 into the rewrite, or does the ADR part go to tl-product?'
-check "an over-length question is cut at a word with …? and never gets a leading ellipsis" lines_are "#1111 first?|Should platform own both, with tl-product closing #4466 into the rewrite, or does the ADR part go to…?|"
+capture 'Should the API team own both, with the web team closing #466 into the rewrite, or does the spec part go to the web team?'
+check "an over-length question is cut at a word with …? and never gets a leading ellipsis" lines_are "#1111 first?|Should the API team own both, with the web team closing #466 into the rewrite, or does the spec part go to…?|"
 seed_lines "#1111 first?"
 capture 'We settled the schema in the earlier round and the migration lands with the next release train. Shall I dispatch the PRD change now?'
 check "an over-length line keeps its last full sentence" lines_are "#1111 first?|Shall I dispatch the PRD change now?|"
@@ -345,10 +475,10 @@ reply "Go Ahead!"
 check "a short reply matches in any letter case" lines_are "#1111 first?|"
 
 seed_lines "#1111 first?"
-capture $'Intro.\n: should we ship #4449 now?'
-check "a leading colon is stripped from the candidate" lines_are "#1111 first?|should we ship #4449 now?|"
-capture $'Intro.\n\xe2\x80\x94 should we hold #5555 a week?'
-check "a leading em dash is stripped from the candidate" lines_are "#1111 first?|should we ship #4449 now?|should we hold #5555 a week?|"
+capture $'Intro.\n: should we ship #449 now?'
+check "a leading colon is stripped from the candidate" lines_are "#1111 first?|should we ship #449 now?|"
+capture $'Intro.\n\xe2\x80\x94 should we hold #555 a week?'
+check "a leading em dash is stripped from the candidate" lines_are "#1111 first?|should we ship #449 now?|should we hold #555 a week?|"
 
 # ---------- fail open: every early path exits 0 with no output ----------
 event_json() { # event_json <sid> <event> <prompt-or-message>
