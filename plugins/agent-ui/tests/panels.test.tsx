@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { TONES, placeBeside } from '../hooks/ci'
-import { barGlyphs, headerSegments, parsePanelOutput, parseSpecs, rowSegments } from '../hooks/panels'
-import { GIT_CONFIG, type PanelResult, world } from './world'
+import { barCells, headerSegments, parsePanelOutput, parseSpecs, rowSegments } from '../hooks/panels'
+import { GIT_CONFIG, KIDS, type PanelResult, RUN_FILES, STATE, world } from './world'
 
 const CONFIG = '/fx/repo/.agent/pane-panels.json'
 const CMD = ['acme-panel', 'report', '--json']
@@ -56,6 +56,7 @@ const plain = (segments: { text: string }[]) => segments.map(segment => segment.
 function setup(on: Parameters<typeof world>[0], answer: () => PanelResult | Promise<PanelResult> = () => ok()) {
   const w = world(on, { ...GIT_CONFIG, [CONFIG]: JSON.stringify(SPECS) }, [])
   w.panel = answer
+  w.redraws = true
   return w
 }
 
@@ -102,6 +103,69 @@ describe('repo panels', () => {
     expect(w.panelRuns).toHaveLength(2)
     expect((await due.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 80%')
     await due.unmount()
+  })
+
+  test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', async ($, on) => {
+    const w = world(on, {
+      ...RUN_FILES,
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
+      [CONFIG]: JSON.stringify(SPECS),
+    })
+    let release = () => {}
+    w.panel = () => new Promise(done => { release = () => done(ok()) })
+    const ui = await $.ui.mount(PANE())
+    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
+    expect(await ui.find({ key: `disk:${KIDS}/a-run` })).toBeDefined()
+    expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme')
+    expect(w.invalidated).toBe(0)
+    release()
+    await w.clock.settle()
+    expect(w.invalidated).toBe(1)
+    await ui.unmount()
+  })
+
+  test('control characters in the output and in stderr become spaces', async ($, on) => {
+    const esc = '\u001b[31m'
+    const data = parsePanelOutput(JSON.stringify({
+      summary: `one\ntwo${esc}`,
+      tabs: [{ id: 't', label: `tab${esc}`, note: `a\nb`, columns: [{ key: 'c', label: `c\n`, width: 12 }], rows: [{ id: 'r', cells: { c: `x${esc}y\tz` }, hover: [`h\n${esc}`] }] }],
+    }))
+    const all = JSON.stringify(data)
+    expect(all).not.toMatch(/\\u001b|\\n|\\t/)
+    expect(data?.summary).toBe('one two [31m')
+    expect(data?.tabs[0]?.rows[0]?.cells.c).toBe('x [31my z')
+    const w = setup(on, () => ({ exitCode: 1, stderr: `${esc}boom\tnow` }))
+    const ui = await $.ui.mount(PANE())
+    expect(textOf(keyed(walk(await ui.drawn()), 'panel-error'))).toBe('panel error: [31mboom now')
+    expect(w.panelRuns).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('a panel draws at most 12 tabs, 12 columns 200 wide, 100 rows of 6 hover lines', () => {
+    const column = (k: number) => ({ key: `c${k}`, width: 1e9 })
+    const row = (k: number) => ({ id: `r${k}`, cells: {}, hover: Array.from({ length: 9 }, () => 'h') })
+    const tab = (k: number) => ({ id: `t${k}`, columns: Array.from({ length: 20 }, (_, c) => column(c)), rows: Array.from({ length: 10_000 }, (_, r) => row(r)) })
+    const data = parsePanelOutput(JSON.stringify({ tabs: Array.from({ length: 20 }, (_, k) => tab(k)) }))
+    expect(data?.tabs).toHaveLength(12)
+    expect(data?.tabs[0]?.columns).toHaveLength(12)
+    expect(data?.tabs[0]?.columns[0]?.width).toBe(200)
+    expect(data?.tabs[0]?.rows).toHaveLength(100)
+    expect(data?.tabs[0]?.rows[0]?.hover).toHaveLength(6)
+  })
+
+  test('a panel dropped from the list loses its kept output: listed again, it runs afresh', async ($, on) => {
+    const w = setup(on)
+    const ui = await $.ui.mount(PANE())
+    await ui.unmount()
+    w.files[CONFIG] = JSON.stringify([{ id: 'other', cmd: ['acme-panel', 'other'] }])
+    const without = await $.ui.mount(PANE())
+    expect(await without.find({ key: 'panel:acme' })).toBeUndefined()
+    await without.unmount()
+    w.files[CONFIG] = JSON.stringify(SPECS)
+    const back = await $.ui.mount(PANE())
+    await back.unmount()
+    expect(w.panelRuns.map(run => run.argv.join(' '))).toEqual([CMD.join(' '), 'acme-panel other', CMD.join(' ')])
   })
 
   test('expanded: at most one run per refresh_s', async ($, on) => {
@@ -216,9 +280,9 @@ describe('repo panels', () => {
     expect(plain(rowSegments(tab, alpha, 80))).toBe('alpha      9 ████▌  75%')
     expect(plain(rowSegments(tab, beta, 80))).toBe('beta-lon  12 █▌     25%')
     expect(plain(rowSegments(tab, alpha, 15))).toBe('alpha      9 ██')
-    expect(barGlyphs(0, 4)).toBe('    ')
-    expect(barGlyphs(1, 4)).toBe('████')
-    expect(barGlyphs(1 / 32, 4)).toBe('▏   ')
+    expect(barCells(0, 4)).toBe('    ')
+    expect(barCells(1, 4)).toBe('████')
+    expect(barCells(1 / 32, 4)).toBe('▏   ')
   })
 
   test('bar tones map to the chart palette; an unknown tone is dim', () => {

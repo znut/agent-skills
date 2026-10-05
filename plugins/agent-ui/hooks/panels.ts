@@ -14,12 +14,20 @@ export const PANEL_TIMEOUT_MS = 10_000
 const REFRESH_DEFAULT_S = 60
 // above the pane's 3 s tick, so a panel never runs on every tick
 const REFRESH_MIN_S = 5
+// what one panel may draw, whatever its command prints
 const HOVER_LINES = 6
+const MAX_WIDTH = 200
+const MAX_COLUMNS = 12
+const MAX_TABS = 12
+const MAX_ROWS = 100
 // one space between columns
 const GAP = 1
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
-const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : fallback)
+// A control character (a newline, an escape sequence's ESC) would break the row or restyle the
+// terminal: each becomes a space.
+export const clean = (text: string): string => text.replace(/[\u0000-\u001f\u007f]/g, ' ')
+const str = (value: unknown, fallback = ''): string => clean(typeof value === 'string' ? value : typeof value === 'number' ? String(value) : fallback)
 
 function parseJson(text: string): unknown {
   try {
@@ -54,20 +62,20 @@ function parseCell(value: unknown): string | Bar {
 export function parsePanelOutput(stdout: string): PanelData | null {
   const value = parseJson(stdout.trim())
   if (!isObject(value) || !Array.isArray(value.tabs)) return null
-  const tabs = value.tabs.flatMap((tab): PanelTab[] => {
+  const tabs = value.tabs.slice(0, MAX_TABS).flatMap((tab): PanelTab[] => {
     if (!isObject(tab) || typeof tab.id !== 'string' || !Array.isArray(tab.columns) || !Array.isArray(tab.rows)) return []
-    const columns = tab.columns.filter(isObject).map(column => ({
+    const columns = tab.columns.slice(0, MAX_COLUMNS).filter(isObject).map(column => ({
       key: str(column.key),
       label: str(column.label, str(column.key)),
-      width: typeof column.width === 'number' && column.width > 0 ? Math.floor(column.width) : str(column.label, str(column.key)).length,
+      width: Math.min(MAX_WIDTH, typeof column.width === 'number' && column.width > 0 ? Math.floor(column.width) : str(column.label, str(column.key)).length),
       align: column.align === 'right' ? ('right' as const) : ('left' as const),
       isBar: column.kind === 'bar',
     }))
-    const rows = tab.rows.filter(isObject).map((row, i) => ({
+    const rows = tab.rows.slice(0, MAX_ROWS).filter(isObject).map((row, i) => ({
       id: str(row.id, String(i)),
       dim: row.dim === true,
       cells: Object.fromEntries(Object.entries(isObject(row.cells) ? row.cells : {}).map(([key, cell]) => [key, parseCell(cell)])),
-      hover: (Array.isArray(row.hover) ? row.hover : []).map(line => str(line)).slice(0, HOVER_LINES),
+      hover: (Array.isArray(row.hover) ? row.hover : []).slice(0, HOVER_LINES).map(line => str(line)),
     }))
     return [{ id: tab.id, label: str(tab.label, tab.id), columns, rows, note: str(tab.note) }]
   })
@@ -82,7 +90,7 @@ export function pickTab(data: PanelData, chosen: string | undefined): PanelTab |
 const fit = (text: string, width: number, right: boolean) => (right ? text.slice(0, width).padStart(width) : text.slice(0, width).padEnd(width))
 
 // `frac` of `width` cells in eighths: full blocks, then one partial block, then blanks.
-export function barGlyphs(frac: number, width: number): string {
+export function barCells(frac: number, width: number): string {
   const eighths = Math.round(Math.min(1, Math.max(0, frac)) * width * 8)
   const full = Math.floor(eighths / 8)
   const part = eighths % 8 === 0 || full >= width ? '' : String.fromCharCode(0x2590 - (eighths % 8))
@@ -93,7 +101,7 @@ function cellSegments(column: Column, value: string | Bar | undefined): Segment[
   if (column.isBar && typeof value === 'object') {
     const barWidth = Math.max(0, column.width - 4)
     return [
-      { text: barGlyphs(value.frac, barWidth), color: TONES[value.tone] ?? TONES.dim },
+      { text: barCells(value.frac, barWidth), color: TONES[value.tone] ?? TONES.dim },
       { text: fit(value.text, column.width - barWidth, true) },
     ]
   }
@@ -122,6 +130,7 @@ export const headerSegments = (tab: PanelTab, width: number): Segment[] =>
 export const rowSegments = (tab: PanelTab, row: PanelRow, width: number): Segment[] =>
   clip(join(tab.columns.map(column => cellSegments(column, row.cells[column.key]))), width)
 
+// stderr's first line with text, its control characters spaces
 export function firstLine(text: string): string {
-  return text.split('\n').map(line => line.trim()).find(Boolean) ?? ''
+  return text.split('\n').map(line => clean(line).trim()).find(Boolean) ?? ''
 }

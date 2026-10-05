@@ -96,7 +96,9 @@ The pane runs `cmd` as an argv (no shell) in that root, stdin closed, 10 s
 limit: at most once per `refresh_s` (default 60, at least 5), collapsed or
 expanded, so the collapsed summary stays fresh too; never two runs at once. The
 command prints one JSON object on stdout and exits 0; anything else shows
-`panel error: <first stderr line>` and keeps the last good rows:
+`panel error: <first stderr line>` and keeps the last good rows. The pane runs
+the listed commands without asking, with the user's environment: list only
+commands you trust, as with a repo hook. The output:
 
 ```json
 {
@@ -125,4 +127,6 @@ user's pick persists per panel id. Cells are strings, or for a `bar` column
 `bad` or `dim`, its text right of it. A `dim` row draws dimmed; `hover` (up to
 6 lines) is the row's hover card, as on a main-ci bar. Only `tabs[].id`,
 `columns` and `rows` are required; a row is cut to the pane width, never
-wrapped.
+wrapped. Keep cells to narrow single-width text: a wide glyph (CJK, emoji) can
+wrap a row. A panel draws at most 12 tabs, 12 columns up to 200 wide, and 100
+rows; control characters in any text draw as spaces.

@@ -474,17 +474,23 @@ function fallbackOf(chart: CiChart): { grids: Cell[][][]; cells: string[] } {
 type PanelRun = { data: PanelData | null; error: string | null; startedAt: number | null; running: boolean }
 let panelList = { key: '', specs: [] as PanelSpec[] }
 const panelRuns = new Map<string, PanelRun>()
+const panelKey = (root: string, spec: PanelSpec) => [root, spec.id, ...spec.cmd].join('\0')
 
+// A re-read drops the kept output of every panel the list no longer has, in any root.
 async function readPanelSpecs($: $, root: string): Promise<PanelSpec[]> {
   const stat = (await listDir($, `${root}/.agent`)).find(entry => entry.name === 'pane-panels.json' && entry.kind === 'file')
   if (!stat) return []
   const key = `${root}|${stat.mtimeMs}|${stat.size}`
-  if (panelList.key !== key) panelList = { key, specs: parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) }
+  if (panelList.key !== key) {
+    panelList = { key, specs: parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) }
+    const kept = new Set(panelList.specs.map(spec => panelKey(root, spec)))
+    for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
+  }
   return panelList.specs
 }
 
 const panelRunOf = (root: string, spec: PanelSpec): PanelRun => {
-  const key = [root, spec.id, ...spec.cmd].join('\0')
+  const key = panelKey(root, spec)
   let run = panelRuns.get(key)
   if (!run) panelRuns.set(key, (run = { data: null, error: null, startedAt: null, running: false }))
   return run
@@ -504,17 +510,17 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
     run.error = firstLine(error instanceof Error ? error.message : String(error)) || 'did not run'
   } finally {
     run.running = false
+    $.ui.invalidate('ui.render')
   }
 }
 
 // Each panel, collapsed or expanded, runs at most once per refresh, and never twice at once.
-// A render waits for the runs it started; one drawn meanwhile keeps the last data.
-async function refreshPanels($: $, root: string, specs: PanelSpec[], now: number): Promise<void> {
-  await Promise.all(specs.flatMap(spec => {
+// The render does not wait: it draws the last data, and the run's end draws the pane again.
+function refreshPanels($: $, root: string, specs: PanelSpec[], now: number): void {
+  for (const spec of specs) {
     const run = panelRunOf(root, spec)
-    const due = !run.running && (run.startedAt === null || now - run.startedAt >= spec.refreshMs)
-    return due ? [runPanel($, root, spec, run, now)] : []
-  }))
+    if (!run.running && (run.startedAt === null || now - run.startedAt >= spec.refreshMs)) void runPanel($, root, spec, run, now)
+  }
 }
 
 type PanelRowView = { row: PanelRow; key: string; scope: string; segments: Segment[]; card: { top: number; left: number; width: number; lines: string[] } | null }
@@ -917,7 +923,9 @@ export const register: Register = (on, options) => {
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs)])
-    if (root && specs.length > 0) await refreshPanels($, root, specs, now)
+    if (root && specs.length > 0) refreshPanels($, root, specs, now)
+    // a card's top counts pane rows: the panels start below the main strip (1 row) and the
+    // open chart (CHART_ROWS bars + its legend line), the only rows drawn above them
     const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 1 : 0)
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>

@@ -69,6 +69,8 @@ export type World = {
   // set: an Image blit is denied with this reason, as on a terminal that draws the alt
   imageDeny?: string
   invalidated: number
+  // set: an invalidate draws the mounted pane again, as the engine does; off, it is only counted
+  redraws: boolean
   // each tail run: its -c argument and path
   tails: string[]
   denied: number
@@ -95,7 +97,7 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, tails: [],
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, redraws: false, tails: [],
     cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
     panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
@@ -115,9 +117,9 @@ export function world(
     }
     return { value: {} }
   })
-  on('ui.invalidate', () => {
+  on('ui.invalidate', ($, e, next) => {
     w.invalidated++
-    return { value: undefined }
+    return w.redraws ? next(e) : { value: undefined }
   })
   on('prompt.fill', ($, e) => {
     w.filled.push(e.text)
