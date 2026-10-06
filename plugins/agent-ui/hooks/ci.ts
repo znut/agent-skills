@@ -216,7 +216,7 @@ export function chartBytes(runs: CiRun[], metric: Metric = 'wall'): { bytes: Uin
   return { bytes, width, height }
 }
 
-// The fallback: rows x (2 per run) cells of ▁..█, colored by the bar's largest part; a retry
+// Where no Image draws: rows x (2 per run) cells of ▁..█, colored by the bar's largest part; a retry
 // count in red above the bar.
 export function chartCells(runs: CiRun[], metric: Metric = 'wall'): Cell[][] {
   const eighths = CHART_ROWS * 8
@@ -239,11 +239,6 @@ export function chartCells(runs: CiRun[], metric: Metric = 'wall'): Cell[][] {
 
 // Run i's 2 columns of the fallback grid.
 export const tileCells = (grid: Cell[][], i: number): Cell[][] => grid.map(row => row.slice(i * 2, i * 2 + 2))
-
-export function encodeCells(grid: Cell[][]): string {
-  const words = Uint32Array.from(grid.flatMap(row => row.flatMap(cell => [cell.glyph, cell.color, 0x01000000])))
-  return toBase64(new Uint8Array(words.buffer))
-}
 
 const pad = (text: string, width: number, right = false) => (right ? text.padStart(width) : text.padEnd(width))
 

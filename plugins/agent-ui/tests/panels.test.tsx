@@ -149,7 +149,7 @@ describe('repo panels', () => {
     await other.unmount()
   })
 
-  test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', async ($, on) => {
+  test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', { options: { childrenDir: KIDS } }, async ($, on) => {
     const w = world(on, {
       ...RUN_FILES,
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',

@@ -1,4 +1,4 @@
-import type { RunKind, RunStatus } from '../types'
+import type { RunStatus } from '../types'
 
 export const TAIL_LINES = 40
 
@@ -19,16 +19,16 @@ export function parentDir(path: string): string {
   return cut <= 0 ? '/' : trimmed.slice(0, cut)
 }
 
-export function kindOf(provider: string, isPanel: boolean, evidence = ''): RunKind {
+// The run's `provider` file: openai and codex are gpt, claude is claude; any other value as written.
+export function kindOf(provider: string, isPanel: boolean): string {
   if (provider === 'openai' || provider === 'codex') return 'gpt'
   if (provider === 'claude') return isPanel ? 'claude-panel' : 'claude'
-  if (provider === 'kimi') return 'kimi'
-  return /(?:^|\/)gpt-[^/]+/i.test(evidence) || evidence === 'codex-events' ? 'gpt' : '?'
+  return provider
 }
 
 export function labelOf(dir: string, isPanel: boolean): string {
   if (isPanel) return `rev ${baseName(parentDir(dir)).slice(0, 8)}/${baseName(dir)}`
-  return baseName(dir).replace(/^kimi-/, '')
+  return baseName(dir)
 }
 
 export function statusOf(hasDone: boolean, exitCode: string, isAlive: boolean): RunStatus {
@@ -112,7 +112,7 @@ export function applyRunLog(log: RunLog, text: string): void {
       log.cancels.push({ sha8, at: `${y}${mo}${d}T${h}${mi}${s}` })
       continue
     }
-    const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|canceled|head moved)/i.exec(line)
+    const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|head moved)/i.exec(line)
     if (!match) continue
     const [, pr = '', main, event = ''] = match
     if (/^(queued|start)$/i.test(event)) {

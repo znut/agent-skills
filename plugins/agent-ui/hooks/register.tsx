@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { OpenAsk, Run } from '../types'
-import { type Avatar, SPRITE_COLS, avatarCells, avatarOf, avatarPicture } from './sprites'
+import { type Avatar, SPRITE_COLS, avatarOf, avatarPicture } from './sprites'
 import {
   AXIS_COLS,
   CHART_ROWS,
@@ -19,7 +19,6 @@ import {
   cardTable,
   chartCells,
   chartTiles,
-  encodeCells,
   fnv1a,
   jobColor,
   markCancelled,
@@ -69,7 +68,7 @@ type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
 type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
 type RunDir = { dir: string; mtimeMs: number }
-type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string; unowned: boolean; startMs: number | null; lastMtime: number }
+type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
 type Row = {
   key: string
@@ -127,10 +126,9 @@ async function perRoot<T>($: $, name: string, compute: (root: string) => Promise
   const root = await $.session.root()
   const hit = byRoot.get(name)
   if (hit?.root === root) return hit.value as Promise<T>
-  const entry = { root, value: compute(root) }
-  byRoot.set(name, entry)
-  entry.value.catch(() => { if (byRoot.get(name) === entry) byRoot.delete(name) })
-  return entry.value
+  const value = compute(root)
+  byRoot.set(name, { root, value })
+  return value
 }
 
 async function gitCommonDir($: $): Promise<string | null> {
@@ -142,12 +140,13 @@ async function gitCommonDir($: $): Promise<string | null> {
   })
 }
 
+const childrenDirOf = (options: PluginOptions) => String(options.childrenDir ?? '').replace(/\/+$/, '')
+
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   return perRoot($, 'roots', async () => {
-    const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-    const children = String(options.childrenDir ?? '').replace(/\/+$/, '') || `${tmp}/agent-tools/children`
+    const children = childrenDirOf(options)
     const common = await gitCommonDir($)
-    return [{ dir: children, isPanel: false }, ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
+    return [...(children ? [{ dir: children, isPanel: false }] : []), ...(common ? [{ dir: `${common}/.review-panel`, isPanel: true }] : [])]
   })
 }
 
@@ -173,48 +172,35 @@ async function runDirs($: $, root: Root): Promise<RunDir[]> {
 
 async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
-  const pidEntry = names.get('pid')
-  if (!pidEntry) return null
+  if (!names.has('pid')) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, fullModel, start, end, exitCode, cwd, agent] = await Promise.all([
+  const [owner, pid, provider, model, start, end, exitCode, cwd, agent] = await Promise.all([
     field('owner-session'),
     field('pid'),
     field('provider'),
     field('model'),
-    field('full-model'),
     field('start-epoch'),
     field('end-epoch'),
     field('exit-code'),
     field('cwd'),
     field('agent'),
   ])
-  if (owner !== '' && sid !== '' && owner !== sid) return null
+  if (sid === '' || owner !== sid) return null
   const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
-  const startMs = epochMs(start)
-  const evidence = names.has('result.jsonl') ? 'codex-events' : fullModel
-  const inferred = kindOf(provider, isPanel, evidence)
-  const providerLabel = provider || (inferred === 'gpt' ? 'gpt' : '?')
-  const modelLabel = model || fullModel.replace(/^gpt-/, '') || '?'
-  const hasDone = names.has('done')
-  const startedAt = startMs ?? (pidEntry.mtimeMs || null)
-  const endedAt = epochMs(end) ?? (lastMtime || null)
   return {
     pid,
-    hasDone,
+    hasDone: names.has('done'),
     exitCode,
-    unowned: owner === '',
-    startMs,
-    lastMtime,
     run: {
       dir,
-      kind: inferred,
+      kind: kindOf(provider, isPanel),
       label: labelOf(dir, isPanel),
       cwd,
       isReviewer: isPanel || agent === 'reviewer',
-      model: [providerLabel, modelLabel].join('/'),
+      model: [provider, model].filter(Boolean).join('/'),
       status: 'running',
-      startedAt,
-      endedAt,
+      startedAt: epochMs(start),
+      endedAt: epochMs(end) ?? (lastMtime || null),
     },
   }
 }
@@ -257,7 +243,6 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
-    if (one.unowned && now - Math.max(one.startMs ?? 0, one.lastMtime) > LIVE_WINDOW_MS) continue
     const run = { ...one.run, status: statusOf(one.hasDone, one.exitCode, recent(one) && alive.has(one.pid)) }
     ;(run.status === 'running' ? running : done).push(run)
   }
@@ -271,7 +256,7 @@ function runElapsed(run: Run, now: number): string {
   return run.startedAt === null ? '?' : elapsed(((run.status === 'running' ? now : run.endedAt) ?? now) - run.startedAt)
 }
 
-// GPT runs stream codex events to result.jsonl; Claude and Kimi runs only stderr.log.
+// GPT runs stream codex events to result.jsonl; Claude runs only stderr.log.
 async function readTail($: $, run: Run): Promise<Tail> {
   const names = new Set((await listDir($, run.dir)).map(entry => entry.name))
   const tail = names.has('result.jsonl')
@@ -442,7 +427,7 @@ async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed |
 }
 
 type CiCard = ReturnType<typeof cardTable> & { left: number }
-type CiChart = { key: string; metric: Metric; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: { grids: Cell[][][]; cells: string[] } }
+type CiChart = { key: string; metric: Metric; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: Cell[][][] }
 let ciChart: CiChart | null = null
 
 // Encoded again only when a run is added or changes, main-ci's state moves, or the width or the
@@ -464,12 +449,11 @@ async function readCiChart($: $, main: MainStrip, bodyColumns: number, metric: M
   return ciChart
 }
 
-// Block-glyph cells, built only where a picture cannot be drawn.
-function fallbackOf(chart: CiChart): { grids: Cell[][][]; cells: string[] } {
+// Block-glyph cells per run, built only on a surface without Image.
+function fallbackOf(chart: CiChart): Cell[][][] {
   if (!chart.fallback) {
     const grid = chartCells(chart.runs, chart.metric)
-    const grids = chart.runs.map((_, i) => tileCells(grid, i))
-    chart.fallback = { grids, cells: grids.map(encodeCells) }
+    chart.fallback = chart.runs.map((_, i) => tileCells(grid, i))
   }
   return chart.fallback
 }
@@ -772,11 +756,9 @@ function githubSlug(url: string): string | null {
   return match?.[1] ?? null
 }
 
-// The configured slug, else the session repo's `origin` remote, read from the git config file:
-// null when neither names a GitHub repo, and ticket refs stay text.
-async function resolveRepo($: $, options: PluginOptions): Promise<string | null> {
-  const configured = String(options.repoSlug ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
-  if (configured) return configured
+// The session repo's `origin` remote, read from the git config file: null when it names no
+// GitHub repo, and ticket refs stay text.
+async function resolveRepo($: $): Promise<string | null> {
   return perRoot($, 'repo', async () => {
     const common = await gitCommonDir($)
     if (!common) return null
@@ -850,10 +832,6 @@ const CHILD_CAP = 8
 let frameTimer: Timer | null = null
 let frameTick = 0
 let animating: { key: string; avatar: Avatar }[] = []
-let animatingPictures = false
-// A terminal without pictures draws an Image's alt dim and uncolored; once a blit says so,
-// the pane draws braille Rasters instead.
-let picturesDrawAlt = false
 
 function syncFrames($: $): void {
   if (animating.length === 0) {
@@ -864,24 +842,13 @@ function syncFrames($: $): void {
   if (frameTimer) return
   frameTimer = $.clock.every(FRAME_MS, async () => {
     frameTick++
-    const batch = animating
-    const pictures = animatingPictures
     const results = await Promise.all(
-      batch.map(row => {
-        const key = `avatar:${row.key}`
-        const blit = pictures
-          ? $.ui.blit({ requestId: PANE, key, source: avatarPicture(row.avatar, 'running', frameTick).source })
-          : $.ui.blit({ requestId: PANE, key, cells: avatarCells(row.avatar, 'running', frameTick) })
-        return blit.catch(() => ({ deny: 'blit failed' }))
-      }),
+      animating.map(row =>
+        $.ui
+          .blit({ requestId: PANE, key: `avatar:${row.key}`, source: avatarPicture(row.avatar, 'running', frameTick) })
+          .catch(() => ({ deny: 'blit failed' })),
+      ),
     )
-    // Reads the engine's deny wording (its reasons are "spelled out for a fallback"); not yet
-    // confirmed against a real terminal without pictures.
-    if (pictures && results.some(result => /\balt\b/i.test(result.deny ?? ''))) {
-      picturesDrawAlt = true
-      animating = []
-      $.ui.invalidate('ui.render')
-    }
     // nothing of ours is mounted any more (the pane closed): wait for the next render
     if (results.every(result => result.deny)) animating = []
     syncFrames($)
@@ -951,9 +918,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const terminal = e.surface === 'terminal' ? $.ui.resolve(e) : null
-    const Image = picturesDrawAlt ? null : terminal?.Image ?? null
-    const Raster = terminal?.Raster ?? null
+    const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
     const now = await $.clock.now()
     const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
     const rows = rowsFor(runs, agents, now)
@@ -966,13 +931,12 @@ export const register: Register = (on, options) => {
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
     ])
     const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
-    animating = Image || Raster
+    animating = Image
       ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
-    animatingPictures = !!Image
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
-    const repo = await resolveRepo($, options)
+    const repo = await resolveRepo($)
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
@@ -1018,10 +982,8 @@ export const register: Register = (on, options) => {
                 <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} flexDirection="column" hover={{ scope: `ci:${run.run}`, backgroundColor: COLUMN_LIT }}>
                   {Image ? (
                     <Image key={`ci-bar:${run.run}`} source={chart.tiles[i] as CiChart['tiles'][number]} columns={2} rows={CHART_ROWS} alt={barGlyphs(run, chart)} />
-                  ) : Raster ? (
-                    <Raster key={`ci-bar:${run.run}`} columns={2} rows={CHART_ROWS} cells={fallbackOf(chart).cells[i] ?? ''} />
                   ) : (
-                    (fallbackOf(chart).grids[i] ?? []).map((row, y) => (
+                    (fallbackOf(chart)[i] ?? []).map((row, y) => (
                       <Text key={`ci-cell-${i}-${y}`} color={hex(row[0]?.color ?? 0)}>{row.map(cell => String.fromCharCode(cell.glyph)).join('')}</Text>
                     ))
                   )}
@@ -1114,14 +1076,18 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         <Text bold>Workers</Text>
-        {rows.length === 0 && <Text dimColor>No child runs for this session.</Text>}
+        {!childrenDirOf(options) ? (
+          <Box key="no-children-dir">
+            <Text dimColor>set childrenDir in /config</Text>
+          </Box>
+        ) : (
+          rows.length === 0 && <Text dimColor>No child runs for this session.</Text>
+        )}
         {visible.map(({ row, isChild }) => (
           <Box key={`row:${row.key}`} flexDirection="row">
             {isChild && <Text dimColor>{'  └ '}</Text>}
             {Image && row.avatar ? (
-              <Image key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} {...avatarPicture(row.avatar, row.status, frameTick)} />
-            ) : Raster && row.avatar ? (
-              <Raster key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} cells={avatarCells(row.avatar, row.status, frameTick)} />
+              <Image key={`avatar:${row.key}`} columns={SPRITE_COLS} rows={1} source={avatarPicture(row.avatar, row.status, frameTick)} alt={MARK[row.status]} />
             ) : (
               <Box key={`mark:${row.key}`}>
                 <Text dimColor={row.status !== 'running'}>{`${MARK[row.status]} `}</Text>
@@ -1132,7 +1098,7 @@ export const register: Register = (on, options) => {
               key={row.key}
               plain
               dimColor={row.status !== 'running'}
-              label={`${row.kind} ${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
+              label={`${row.kind ? `${row.kind} ` : ''}${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
               onPress={async () => {
                 const wasShown = (await read($, selectedRun)) === row.key
                 await update($, selectedRun, () => (wasShown ? null : row.key))
@@ -1197,7 +1163,7 @@ export const register: Register = (on, options) => {
     const { asks, detailDir } = await readAsks($, options)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
-    const repo = await resolveRepo($, options)
+    const repo = await resolveRepo($)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''

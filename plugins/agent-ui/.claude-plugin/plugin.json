@@ -10,19 +10,13 @@
     "childrenDir": {
       "type": "string",
       "title": "Child run directory",
-      "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: $TMPDIR/agent-tools/children.",
+      "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: the pane lists no child runs from disk.",
       "default": ""
     },
     "stateDir": {
       "type": "string",
       "title": "State directory",
       "description": "Folder holding asks/<session-id>. Empty: the parent of session_bus_dir in the main checkout's .agent/orchestrate.local.md.",
-      "default": ""
-    },
-    "repoSlug": {
-      "type": "string",
-      "title": "GitHub repository",
-      "description": "Owner and repository (owner/repo) for ticket and PR links. Empty: the GitHub origin remote of the session's repository; with no GitHub remote, #N shows without a link.",
       "default": ""
     }
   }

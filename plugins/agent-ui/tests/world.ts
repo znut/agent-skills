@@ -4,7 +4,7 @@ import { mock } from 'claude-code/testing'
 
 export const SID = 'sid-1'
 export const NOW = 1_790_000_000_000
-export const KIDS = '/fx/tmp/agent-tools/children'
+export const KIDS = '/fx/children'
 export const PANEL = '/fx/repo/.git/.review-panel'
 export const STATE = '/fx/home/state'
 export const GIT_CONFIG = { '/fx/repo/.git/config': '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n' }
@@ -42,7 +42,7 @@ export const RUN_FILES: Record<string, string> = {
     'end-epoch': epoch(1),
     'last-message': 'All green.',
   }),
-  ...under(`${KIDS}/c-dead`, run('kimi', '103')),
+  ...under(`${KIDS}/c-dead`, run('claude', '103')),
   ...under(`${KIDS}/d-foreign`, run('openai', '104', 'sid-other')),
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
@@ -63,11 +63,9 @@ export type World = {
   filled: string[]
   modes: string[]
   lists: string[]
-  blits: { key: string; cells?: string; rgba?: string }[]
+  blits: { key: string; rgba: string }[]
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
   blitOk: boolean
-  // set: an Image blit is denied with this reason, as on a terminal that draws the alt
-  imageDeny?: string
   invalidated: number
   // set: an invalidate draws the mounted pane again, as the engine does; off, it is only counted
   redraws: boolean
@@ -94,7 +92,7 @@ export function world(
   alive: readonly string[] = ALIVE,
   fixtures: { mtimes?: Record<string, number>; agents?: World['agents']; transcripts?: World['transcripts'] } = {},
 ): World {
-  mock.env(on, { TMPDIR: '/fx/tmp/', HOME: '/fx/home' })
+  mock.env(on, { HOME: '/fx/home' })
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
@@ -112,11 +110,7 @@ export function world(
       w.denied++
       return { value: { deny: 'not mounted' } }
     }
-    if ('cells' in e) w.blits.push({ key: e.key, cells: e.cells })
-    else if ('rgba' in e.source) {
-      if (w.imageDeny) return { value: { deny: w.imageDeny } }
-      w.blits.push({ key: e.key, rgba: e.source.rgba })
-    }
+    if ('source' in e && 'rgba' in e.source) w.blits.push({ key: e.key, rgba: e.source.rgba })
     return { value: {} }
   })
   on('ui.invalidate', ($, e, next) => {

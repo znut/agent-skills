@@ -1,53 +1,19 @@
 import { toBase64 } from './lib'
 
-// Provider avatars: 2 terminal cells wide, one row tall (a square on screen). Where the
-// terminal draws pictures, a square RGBA sprite (its frame's size, 16 or 32 pixels) fills
-// the box; elsewhere braille (2x4 dots a cell, so 4x4 pixels) in a Raster, and the same
-// braille is the picture's alt text. Every frame is encoded once, here.
-export type Avatar = 'claude' | 'gpt' | 'kimi'
+// Provider avatars: 2 terminal cells wide, one row tall (a square on screen), a square RGBA
+// sprite (its frame's size, 16 or 32 pixels) filling the box. Every frame is encoded once, here.
+export type Avatar = 'claude' | 'gpt'
 export type Status = 'running' | 'done' | 'failed' | 'dead'
-export type Picture = { source: { rgba: string; width: number; height: number }; alt: string }
-type Look<T> = { run: T[]; done: T; failed: T }
+export type Picture = { rgba: string; width: number; height: number }
+type Look = { run: Picture[]; done: Picture; failed: Picture }
 
 export const SPRITE_COLS = 2
-const DEFAULT_BG = 0x01000000
 const FAILED = 0xe06c75
-const WHITE = 0xf2f2f2
 const EYE = 0x1a1a1a
-const COLORS: Record<Avatar, { main: number; accent: number }> = {
-  claude: { main: 0xd97757, accent: 0xd97757 },
-  gpt: { main: WHITE, accent: WHITE },
-  kimi: { main: WHITE, accent: 0x5b7fff },
-}
-const DOT_BITS = [
-  [0x01, 0x02, 0x04, 0x40],
-  [0x08, 0x10, 0x20, 0x80],
-]
+const COLORS: Record<Avatar, number> = { claude: 0xd97757, gpt: 0xf2f2f2 }
 
-// Braille frames, 4 rows of 4 pixels. 'X' is the main color, 'B' the accent. Color is per
-// cell, so the Kimi dot (upper right, in the right cell) turns that whole cell blue: the
-// K's right half and the dot. A cadence plays the frames in order.
-const FRAMES: Record<Avatar, string[][]> = {
-  // eyes are the gaps; the legs alternate
-  claude: [
-    ['XXXX', 'X..X', 'XXXX', 'X..X'],
-    ['XXXX', 'X..X', 'XXXX', '.XX.'],
-  ],
-  // a ring with a center gap, turning
-  gpt: [
-    ['.XX.', 'X..X', 'X..X', '.XX.'],
-    ['XXX.', 'X..X', 'X..X', '.XXX'],
-    ['.XXX', 'X..X', 'X..X', 'XXX.'],
-  ],
-  // the K flips left to right, its dot stays
-  kimi: [
-    ['X.XB', 'XX..', 'XX..', 'X.X.'],
-    ['X.XB', '.XX.', '.XX.', 'X.X.'],
-  ],
-}
-
-// Sprite frames, square, N rows of N pixels: 'X' main, 'B' accent, 'E' eye, '.' transparent.
-// SPRITE_CADENCE plays them; its step k shows the braille frame at CADENCE step k as alt.
+// Sprite frames, square, N rows of N pixels: 'X' the color, 'E' eye, '.' transparent.
+// CADENCE plays them in order.
 const SPRITES: Record<Avatar, string[][]> = {
   // body, two eyes, arms out; the legs walk
   claude: [
@@ -204,104 +170,51 @@ const SPRITES: Record<Avatar, string[][]> = {
       '................................',
     ],
   ],
-  // the K, then the K half turned; the dot stays
-  kimi: [
-    [
-      '................', '................', '..XX......XX.BB.', '..XX.....XX..BB.',
-      '..XX....XX......', '..XX...XX.......', '..XX..XX........', '..XXXXX.........',
-      '..XXXXX.........', '..XX..XX........', '..XX...XX.......', '..XX....XX......',
-      '..XX.....XX.....', '..XX......XX....', '................', '................',
-    ],
-    [
-      '................', '................', '....XX...XX..BB.', '....XX..XX...BB.',
-      '....XX..XX......', '....XX.XX.......', '....XX.XX.......', '....XXXX........',
-      '....XXXX........', '....XX.XX.......', '....XX.XX.......', '....XX..XX......',
-      '....XX..XX......', '....XX...XX.....', '................', '................',
-    ],
-  ],
 }
-const CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 0, 2], kimi: [0, 0, 1, 1] }
-const SPRITE_CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 2, 3], kimi: [0, 0, 1, 1] }
+const CADENCE: Record<Avatar, number[]> = { claude: [0, 1], gpt: [0, 1, 2, 3] }
 
-
-// One braille code point a cell, with the cell's color.
-function brailleCells(frame: string[], main: number, accent: number): { glyph: number; color: number }[] {
-  return Array.from({ length: SPRITE_COLS }, (_, cell) => {
-    let bits = 0
-    let hasAccent = false
-    for (let dx = 0; dx < 2; dx++) {
-      for (let dy = 0; dy < 4; dy++) {
-        const pixel = frame[dy]?.[cell * 2 + dx]
-        if (pixel === 'X' || pixel === 'B') bits |= DOT_BITS[dx]?.[dy] ?? 0
-        if (pixel === 'B') hasAccent = true
-      }
-    }
-    return { glyph: bits ? 0x2800 + bits : 0x20, color: hasAccent ? accent : main }
-  })
-}
-
-function encodeCells(frame: string[], main: number, accent: number): string {
-  const words = Uint32Array.from(brailleCells(frame, main, accent).flatMap(({ glyph, color }) => [glyph, color, DEFAULT_BG]))
-  return toBase64(new Uint8Array(words.buffer))
-}
-
-function encodeSprite(sprite: string[], main: number, accent: number): Picture['source'] {
+function encodeSprite(sprite: string[], color: number): Picture {
   const size = sprite.length
-  if (size === 0 || sprite.some(row => !new RegExp(`^[XBE.]{${size}}$`).test(row))) {
-    throw new Error('agent-ui: a sprite frame must be N rows of N of X, B, E or .')
+  if (size === 0 || sprite.some(row => !new RegExp(`^[XE.]{${size}}$`).test(row))) {
+    throw new Error('agent-ui: a sprite frame must be N rows of N of X, E or .')
   }
   const bytes = new Uint8Array(size * size * 4)
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const pixel = sprite[y]?.[x]
-      const rgb = pixel === 'X' ? main : pixel === 'B' ? accent : pixel === 'E' ? EYE : null
+      const rgb = pixel === 'X' ? color : pixel === 'E' ? EYE : null
       if (rgb !== null) bytes.set([(rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, 255], (y * size + x) * 4)
     }
   }
   return { rgba: toBase64(bytes), width: size, height: size }
 }
 
-function brailleAt(avatar: Avatar, step: number): string[] {
-  const frame = FRAMES[avatar][CADENCE[avatar][step] ?? -1]
-  if (!frame) throw new Error(`agent-ui: ${avatar} has no braille frame at step ${step}`)
-  return frame
-}
-
-function encodePicture(avatar: Avatar, step: number, main: number, accent: number): Picture {
-  const sprite = SPRITES[avatar][SPRITE_CADENCE[avatar][step] ?? -1]
+function encodePicture(avatar: Avatar, step: number, color: number): Picture {
+  const sprite = SPRITES[avatar][CADENCE[avatar][step] ?? -1]
   if (!sprite) throw new Error(`agent-ui: ${avatar} has no sprite frame at step ${step}`)
-  const alt = brailleCells(brailleAt(avatar, step), main, accent).map(({ glyph }) => String.fromCodePoint(glyph)).join('')
-  return { source: encodeSprite(sprite, main, accent), alt }
+  return encodeSprite(sprite, color)
 }
 
 export const dim = (rgb: number) => ((((rgb >> 16) & 255) * 0.4) << 16) | ((((rgb >> 8) & 255) * 0.4) << 8) | ((rgb & 255) * 0.4)
 
-// `encode` takes a cadence step; done and failed show step 0.
-function looks<T>(encode: (avatar: Avatar, step: number, main: number, accent: number) => T): Record<Avatar, Look<T>> {
-  return Object.fromEntries(
-    (Object.keys(FRAMES) as Avatar[]).map(avatar => {
-      if (SPRITE_CADENCE[avatar].length !== CADENCE[avatar].length) throw new Error(`agent-ui: ${avatar} cadences differ in length`)
-      const { main, accent } = COLORS[avatar]
-      return [avatar, {
-        run: CADENCE[avatar].map((_, step) => encode(avatar, step, main, accent)),
-        done: encode(avatar, 0, dim(main), dim(accent)),
-        failed: encode(avatar, 0, FAILED, FAILED),
-      }]
-    }),
-  ) as Record<Avatar, Look<T>>
-}
+// Done and failed show step 0.
+const PICTURES = Object.fromEntries(
+  (Object.keys(SPRITES) as Avatar[]).map(avatar => {
+    const color = COLORS[avatar]
+    return [avatar, {
+      run: CADENCE[avatar].map((_, step) => encodePicture(avatar, step, color)),
+      done: encodePicture(avatar, 0, dim(color)),
+      failed: encodePicture(avatar, 0, FAILED),
+    }]
+  }),
+) as Record<Avatar, Look>
 
-const CELLS = looks((avatar, step, main, accent) => encodeCells(brailleAt(avatar, step), main, accent))
-const PICTURES = looks(encodePicture)
-
-function pick<T>(look: Look<T>, status: Status, tick: number): T {
-  if (status === 'running') return look.run[tick % look.run.length] as T
+export function avatarPicture(avatar: Avatar, status: Status, tick: number): Picture {
+  const look = PICTURES[avatar]
+  if (status === 'running') return look.run[tick % look.run.length] as Picture
   return status === 'done' ? look.done : look.failed
 }
 
-export const avatarCells = (avatar: Avatar, status: Status, tick: number): string => pick(CELLS[avatar], status, tick)
-export const avatarPicture = (avatar: Avatar, status: Status, tick: number): Picture => pick(PICTURES[avatar], status, tick)
-
 export function avatarOf(kind: string): Avatar | null {
-  return kind === 'gpt' || kind === 'kimi' ? kind : kind === 'claude' || kind === 'claude-panel' ? 'claude' : null
+  return kind === 'gpt' ? kind : kind === 'claude' || kind === 'claude-panel' ? 'claude' : null
 }

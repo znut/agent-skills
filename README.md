@@ -69,7 +69,7 @@ documents its own setup in `tools/README.md` or its folder.
 ## Plugins
 
 `plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
-pane of the session's child runs (GPT, Kimi, Claude review panels) with each
+pane of the session's child runs (GPT, Claude, Claude review panels) with each
 run's live tail on click and main-ci's verdict line, which expands to a chart of
 recent main-ci runs (its line is the 1-minute load average when each run started;
 chips switch the bars between stacked job wall time, stacked job cpu time, and
@@ -80,13 +80,16 @@ above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to
 `claude --plugin-dir <clone>/plugins/agent-ui`, or for every session by adding
 that path to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`. Its paths are `userConfig` options in `/config`;
-each option's description in its `plugin.json` names the default an empty
-value resolves to. The defaults: child runs under `$TMPDIR/agent-tools/children`
-(`childrenDir`), review panels under the clone's git common directory
-(`.review-panel/`), the asks state beside the `session_bus_dir` the main
-checkout's `.agent/orchestrate.local.md` declares (`stateDir`), and ticket links
-to the GitHub repository of the session clone's `origin` remote (`repoSlug`; no
-GitHub remote, no link). A repo whose layout differs sets these options.
+each option's description in its `plugin.json` says what an empty value does.
+Set `childrenDir` to the folder of child run out-dirs: empty, the pane lists no
+child runs from disk and says to set it. The pane lists only runs whose
+`owner-session` file holds this session's id, and reads each run's kind from
+its `provider` file alone. Review panels come from the clone's git common
+directory (`.review-panel/`), the asks state from beside the `session_bus_dir`
+the main checkout's `.agent/orchestrate.local.md` declares (`stateDir`), and
+ticket links from the GitHub repository of the session clone's `origin` remote
+(no GitHub remote, no link). The avatars and the main-ci chart draw as terminal
+pictures, which kitty and Ghostty show.
 Check it with `claude plugin validate`, `claude plugin test` and `tsc -p` on
 that folder.
 

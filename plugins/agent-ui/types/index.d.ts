@@ -1,9 +1,8 @@
-export type RunKind = 'gpt' | 'kimi' | 'claude' | 'claude-panel' | '?'
 export type RunStatus = 'running' | 'done' | 'failed' | 'dead'
 
 export type Run = {
   dir: string
-  kind: RunKind
+  kind: string
   label: string
   cwd: string
   isReviewer: boolean

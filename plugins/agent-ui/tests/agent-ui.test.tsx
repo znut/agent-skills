@@ -1,8 +1,12 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { type TestBody, type TestOptions, describe, expect, test as bareTest } from 'claude-code/testing'
 
 import { type Metric, axisLabels, barMax, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
-import { avatarCells, avatarPicture, dim } from '../hooks/sprites'
+import { avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
+
+// Each test runs as a configured install, childrenDir set, unless it passes its own options.
+const test = (name: string, ...rest: [TestBody] | [TestOptions, TestBody]) =>
+  rest.length === 1 ? bareTest(name, { options: { childrenDir: KIDS } }, rest[0]) : bareTest(name, ...rest)
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -43,7 +47,7 @@ describe('workers pane', () => {
       const row = async (dir: string) => (await ui.find({ key: `disk:${dir}` }))?.text ?? ''
       expect(await row(`${KIDS}/a-run`)).toContain('gpt a-run  openai/sol  5m  running')
       expect(await row(`${KIDS}/b-done`)).toContain('gpt b-done  openai/sol  4m  done')
-      expect(await row(`${KIDS}/c-dead`)).toContain('kimi c-dead  kimi/opus')
+      expect(await row(`${KIDS}/c-dead`)).toContain('claude c-dead  claude/opus')
       expect(await row(`${KIDS}/c-dead`)).toContain('dead')
       expect(await row(`${KIDS}/e-failed`)).toContain('failed')
       expect(await row(`${PANEL}/0123abcdef/code`)).toContain('claude-panel rev 0123abcd/code  claude/opus')
@@ -129,22 +133,6 @@ describe('workers pane', () => {
     await ui.unmount()
   })
 
-  test('missing provider is inferred only from Codex run evidence', async ($, on) => {
-    const codex = `${KIDS}/codex-evidence`
-    const model = `${KIDS}/model-evidence`
-    const unknown = `${KIDS}/unknown`
-    world(on, {
-      ...under(codex, { pid: '501', 'owner-session': SID, 'start-epoch': epoch(5), 'result.jsonl': '{}' }),
-      ...under(model, { pid: '502', 'owner-session': SID, 'start-epoch': epoch(5), 'full-model': 'gpt-5.1-codex' }),
-      ...under(unknown, { pid: '503', 'owner-session': SID, 'start-epoch': epoch(5) }),
-    }, ['501', '502', '503'])
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ key: `disk:${codex}` }))?.text).toContain('gpt codex-evidence  gpt/?')
-    expect((await ui.find({ key: `disk:${model}` }))?.text).toContain('gpt model-evidence  gpt/5.1-codex')
-    expect((await ui.find({ key: `disk:${unknown}` }))?.text).toContain('? unknown  ?/?')
-    await ui.unmount()
-  })
-
   test('finished and dead elapsed time ends at the recorded end or last file mtime', async ($, on) => {
     const done = `${KIDS}/done-no-end`
     const dead = `${KIDS}/dead-mtime`
@@ -157,26 +145,6 @@ describe('workers pane', () => {
     expect((await ui.find({ key: `disk:${done}` }))?.text).toContain('3m  done')
     expect((await ui.find({ key: `disk:${dead}` }))?.text).toContain('3m  dead')
     await ui.unmount()
-  })
-
-  test('old runs without an owner session are hidden', async ($, on) => {
-    const dir = `${KIDS}/old-unowned`
-    world(on, under(dir, { pid: '701', provider: 'kimi', 'start-epoch': epoch(25 * 60) }), ['701'])
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(await ui.find({ key: `disk:${dir}` })).toBeUndefined()
-    await ui.unmount()
-  })
-
-  test('checks an unowned run age against the current clock after probe caching', async ($, on) => {
-    const dir = `${KIDS}/ages-out`
-    const w = world(on, under(dir, { pid: '702', provider: 'kimi', 'start-epoch': epoch(20 * 60) }), ['702'])
-    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(await first.find({ key: `disk:${dir}` })).toBeDefined()
-    await first.unmount()
-    await w.clock.advance(5 * 3_600_000)
-    const later = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(await later.find({ key: `disk:${dir}` })).toBeUndefined()
-    await later.unmount()
   })
 
   test('native agents use their transcript for detail and omit unknown model and time', async ($, on) => {
@@ -315,45 +283,34 @@ describe('workers pane', () => {
     const avatarOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) => ui.find({ key: `avatar:disk:${dir}` })
     const pictureOf = async (ui: { find: (q: { key: string }) => Promise<Found | undefined> }, dir: string) =>
       ((await avatarOf(ui, dir))?.props.source as { rgba?: string } | undefined)?.rgba
-    const frames = (key: string, w: { blits: { key: string; cells?: string; rgba?: string }[] }) => w.blits.filter(blit => blit.key === key)
+    const frames = (key: string, w: { blits: { key: string; rgba: string }[] }) => w.blits.filter(blit => blit.key === key)
     const bytes = (base64: string) => Uint8Array.from(atob(base64), ch => ch.charCodeAt(0))
     const pixel = (rgba: string, x: number, y: number) => [...bytes(rgba).slice((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)]
     const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255]
 
     test('a sprite frame is 16x16 RGBA in its palette; done dims it, failed turns it red', () => {
       const run = avatarPicture('claude', 'running', 0)
-      expect(run.source).toMatchObject({ width: 16, height: 16 })
-      expect(bytes(run.source.rgba)).toHaveLength(16 * 16 * 4)
-      expect(pixel(run.source.rgba, 3, 2)).toEqual(rgb(0xd97757))
-      expect(pixel(run.source.rgba, 5, 4)).toEqual(rgb(0x1a1a1a))
-      expect(pixel(run.source.rgba, 0, 0)[3]).toBe(0)
-      expect(pixel(avatarPicture('claude', 'done', 0).source.rgba, 3, 2)).toEqual(rgb(dim(0xd97757)))
-      expect(pixel(avatarPicture('claude', 'failed', 0).source.rgba, 3, 2)).toEqual(rgb(0xe06c75))
-      expect(pixel(avatarPicture('kimi', 'running', 0).source.rgba, 13, 2)).toEqual(rgb(0x5b7fff))
-      expect(avatarPicture('claude', 'running', 1).source.rgba).not.toBe(run.source.rgba)
+      expect(run).toMatchObject({ width: 16, height: 16 })
+      expect(bytes(run.rgba)).toHaveLength(16 * 16 * 4)
+      expect(pixel(run.rgba, 3, 2)).toEqual(rgb(0xd97757))
+      expect(pixel(run.rgba, 5, 4)).toEqual(rgb(0x1a1a1a))
+      expect(pixel(run.rgba, 0, 0)[3]).toBe(0)
+      expect(pixel(avatarPicture('claude', 'done', 0).rgba, 3, 2)).toEqual(rgb(dim(0xd97757)))
+      expect(pixel(avatarPicture('claude', 'failed', 0).rgba, 3, 2)).toEqual(rgb(0xe06c75))
+      expect(avatarPicture('claude', 'running', 1).rgba).not.toBe(run.rgba)
     })
 
     test('the gpt knot is 32x32 and spins through four frames that loop', () => {
       const frames = [0, 1, 2, 3, 4].map(tick => avatarPicture('gpt', 'running', tick))
-      expect(frames[0]?.source).toMatchObject({ width: 32, height: 32 })
-      expect(bytes(frames[0]?.source.rgba ?? '')).toHaveLength(32 * 32 * 4)
-      expect(new Set(frames.slice(0, 4).map(frame => frame.source.rgba)).size).toBe(4)
-      expect(frames[4]?.source.rgba).toBe(frames[0]?.source.rgba)
-      expect(bytes(avatarPicture('gpt', 'done', 0).source.rgba)).toHaveLength(32 * 32 * 4)
-    })
-
-    test('the alt text is the braille the Raster draws at the same tick, two cells wide', () => {
-      for (const avatar of ['claude', 'gpt', 'kimi'] as const) {
-        for (const tick of [0, 1, 2, 3]) {
-          const words = new Uint32Array(bytes(avatarCells(avatar, 'running', tick)).buffer)
-          expect(words).toHaveLength(2 * 3)
-          expect(avatarPicture(avatar, 'running', tick).alt).toBe(String.fromCodePoint(words[0] ?? 0, words[3] ?? 0))
-        }
-      }
+      expect(frames[0]).toMatchObject({ width: 32, height: 32 })
+      expect(bytes(frames[0]?.rgba ?? '')).toHaveLength(32 * 32 * 4)
+      expect(new Set(frames.slice(0, 4).map(frame => frame.rgba)).size).toBe(4)
+      expect(frames[4]?.rgba).toBe(frames[0]?.rgba)
+      expect(bytes(avatarPicture('gpt', 'done', 0).rgba)).toHaveLength(32 * 32 * 4)
     })
 
     test('terminal rows draw a picture per status in place of the mark; other surfaces keep the mark', async ($, on) => {
-      world(on, { ...RUN_FILES, ...under(`${KIDS}/f-unknown`, { pid: '110', 'owner-session': SID, 'start-epoch': epoch(5) }) })
+      world(on, { ...RUN_FILES, ...under(`${KIDS}/f-unknown`, { pid: '110', provider: 'gemini', 'owner-session': SID, 'start-epoch': epoch(5) }) })
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
       expect((await avatarOf(ui, `${KIDS}/a-run`))?.type).toBe('Image')
       expect((await avatarOf(ui, `${KIDS}/a-run`))?.props).toMatchObject({ columns: 2, rows: 1 })
@@ -364,6 +321,7 @@ describe('workers pane', () => {
       expect(await pictureOf(ui, `${PANEL}/0123abcdef/code`)).not.toBe(run)
       expect(await ui.find({ key: `mark:disk:${KIDS}/a-run` })).toBeUndefined()
       expect((await ui.find({ key: `mark:disk:${KIDS}/f-unknown` }))?.text).toContain('†')
+      expect((await ui.find({ key: `disk:${KIDS}/f-unknown` }))?.text).toContain('gemini f-unknown  gemini  5m  dead')
       await ui.unmount()
 
       const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -383,7 +341,6 @@ describe('workers pane', () => {
       const keys = new Set(w.blits.map(blit => blit.key))
       expect([...keys].sort()).toEqual([`avatar:disk:${KIDS}/a-run`, `avatar:disk:${PANEL}/0123abcdef/code`].sort())
       expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(4)
-      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.rgba && !blit.cells)).toBe(true)
       expect(new Set(frames(`avatar:disk:${KIDS}/a-run`, w).map(blit => blit.rgba)).size).toBeGreaterThan(1)
       await ui.unmount()
 
@@ -396,33 +353,12 @@ describe('workers pane', () => {
       await settled.unmount()
     })
 
-    test('a terminal that draws the alt switches the pane to braille Rasters', async ($, on) => {
-      const w = world(on, RUN_FILES)
-      w.blitOk = true
-      w.imageDeny = 'the Image draws its alt here'
-      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      await w.clock.advance(250)
-      await w.clock.advance(1000)
-      // one redraw, no loop: the Raster pane's blits are cells, which never read as alt
-      expect(w.invalidated).toBe(1)
-      await ui.unmount()
-
-      w.imageDeny = undefined
-      const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      expect((await avatarOf(again, `${KIDS}/a-run`))?.type).toBe('Raster')
-      await w.clock.advance(250)
-      expect(frames(`avatar:disk:${KIDS}/a-run`, w).every(blit => blit.cells && !blit.rgba)).toBe(true)
-      expect(frames(`avatar:disk:${KIDS}/a-run`, w)).toHaveLength(1)
-      await again.unmount()
-    })
-
     test('31 running rows are all listed; animation still stops at 20', async ($, on) => {
       const files: Record<string, string> = {}
       for (let i = 0; i < 31; i++) Object.assign(files, under(`${KIDS}/m-${i}`, run('openai', `70${i}`)))
       const w = world(on, files, Array.from({ length: 31 }, (_, i) => `70${i}`))
       w.blitOk = true
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      // the plugin loads afresh per test: the alt switch above does not carry over
       expect((await avatarOf(ui, `${KIDS}/m-0`))?.type).toBe('Image')
       expect((await ui.findAll({})).filter(node => node.key?.startsWith('disk:'))).toHaveLength(31)
       await w.clock.advance(1000)
@@ -672,18 +608,22 @@ describe('asks band', () => {
       })
     }
 
-    test('the repoSlug option wins over the remote', { options: { repoSlug: 'other/thing' } }, async ($, on) => {
-      world(on, files(GIT_CONFIG['/fx/repo/.git/config']))
-      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-      expect(await href(ui)).toBe('https://github.com/other/thing/issues/123')
-      await ui.unmount()
-    })
   })
 
-  test('the childrenDir option replaces the default child-runs directory', { options: { childrenDir: '/fx/runs/' } }, async ($, on) => {
+  test('the childrenDir option names the child-runs directory', { options: { childrenDir: '/fx/runs/' } }, async ($, on) => {
     world(on, under('/fx/runs/x-run', run('openai', '101')))
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ key: 'disk:/fx/runs/x-run' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('an empty childrenDir draws one hint row in place of the disk runs; native agents still list', { options: { childrenDir: '' } }, async ($, on) => {
+    world(on, RUN_FILES, undefined, { agents: [{ id: 'agent-1', description: 'inspect sidebar', type: 'Explore', status: 'running' }] })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ key: 'no-children-dir' }))?.text).toBe('set childrenDir in /config')
+    expect(await ui.find({ key: `disk:${KIDS}/a-run` })).toBeUndefined()
+    expect(await ui.find({ key: 'native:agent-1' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'No child runs for this session.' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -970,19 +910,11 @@ describe('main-ci chart', () => {
     await ui.unmount()
   })
 
-  test('without pictures the chart is block glyphs: a Raster after an alt deny, Text on desktop', async ($, on) => {
-    const w = world(on, { ...RUN_FILES, ...files(metrics(3)) })
-    w.blitOk = true
-    w.imageDeny = 'the Image draws its alt here'
+  test('on desktop, without Image, the chart is block-glyph Text', async ($, on) => {
+    world(on, { ...RUN_FILES, ...files(metrics(3)) })
     const ui = await $.ui.mount(pane())
     await ui.press({ key: 'ci-toggle' })
-    expect((await ui.find({ key: `ci-bar:${name(3)}` }))?.type).toBe('Image')
-    await w.clock.advance(250)
     await ui.unmount()
-    const again = await $.ui.mount(pane())
-    expect((await again.find({ key: `ci-bar:${name(3)}` }))?.type).toBe('Raster')
-    await again.unmount()
-
     const desktop = await $.ui.mount(pane(120, 'desktop'))
     expect(await desktop.find({ key: `ci-bar:${name(3)}` })).toBeUndefined()
     expect((await desktop.find({ key: `ci-run:${name(3)}` }))?.text).toContain('█')
@@ -1240,7 +1172,7 @@ describe('main-ci chart', () => {
 describe('pane auto-open', () => {
   const ROLE = `/tmp/cc-session-roles/${SID}`
 
-  async function start([$, on]: Parameters<Parameters<typeof test>[1]>, files: Record<string, string>, isInteractive = true) {
+  async function start([$, on]: Parameters<TestBody>, files: Record<string, string>, isInteractive = true) {
     const w = world(on, { ...RUN_FILES, ...files })
     const opened: string[] = []
     on('command.register', ($, e) => ({ value: { command: e.name } }))
