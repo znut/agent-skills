@@ -514,15 +514,15 @@ describe('asks band', () => {
       expect(await ui.find({ type: 'Link' })).toBeDefined()
       expect(await ui.find({ key: 'ask-3', in: 'ask-client-3' })).toBeDefined()
 
-      await ui.press({ key: 'ask-1' })
+      await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
       expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
 
-      await ui.press({ key: 'ask-3' })
+      await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-3' })
       expect(await ui.find({ key: 'ask-detail-1' })).toBeUndefined()
       expect(await ui.find({ key: 'ask-detail-3' })).toBeUndefined()
       expect(await ui.find({ type: 'Text', text: 'no context recorded' })).toBeDefined()
 
-      await ui.press({ key: 'ask-3' })
+      await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-3' })
       expect(await ui.find({ type: 'Text', text: 'no context recorded' })).toBeUndefined()
       await ui.unmount()
     }
@@ -537,12 +537,12 @@ describe('asks band', () => {
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await ui.find({ type: 'Link' })).toBeDefined()
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     expect(await ui.find({ key: 'ask-detail-border' })).toBeDefined()
     expect(await ui.find({ type: 'Link' })).toBeDefined()
     await ui.press({ key: 'ask-option-1-0' })
     expect(w.filled).toEqual(['#4390 go'])
-    await ui.press({ key: 'ask-2' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-2' })
     await ui.press({ key: 'ask-option-2-0' })
     expect(w.filled).toEqual(['#4390 go', 'https://example.com/brief inspect'])
     expect(w.modes).toEqual(['insert', 'insert'])
@@ -637,7 +637,7 @@ describe('asks band', () => {
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await ui.find({ key: 'ask-1', in: 'ask-client-1' })).toBeDefined()
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
     expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('http://example.com/context')
     await ui.unmount()
@@ -650,7 +650,7 @@ describe('asks band', () => {
       [`${ASKS}.d/1.md`]: 'one\ntwo\noptions: go | wait\nfour\nlink: https://example.com/mock\nsix',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     const detail = (await ui.find({ key: 'ask-detail-1' }))?.text ?? ''
     expect(detail).toContain('two')
     expect(detail).not.toContain('four')
@@ -667,7 +667,7 @@ describe('asks band', () => {
       [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/acme/widgets/pull/4390\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     expect(await ui.find({ type: 'Link' })).toBeDefined()
     expect(await ui.find({ key: 'ask-detail-border' })).toBeDefined()
     await ui.unmount()
@@ -680,7 +680,7 @@ describe('asks band', () => {
     await $.session.start({ cwd: '/fx/repo', surface: 'terminal', isInteractive: true })
 
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('Recommend A.')
     await ui.unmount()
 
@@ -702,7 +702,10 @@ describe('asks band', () => {
     })
     w.redraws = true
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    await ui.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'ask-client-2' })
+    // The terminal's hit test never reaches a Client's pointer listener past a pressable inside it.
+    expect(await ui.findAll({ type: 'Button', in: 'ask-client-2' })).toHaveLength(0)
+    await ui.pointer({ type: 'up', x: 2, y: 0, button: 'right', in: 'ask-client-2' })
+    await ui.pointer({ type: 'down', x: 2, y: 0, button: 'middle', in: 'ask-client-2' })
     expect(w.dismissed).toEqual([])
     await ui.pointer({ type: 'down', x: 2, y: 0, button: 'right', in: 'ask-client-2' })
     expect(w.dismissed).toEqual(['#12 second?'])
@@ -711,7 +714,7 @@ describe('asks band', () => {
     expect(w.files[`${ASKS}.d/2.md`]).toBe('three')
     expect(w.files[`${ASKS}.d/3.md`]).toBeUndefined()
     expect(await ui.find({ key: 'ask-client-3' })).toBeUndefined()
-    await ui.press({ key: 'ask-2' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-2' })
     expect((await ui.find({ key: 'ask-detail-2' }))?.text).toContain('three')
     await ui.unmount()
   })
@@ -724,7 +727,7 @@ describe('asks band', () => {
     })
     w.redraws = true
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    await ui.press({ key: 'ask-1' })
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'ask-client-1' })
     expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
     await ui.pointer({ type: 'down', x: 0, y: 0, button: 'right', in: 'ask-client-1' })
     expect(w.files[ASKS]).toBe('')

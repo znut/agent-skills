@@ -1162,14 +1162,15 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // An ask line's Client posts `toggle` (a press) or `dismiss` (a right-click) with the ask's text.
+  // An ask line's Client posts each button press with the ask's text: left toggles its context,
+  // right dismisses it.
   on('ui.message', async ($, e, next) => {
     if (e.module !== 'hooks/ask-line.tsx') return next(e)
-    const data = e.data as { act?: unknown; text?: unknown } | null
+    const data = e.data as { button?: unknown; text?: unknown } | null
     const ask = (await readAsks($)).asks.find(one => one.text === data?.text)
     if (!ask) return {}
-    if (data?.act === 'toggle') await toggleAsk($, ask)
-    if (data?.act === 'dismiss') await dismissAsk($, ask)
+    if (data?.button === 'left') await toggleAsk($, ask)
+    if (data?.button === 'right') await dismissAsk($, ask)
     return {}
   })
 
