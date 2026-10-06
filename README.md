@@ -141,6 +141,16 @@ width, never wrapped. Keep cells to narrow single-width text: a wide glyph (CJK,
 wrap a row. A panel draws at most 12 tabs, 12 columns up to 200 wide, and 100
 rows; control characters in any text draw as spaces.
 
+Contract v1.2 adds three optional column keys. `maxWidth` (at least `width`):
+after the columns are laid out at their `width` with one space between, the
+cells left in the pane width go left to right to columns with a `maxWidth`, each
+up to it; `width` stays the minimum. `"keep": "right"` keeps an over-long
+value's right end (cut from the left); the default keeps the left end. `{w}` in
+a `label` becomes the column's laid-out width: `{ "key": "trend", "label":
+"trend ({w}d)", "width": 7, "maxWidth": 14, "keep": "right" }` draws its header
+as `trend (9d)` with 2 spare cells, and the header and rows use that one width.
+A header label longer than the column is cut at its right like any cell.
+
 An optional `filters` list replaces the tab chips with one chip row per filter;
 together the picks name the tab, whose `id` is the picked option ids joined by
 `/` in filter order (`worker/docs`):

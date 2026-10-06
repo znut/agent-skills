@@ -343,6 +343,53 @@ describe('repo panels', () => {
     expect(plain(rowSegments(tab, alpha, 15))).toBe('alpha      9   ')
   })
 
+  test('v1.2: a maxWidth column grows into spare pane width; keep right shows the value\'s right end; {w} names the width', () => {
+    const tab = parsePanelOutput(JSON.stringify({
+      tabs: [{
+        id: 't',
+        columns: [
+          { key: 'name', label: 'name', width: 5 },
+          { key: 'trend', label: '({w}d)', width: 7, maxWidth: 14, keep: 'right' },
+          { key: 'plain', label: 'p', width: 3 },
+        ],
+        rows: [{ id: 'r', cells: { name: 'alpha', trend: 'abcdefghijklmn', plain: 'xyzw' } }],
+      }],
+    }))?.tabs[0]
+    const row = tab?.rows[0]
+    if (!tab || !row) throw new Error('no tab')
+    // fixed layout 5 + 1 + 7 + 1 + 3 = 17; narrower still, the row is cut at the right as before
+    expect(plain(headerSegments(tab, 17))).toBe('name  (7d)    p  ')
+    expect(plain(rowSegments(tab, row, 17))).toBe('alpha hijklmn xyz')
+    expect(plain(rowSegments(tab, row, 10))).toBe('alpha hijk')
+    // in between: 3 spare cells
+    expect(plain(headerSegments(tab, 20))).toBe('name  (10d)      p  ')
+    expect(plain(rowSegments(tab, row, 20))).toBe('alpha efghijklmn xyz')
+    // wide: capped at maxWidth, the rest unused
+    expect(plain(headerSegments(tab, 80))).toBe('name  (14d)          p  ')
+    expect(plain(rowSegments(tab, row, 80))).toBe('alpha abcdefghijklmn xyz')
+    // several growers share the spare cells left to right
+    const two = parsePanelOutput(JSON.stringify({
+      tabs: [{ id: 't', columns: [{ key: 'a', width: 2, maxWidth: 4 }, { key: 'b', width: 2, maxWidth: 4 }], rows: [{ id: 'r', cells: { a: 'aaaa', b: 'bbbb' } }] }],
+    }))?.tabs[0]
+    const twoRow = two?.rows[0]
+    if (!two || !twoRow) throw new Error('no tab')
+    expect(plain(rowSegments(two, twoRow, 6))).toBe('aaa bb')
+    expect(plain(rowSegments(two, twoRow, 9))).toBe('aaaa bbbb')
+    // a maxWidth below width is the width
+    const low = parsePanelOutput(JSON.stringify({ tabs: [{ id: 't', columns: [{ key: 'a', width: 3, maxWidth: 1 }], rows: [] }] }))?.tabs[0]
+    expect(low?.columns[0]?.maxWidth).toBe(3)
+  })
+
+  test('v1.2: without keep the value keeps its left end; a v1.1 column ignores spare width', () => {
+    const tab = parsePanelOutput(JSON.stringify({
+      tabs: [{ id: 't', columns: [{ key: 'v', label: 'v{w}', width: 4 }, { key: 'k', width: 4, keep: 'right' }], rows: [{ id: 'r', cells: { v: 'abcdef', k: 'abcdef' } }] }],
+    }))?.tabs[0]
+    const row = tab?.rows[0]
+    if (!tab || !row) throw new Error('no tab')
+    expect(plain(rowSegments(tab, row, 80))).toBe('abcd cdef')
+    expect(plain(headerSegments(tab, 80))).toBe('v4   k   ')
+  })
+
   test('a bar is the column wide; its text sits at one place whatever the fill; each character is inked by what is under it', () => {
     const good = TONES.good as number
     const bar = (frac: number, width = 10, text = '64%') => barSegments({ frac, text, tone: 'good' }, width, false)

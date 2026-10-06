@@ -4,7 +4,9 @@ import { TONES } from './ci'
 // rows (README, "Repo panels"). This file parses both and lays a row out as colored segments.
 export type PanelSpec = { id: string; title: string; cmd: string[]; refreshMs: number }
 export type Bar = { frac: number; text: string; tone: string }
-export type Column = { key: string; label: string; width: number; align: 'left' | 'right'; isBar: boolean }
+// v1.2: `width` is the minimum; spare pane cells widen a column up to `maxWidth`. `keepRight`
+// cuts an over-long value from the left.
+export type Column = { key: string; label: string; width: number; maxWidth: number; align: 'left' | 'right'; isBar: boolean; keepRight: boolean }
 export type PanelRow = { id: string; dim: boolean; cells: Record<string, string | Bar>; hover: string[] }
 export type PanelTab = { id: string; label: string; columns: Column[]; rows: PanelRow[]; note: string }
 export type FilterOption = { id: string; label: string }
@@ -96,13 +98,18 @@ export function parsePanelOutput(stdout: string): PanelData | null {
   const filters = parseFilters(value.filters)
   const tabs = value.tabs.slice(0, filters.length > 0 ? MAX_FILTER_TABS : MAX_TABS).flatMap((tab): PanelTab[] => {
     if (!isObject(tab) || typeof tab.id !== 'string' || !Array.isArray(tab.columns) || !Array.isArray(tab.rows)) return []
-    const columns = tab.columns.slice(0, MAX_COLUMNS).filter(isObject).map(column => ({
-      key: str(column.key),
-      label: str(column.label, str(column.key)),
-      width: Math.min(MAX_WIDTH, typeof column.width === 'number' && column.width > 0 ? Math.floor(column.width) : str(column.label, str(column.key)).length),
-      align: column.align === 'right' ? ('right' as const) : ('left' as const),
-      isBar: column.kind === 'bar',
-    }))
+    const columns = tab.columns.slice(0, MAX_COLUMNS).filter(isObject).map(column => {
+      const width = Math.min(MAX_WIDTH, typeof column.width === 'number' && column.width > 0 ? Math.floor(column.width) : str(column.label, str(column.key)).length)
+      return {
+        key: str(column.key),
+        label: str(column.label, str(column.key)),
+        width,
+        maxWidth: typeof column.maxWidth === 'number' && Number.isFinite(column.maxWidth) ? Math.min(MAX_WIDTH, Math.max(width, Math.floor(column.maxWidth))) : width,
+        align: column.align === 'right' ? ('right' as const) : ('left' as const),
+        isBar: column.kind === 'bar',
+        keepRight: column.keep === 'right',
+      }
+    })
     const rows = tab.rows.slice(0, MAX_ROWS).filter(isObject).map((row, i) => ({
       id: str(row.id, String(i)),
       dim: row.dim === true,
@@ -128,7 +135,21 @@ export function pickTab(data: PanelData, chosen: string | undefined): PanelTab |
   return data.tabs.find(tab => tab.id === chosen) ?? data.tabs.find(tab => tab.id === data.tab) ?? data.tabs[0] ?? null
 }
 
-const fit = (text: string, width: number, right: boolean) => (right ? text.slice(0, width).padStart(width) : text.slice(0, width).padEnd(width))
+const fit = (text: string, width: number, right: boolean, keepRight = false) => {
+  const kept = keepRight && text.length > width ? text.slice(text.length - width) : text.slice(0, width)
+  return right ? kept.padStart(width) : kept.padEnd(width)
+}
+
+// v1.2: the columns at their minimum widths, one gap apart, leave `width - used` cells; those go
+// left to right to columns with a `maxWidth`, each up to it. Header and rows share the result.
+export function layout(columns: Column[], width: number): Column[] {
+  let spare = Math.max(0, width - columns.reduce((sum, column) => sum + column.width, 0) - GAP * Math.max(0, columns.length - 1))
+  return columns.map(column => {
+    const grow = Math.min(spare, column.maxWidth - column.width)
+    spare -= grow
+    return { ...column, width: column.width + grow }
+  })
+}
 
 // A bar the whole cell wide: its first `frac` of the cells on the tone's background, the rest
 // on the track; the text right-aligned over it, one cell clear of the right edge when it fits,
@@ -154,7 +175,7 @@ export function barSegments(bar: Bar, width: number, dim: boolean): Segment[] {
 function cellSegments(column: Column, value: string | Bar | undefined, dim: boolean): Segment[] {
   if (column.isBar && typeof value === 'object') return barSegments(value, column.width, dim)
   const text = typeof value === 'object' ? value.text : (value ?? '')
-  return [{ text: fit(text, column.width, column.align === 'right') }]
+  return [{ text: fit(text, column.width, column.align === 'right', column.keepRight) }]
 }
 
 // Cut to `width` columns: a row never wraps.
@@ -173,10 +194,10 @@ export function clip(segments: Segment[], width: number): Segment[] {
 const join = (cells: Segment[][]): Segment[] => cells.flatMap((cell, i) => (i === 0 ? cell : [{ text: ' '.repeat(GAP) }, ...cell]))
 
 export const headerSegments = (tab: PanelTab, width: number): Segment[] =>
-  clip(join(tab.columns.map(column => [{ text: fit(column.label, column.width, column.align === 'right' && !column.isBar) }])), width)
+  clip(join(layout(tab.columns, width).map(column => [{ text: fit(column.label.replaceAll('{w}', String(column.width)), column.width, column.align === 'right' && !column.isBar) }])), width)
 
 export const rowSegments = (tab: PanelTab, row: PanelRow, width: number): Segment[] =>
-  clip(join(tab.columns.map(column => cellSegments(column, row.cells[column.key], row.dim))), width)
+  clip(join(layout(tab.columns, width).map(column => cellSegments(column, row.cells[column.key], row.dim))), width)
 
 // stderr's first line with text, its control characters spaces
 export function firstLine(text: string): string {
