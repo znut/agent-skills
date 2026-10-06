@@ -1,7 +1,7 @@
 {
   "name": "agent-ui",
   "version": "0.1.0",
-  "description": "A /workers pane of this session's child runs with a live tail, and the session's pinned asks above the prompt with their context on click.",
+  "description": "A /workers pane of this session's child runs with a live tail, and the session's pinned asks above the prompt with their context on click; a right-click drops an ask.",
   "author": {
     "name": "Nut S."
   },

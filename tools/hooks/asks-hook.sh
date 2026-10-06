@@ -393,7 +393,7 @@ log_dismissed() {
 # tick: $now = microseconds since the epoch (whole seconds before bash 5), a fork-free clock.
 tick() { now=${EPOCHREALTIME//[.,]/}; [ -n "$now" ] || printf -v now '%(%s)T000000' -1; }
 
-# ---------- the one writer of the asks file (call it under the lock) ----------
+# ---------- the hook's writer of the asks file (call it under the lock; agent-ui's dismiss-ask.pl is the other) ----------
 # rewrite_asks <new ask or ""> <its context> <dropped ask text>...: append the new ask, keep only
 # the newest ask per ticket (its first #N; without one, its whole text), drop the lines with exactly
 # the dropped texts, and renumber the detail files to follow their lines. Texts, not line numbers:

@@ -76,7 +76,7 @@ chips switch the bars between stacked job wall time, stacked job cpu time, and
 one bar at the run's peak memory; hover a bar for its slowest jobs), opens itself at start in
 PM and TL sessions, and pins
 the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
-above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click. Above its
+above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click; a right-click on an ask drops it from the file (under the asks hook's lock), on the surfaces that draw a `Client`. Above its
 child runs it draws the session's dispatch chains
 ([orchestrate §Dispatch chains](orchestrate/SKILL.md#dispatch-chains)), one line each,
 `#4545 → #4549 → #4552`: the newest issue Done on the board ticked green (older Done ones

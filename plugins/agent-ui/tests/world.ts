@@ -80,6 +80,8 @@ export type World = {
   // each repo-panel command run, and what it answers: a result, or a deny (the call rejects, as on a timeout)
   panelRuns: { argv: readonly string[]; cwd?: string; stdin?: string; timeoutMs?: number }[]
   panel: (argv: readonly string[]) => PanelResult | Promise<PanelResult>
+  // each ask text a dismiss-ask.pl run dropped
+  dismissed: string[]
 }
 
 export type PanelResult = { exitCode?: number; stdout?: string; stderr?: string; deny?: string }
@@ -98,7 +100,7 @@ export function world(
     files: { ...files }, alive: new Set(alive), reads: [], clock,
     mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, redraws: false, tails: [],
     cwd: '/fx/repo', root: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
-    panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
+    panelRuns: [], dismissed: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
   on('session.cwd', () => ({ value: w.cwd }))
   on('session.root', () => ({ value: w.root }))
@@ -164,6 +166,24 @@ export function world(
       w.tails.push(`${args[1]} ${args.at(-1)}`)
       const from = args[1] ?? ''
       return ok(from.startsWith('+') ? text.slice(Number(from.slice(1)) - 1) : text.slice(-Number(from)))
+    }
+    // dismiss-ask.pl, as its own test (dismiss-ask.test.sh) shows it: drop the lines with the
+    // text, renumber the later detail files.
+    if (command === 'perl' && args[0]?.endsWith('/scripts/dismiss-ask.pl')) {
+      const [, asks = '', text = ''] = args
+      w.dismissed.push(text)
+      const lines = (w.files[asks] ?? '').split('\n').slice(0, -1)
+      const kept: string[] = []
+      lines.forEach((line, i) => {
+        const from = `${asks}.d/${i + 1}.md`
+        const detail = w.files[from]
+        delete w.files[from]
+        if (line.trim() === text) return
+        kept.push(line)
+        if (detail !== undefined) w.files[`${asks}.d/${kept.length}.md`] = detail
+      })
+      w.files[asks] = kept.map(line => `${line}\n`).join('')
+      return ok('')
     }
     if (command === 'acme-panel') {
       w.panelRuns.push({ argv: e.argv, ...e.init })

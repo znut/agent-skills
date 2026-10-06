@@ -509,10 +509,10 @@ describe('asks band', () => {
     })
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
-      expect(await ui.findAll({ type: 'Button' })).toHaveLength(2)
-      expect(await ui.find({ key: 'ask-1' })).toBeDefined()
+      expect(await ui.findAll({ type: 'Client' })).toHaveLength(2)
+      expect(await ui.find({ key: 'ask-1', in: 'ask-client-1' })).toBeDefined()
       expect(await ui.find({ type: 'Link' })).toBeDefined()
-      expect(await ui.find({ key: 'ask-3' })).toBeDefined()
+      expect(await ui.find({ key: 'ask-3', in: 'ask-client-3' })).toBeDefined()
 
       await ui.press({ key: 'ask-1' })
       expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
@@ -555,7 +555,8 @@ describe('asks band', () => {
       [ASKS]: '#123 merge the fold?\npick the panel model?\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    const line = async (n: number) => (await ui.find({ key: `ask-line-${n}` }))?.text ?? ''
+    const line = async (n: number) =>
+      `${(await ui.find({ key: `ask-${n}`, in: `ask-client-${n}` }))?.text ?? ''}${(await ui.find({ key: `ask-line-${n}` }))?.text ?? ''}`
     expect(await line(1)).toMatch(/^▸ merge the fold\? *#123$/)
     expect(await line(2)).toBe('▸ pick the panel model?')
     await ui.unmount()
@@ -568,7 +569,7 @@ describe('asks band', () => {
       ...GIT_CONFIG,
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ for #123, should I send it back?')
+    expect((await ui.find({ key: 'ask-1', in: 'ask-client-1' }))?.text).toBe('▸ for #123, should I send it back?')
     expect((await ui.find({ type: 'Link', text: '#123' }))?.props.href).toBe('https://github.com/acme/widgets/issues/123')
     await ui.unmount()
   })
@@ -579,8 +580,8 @@ describe('asks band', () => {
       [ASKS]: 'see #12 and #13\n#12 merge #13\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect((await ui.find({ key: 'ask-1' }))?.text).toBe('▸ see #12 and #13')
-    expect((await ui.find({ key: 'ask-2' }))?.text).toBe('▸ merge #13')
+    expect((await ui.find({ key: 'ask-1', in: 'ask-client-1' }))?.text).toBe('▸ see #12 and #13')
+    expect((await ui.find({ key: 'ask-2', in: 'ask-client-2' }))?.text).toBe('▸ merge #13')
     await ui.unmount()
   })
 
@@ -635,7 +636,7 @@ describe('asks band', () => {
       [`${ASKS}.d/1.md`]: 'link: http://example.com/context',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect(await ui.find({ key: 'ask-1' })).toBeDefined()
+    expect(await ui.find({ key: 'ask-1', in: 'ask-client-1' })).toBeDefined()
     await ui.press({ key: 'ask-1' })
     expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
     expect((await ui.find({ key: 'ask-detail-1' }))?.text).toContain('http://example.com/context')
@@ -687,9 +688,54 @@ describe('asks band', () => {
     await w.clock.advance(3000)
     w.files[ASKS] = '#12 merge the fold?\n'
     const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect(await again.find({ key: 'ask-1' })).toBeDefined()
+    expect(await again.find({ key: 'ask-1', in: 'ask-client-1' })).toBeDefined()
     expect(await again.find({ key: 'ask-detail-1' })).toBeUndefined()
     await again.unmount()
+  })
+
+  test('a right-click on an ask line drops it, its detail file and the later numbering with it', async ($, on) => {
+    const w = world(on, {
+      ...RUN_FILES,
+      [ASKS]: '#11 first?\n#12 second?\n#13 third?\n',
+      [`${ASKS}.d/1.md`]: 'one',
+      [`${ASKS}.d/3.md`]: 'three',
+    })
+    w.redraws = true
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await ui.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'ask-client-2' })
+    expect(w.dismissed).toEqual([])
+    await ui.pointer({ type: 'down', x: 2, y: 0, button: 'right', in: 'ask-client-2' })
+    expect(w.dismissed).toEqual(['#12 second?'])
+    expect(w.files[ASKS]).toBe('#11 first?\n#13 third?\n')
+    expect(w.files[`${ASKS}.d/1.md`]).toBe('one')
+    expect(w.files[`${ASKS}.d/2.md`]).toBe('three')
+    expect(w.files[`${ASKS}.d/3.md`]).toBeUndefined()
+    expect(await ui.find({ key: 'ask-client-3' })).toBeUndefined()
+    await ui.press({ key: 'ask-2' })
+    expect((await ui.find({ key: 'ask-detail-2' }))?.text).toContain('three')
+    await ui.unmount()
+  })
+
+  test('a right-click on the only ask empties the file and hides the band', async ($, on) => {
+    const w = world(on, { ...RUN_FILES, [ASKS]: '#12 merge the fold?\n', [`${ASKS}.d/1.md`]: 'Recommend A.' })
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>engine band</Text>
+    })
+    w.redraws = true
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await ui.press({ key: 'ask-1' })
+    expect(await ui.find({ key: 'ask-detail-1' })).toBeDefined()
+    await ui.pointer({ type: 'down', x: 0, y: 0, button: 'right', in: 'ask-client-1' })
+    expect(w.files[ASKS]).toBe('')
+    expect(w.files[`${ASKS}.d/1.md`]).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+    // The dismissed ask was the open one: pinned again, it draws closed.
+    w.files[ASKS] = '#12 merge the fold?\n'
+    await ui.redraw()
+    expect(await ui.find({ key: 'ask-client-1' })).toBeDefined()
+    expect(await ui.find({ key: 'ask-detail-1' })).toBeUndefined()
+    await ui.unmount()
   })
 
   for (const [name, asks] of [
@@ -744,7 +790,7 @@ describe('asks band: done tickets', () => {
     [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Web | Free | Week 16 | M7 | — |`)].join('\n'),
   })
   const shown = async (ui: { find: (query: { key: string }) => Promise<unknown> }, lines: number[]) =>
-    Promise.all(lines.map(async n => (await ui.find({ key: `ask-${n}` })) !== undefined))
+    Promise.all(lines.map(async n => (await ui.find({ key: `ask-client-${n}` })) !== undefined))
 
   test('hides asks keyed by a merged or closed PR or a Done issue; keeps open, unknown and ticketless asks', async ($, on) => {
     world(on, {

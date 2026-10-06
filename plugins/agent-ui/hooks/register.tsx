@@ -765,6 +765,20 @@ async function readAsks($: $): Promise<{ asks: Ask[]; detailDir: string }> {
   return { asks, detailDir: `${file}.d` }
 }
 
+async function toggleAsk($: $, ask: Ask): Promise<void> {
+  await update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))
+}
+
+// Drops the ask's line and its detail file under the asks hook's own lock (scripts/dismiss-ask.pl),
+// then redraws the band at once rather than on the next tick.
+async function dismissAsk($: $, ask: Ask): Promise<void> {
+  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
+  if (!state || !sid || /[/]|\.\./.test(sid)) return
+  await $.process.run(['perl', `${$.plugin.root}/scripts/dismiss-ask.pl`, `${state}/asks/${sid}`, ask.text]).catch(() => undefined)
+  if (isSameAsk(await read($, openAsk), ask)) await update($, openAsk, () => null)
+  $.ui.invalidate('ui.render')
+}
+
 async function readAskDetail($: $, detailDir: string, n: number): Promise<string> {
   return readText($, `${detailDir}/${n}.md`)
 }
@@ -1148,14 +1162,28 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // An ask line's Client posts `toggle` (a press) or `dismiss` (a right-click) with the ask's text.
+  on('ui.message', async ($, e, next) => {
+    if (e.module !== 'hooks/ask-line.tsx') return next(e)
+    const data = e.data as { act?: unknown; text?: unknown } | null
+    const ask = (await readAsks($)).asks.find(one => one.text === data?.text)
+    if (!ask) return {}
+    if (data?.act === 'toggle') await toggleAsk($, ask)
+    if (data?.act === 'dismiss') await dismissAsk($, ask)
+    return {}
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { asks, detailDir } = await readAsks($)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    // A right-click reaches a plugin only through a Client's pointer listener, where one is drawn.
+    const Client = e.surface === 'terminal' || e.surface === 'desktop' ? $.ui.resolve(e).Client : null
     const repo = await resolveRepo($)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))
+    const lineLabel = (ask: Ask, issue: string | null, dropUrl: boolean) => `${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, dropUrl)}`
     const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
     // Three text lines (options: among them) plus one link: line, whatever the file holds.
     const rows = detail.split('\n').map(line => line.trim()).filter(Boolean)
@@ -1183,12 +1211,11 @@ export const register: Register = (on, options) => {
           return (
           <Box key={`ask-row-${ask.n}`} flexDirection="column">
             <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              <Button
-                key={`ask-${ask.n}`}
-                plain
-                label={`${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, !!urlLink)}`}
-                onPress={() => update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))}
-              />
+              {Client ? (
+                <Client key={`ask-client-${ask.n}`} module="./ask-line.tsx" props={{ key: `ask-${ask.n}`, label: lineLabel(ask, issue, !!urlLink), text: ask.text }} />
+              ) : (
+                <Button key={`ask-${ask.n}`} plain label={lineLabel(ask, issue, !!urlLink)} onPress={() => toggleAsk($, ask)} />
+              )}
               {issue || urlLink ? <Text>{' '}</Text> : null}
               {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
               {urlLink ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
