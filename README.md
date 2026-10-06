@@ -76,7 +76,12 @@ chips switch the bars between stacked job wall time, stacked job cpu time, and
 one bar at the run's peak memory; hover a bar for its slowest jobs), opens itself at start in
 PM and TL sessions, and pins
 the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
-above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click. Load it for one session with
+above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click. Above its
+child runs it draws the session's dispatch chains
+([orchestrate §Dispatch chains](orchestrate/SKILL.md#dispatch-chains)), one line each,
+`#4545 → #4549 → #4552`: the newest issue Done on the board ticked green (older Done ones
+dropped), an issue a running row's label names in the accent colour, each `#N` linked to its
+issue with its board title shown on hover. Load it for one session with
 `claude --plugin-dir <clone>/plugins/agent-ui`, or for every session by adding
 that path to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`. Its paths are `userConfig` options in `/config`;

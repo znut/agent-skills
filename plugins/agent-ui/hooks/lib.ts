@@ -127,3 +127,13 @@ export function previewQueue(log: RunLog, main8: string): { running: number; que
   const current = [...log.previews.values()].filter(entry => entry.main === main8)
   return { running: current.filter(entry => entry.state === 'running').length, queued: current.filter(entry => entry.state === 'queued').length }
 }
+
+// A chain from its newest merged issue on: the last merged one before the first open one stays,
+// the merged ones before it go.
+export type ChainLink = { n: number; mark: 'merged' | 'active' | 'next' }
+
+export function chainLinks(chain: number[], merged: Set<number>, active: Set<number>): ChainLink[] {
+  const open = chain.findIndex(n => !merged.has(n))
+  const from = open < 0 ? chain.length - 1 : Math.max(0, open - 1)
+  return chain.slice(from).map(n => ({ n, mark: merged.has(n) ? 'merged' : active.has(n) ? 'active' : 'next' }))
+}

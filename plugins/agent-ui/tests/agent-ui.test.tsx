@@ -780,6 +780,70 @@ describe('asks band: done tickets', () => {
   })
 })
 
+describe('chain row', () => {
+  const CHAINS = `${STATE}/chains/${SID}`
+  const board = (...rows: [number, string, string][]) => ({
+    [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, title, status]) => `| #${n} | ${title} | ${status} | Web | Free | Week 16 | M7 | — |`)].join('\n'),
+  })
+  type Drawn = { type?: string; props?: Record<string, unknown>; hover?: { scope?: string; display?: string }; children?: unknown[] }
+  const walk = (node: unknown, out: Drawn[] = []): Drawn[] => {
+    if (typeof node !== 'object' || node === null) return out
+    out.push(node as Drawn)
+    for (const child of (node as Drawn).children ?? []) walk(child, out)
+    return out
+  }
+  const textOf = (node: unknown): string =>
+    typeof node === 'string' ? node : typeof node === 'object' && node !== null ? ((node as Drawn).children ?? []).map(textOf).join('') : ''
+  const chainFiles = (chains: string) => ({
+    ...RUN_FILES,
+    [CHAINS]: chains,
+    ...board([4545, 'first', 'Done'], [4549, 'second \\| part', 'Done'], [4552, 'third', 'In progress'], [4560, 'fourth', 'Ready'], [4570, 'other', 'Ready']),
+  })
+  const agents = [{ id: 'agent-1', description: 'worker #4552 build it', type: 'worker-high', status: 'running' }]
+
+  test('one line per chain: the newest merged issue with its tick, the running one lit, the rest plain', async ($, on) => {
+    world(on, chainFiles('4545 4549 4552 4560\n\n#4570\n'), undefined, { agents })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    // the line as drawn: its #N cells, the hidden titles left out
+    const line = async (i: number) => (await ui.findAll({})).filter(node => node.key?.startsWith(`chain-issue:${i}:`)).map(node => node.text).join('')
+    expect(await line(0)).toBe('#4549 ✓ → #4552 → #4560')
+    expect(await line(1)).toBe('#4570')
+    const colorOf = async (i: number, k: number) => walk(walk(await ui.drawn()).find(node => node.props?.key === `chain-issue:${i}:${k}`)).filter(node => node.type === 'Text').at(-1)?.props
+    expect(await colorOf(0, 0)).toMatchObject({ color: 'green', dimColor: true })
+    expect((await colorOf(0, 1))?.color).toBe('#CBA6F7')
+    expect((await colorOf(0, 2))?.color).toBeUndefined()
+    const all = walk(await ui.drawn())
+    const at = (key: string) => all.findIndex(node => node.props?.key === key)
+    expect(at('chains')).toBeLessThan(all.findIndex(node => node.type === 'Text' && textOf(node) === 'Workers'))
+    await ui.unmount()
+  })
+
+  test('each #N links its issue; hovering it reveals its board title', async ($, on) => {
+    world(on, chainFiles('4545 4549 4552\n'), undefined, { agents })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ type: 'Link', text: '#4552' }))?.props.href).toBe('https://github.com/acme/widgets/issues/4552')
+    const all = walk(await ui.drawn())
+    expect(all.find(node => node.props?.key === 'chain-issue:0:0')?.hover?.scope).toBe('chain:0:4549')
+    const title = all.find(node => node.props?.key === 'chain-title:0:0')
+    expect(title?.props?.display).toBe('none')
+    expect(title?.hover).toMatchObject({ display: 'flex', scope: 'chain:0:4549' })
+    expect(textOf(title).trim()).toBe('second | part')
+    await ui.unmount()
+  })
+
+  for (const [name, text] of [['a missing', undefined], ['an empty', '\n']] as const) {
+    test(`${name} chains file draws no chain row`, async ($, on) => {
+      const files: Record<string, string> = chainFiles('')
+      if (text === undefined) delete files[CHAINS]
+      else files[CHAINS] = text
+      world(on, files)
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect(await ui.find({ key: 'chains' })).toBeUndefined()
+      await ui.unmount()
+    })
+  }
+})
+
 describe('main-ci chart', () => {
   const CI = `${STATE}/main-ci`
   const METRICS = `${CI}/metrics.jsonl`

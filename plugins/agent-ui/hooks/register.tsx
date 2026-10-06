@@ -39,6 +39,7 @@ import {
   lines,
   localEnvValue,
   applyRunLog,
+  chainLinks,
   freshRunLog,
   previewQueue,
   type RunLog,
@@ -99,7 +100,9 @@ const ASK_ACCENT = '#CBA6F7'
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
-let boardCache = { key: '', done: new Set<number>() }
+type Board = { key: string; done: Set<number>; titles: Map<number, string> }
+const NO_BOARD: Board = { key: '', done: new Set(), titles: new Map() }
+let boardCache = NO_BOARD
 
 async function readText($: $, path: string): Promise<string> {
   return $.fs.read(path).then(
@@ -618,27 +621,42 @@ async function resolveStateDir($: $): Promise<string | null> {
   })
 }
 
+// board-snapshot.md's issue rows, cached on its mtime and size: the Done set and each title (a
+// `\|` in a cell is a literal pipe; the Status cell has five cells after it).
+async function readBoard($: $): Promise<Board> {
+  const state = await resolveStateDir($)
+  const stat = state ? (await listDir($, state)).find(entry => entry.name === 'board-snapshot.md' && entry.kind === 'file') : undefined
+  if (!state || !stat) return NO_BOARD
+  const key = `${state}|${stat.mtimeMs}:${stat.size}`
+  if (boardCache.key !== key) {
+    const board: Board = { key, done: new Set(), titles: new Map() }
+    for (const line of (await readText($, `${state}/board-snapshot.md`)).split('\n')) {
+      const row = /^\| #(\d+) \| (.*) \| ([^|]*) \|(?:[^|]*\|){5}$/.exec(line)
+      if (!row) continue
+      board.titles.set(Number(row[1]), (row[2] ?? '').replaceAll('\\|', '|').trim())
+      if (row[3]?.trim() === 'Done') board.done.add(Number(row[1]))
+    }
+    boardCache = board
+  }
+  return boardCache
+}
+
 // Tickets that are done, from local files only: a PR MERGED or CLOSED in the gh-status files, or an
-// issue whose board-snapshot row has Status Done. Both are cached on the file's mtime.
+// issue whose board-snapshot row has Status Done.
 async function readDoneTickets($: $): Promise<Set<number>> {
   const state = await resolveStateDir($)
-  const done = new Set<number>(state ? (await refreshPrCache($, `${state}/gh-status`)).done : [])
-  if (state) {
-    const board = `${state}/board-snapshot.md`
-    const stat = (await listDir($, state)).find(entry => entry.name === 'board-snapshot.md' && entry.kind === 'file')
-    if (stat) {
-      const key = `${stat.mtimeMs}:${stat.size}`
-      if (boardCache.key !== key) {
-        const rows = (await readText($, board)).split('\n').flatMap(line => {
-          const row = /^\| #(\d+) \|.*\| Done \|(?:[^|]*\|){5}$/.exec(line)
-          return row?.[1] ? [Number(row[1])] : []
-        })
-        boardCache = { key, done: new Set(rows) }
-      }
-      for (const n of boardCache.done) done.add(n)
-    }
-  }
-  return done
+  const [prs, board] = await Promise.all([state ? refreshPrCache($, `${state}/gh-status`) : null, readBoard($)])
+  return new Set([...(prs?.done ?? []), ...board.done])
+}
+
+// `<state>/chains/<session-id>`: one chain a line, issue numbers in dispatch order.
+async function readChains($: $): Promise<number[][]> {
+  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
+  if (!state || !sid) return []
+  return (await readText($, `${state}/chains/${sid}`))
+    .split('\n')
+    .map(line => line.split(/\s+/).flatMap(token => (/^#?\d+$/.test(token) ? [Number(token.replace('#', ''))] : [])))
+    .filter(chain => chain.length > 0)
 }
 
 type Ask = { n: number; text: string }
@@ -875,6 +893,14 @@ export const register: Register = (on, options) => {
     syncFrames($)
     const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
     const repo = await resolveRepo($)
+    const chainFile = await readChains($)
+    const board = chainFile.length > 0 ? await readBoard($) : NO_BOARD
+    // an issue is in progress while a running row's label names its #N
+    const active = new Set(rows.flatMap(row => [row, ...row.children]).flatMap(row => {
+      const n = row.status === 'running' ? issueNumber(row.label) : null
+      return n ? [Number(n)] : []
+    }))
+    const chains = chainFile.map(chain => chainLinks(chain, board.done, active))
     const root = await repoRoot($)
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
@@ -1011,6 +1037,32 @@ export const register: Register = (on, options) => {
                 </Box>
               )
             })}
+          </Box>
+        )}
+        {chains.length > 0 && (
+          <Box key="chains" flexDirection="column" marginBottom={1}>
+            {chains.map((chain, i) => (
+              <Box key={`chain:${i}`} flexDirection="row">
+                {chain.map(({ n, mark }, k) => {
+                  const href = repo ? safeHref(`https://github.com/${repo}/issues/${n}`) : null
+                  return (
+                    <Box key={`chain-issue:${i}:${k}`} flexDirection="row" hover={{ scope: `chain:${i}:${n}`, backgroundColor: COLUMN_LIT }}>
+                      {k > 0 && <Text dimColor>{' → '}</Text>}
+                      <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : undefined} dimColor={mark === 'merged'}>
+                        {href ? <Link href={href} label={`#${n}`} /> : `#${n}`}
+                        {mark === 'merged' ? ' ✓' : ''}
+                      </Text>
+                    </Box>
+                  )
+                })}
+                {/* a hovered #N shows its board title at the line's end */}
+                {chain.map(({ n }, k) => board.titles.has(n) && (
+                  <Box key={`chain-title:${i}:${k}`} display="none" hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
+                    <Text dimColor wrap="truncate-end">{`  ${board.titles.get(n)}`}</Text>
+                  </Box>
+                ))}
+              </Box>
+            ))}
           </Box>
         )}
         <Text bold>Workers</Text>
