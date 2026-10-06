@@ -1177,9 +1177,10 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const { asks, detailDir } = await readAsks($)
     if (asks.length === 0) return next(e)
-    const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown, Link } = elements
     // A right-click reaches a plugin only through a Client's pointer listener, where one is drawn.
-    const Client = e.surface === 'terminal' || e.surface === 'desktop' ? $.ui.resolve(e).Client : null
+    const Client = 'Client' in elements ? elements.Client : null
     const repo = await resolveRepo($)
     const open = await read($, openAsk)
     const shown = asks.find(ask => isSameAsk(open, ask))

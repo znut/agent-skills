@@ -43,15 +43,20 @@ stage $'#11 first?\n' $'100\n'
 perl "$script" "$asks" '#12 gone?'
 check 'absent text: file unchanged' [ "$(cat "$asks")" = '#11 first?' ]
 
-# The asks hook's lock held elsewhere: the script waits for it, then writes.
+# The asks hook's lock held elsewhere: the holder appends an ask before it lets go. A dismiss that
+# ran without the lock would lose to that write and leave #11 in place.
 stage $'#11 first?\n#12 second?\n' $'100\n200\n'
-perl -e 'use Fcntl ":flock"; open(F, ">>", $ARGV[0]) or die; flock(F, LOCK_EX); open(R, ">", $ARGV[1]); close R; select(undef, undef, undef, 0.01) until -e $ARGV[2]' "$asks.lock" "$tmp/held" "$tmp/release" &
-while [ ! -e "$tmp/held" ]; do :; done
+perl -e 'use Fcntl ":flock"; my ($lock, $asks, $held, $release) = @ARGV;
+	open(F, ">>", $lock) or die; flock(F, LOCK_EX); open(R, ">", $held); close R;
+	select(undef, undef, undef, 0.01) until -e $release;
+	open(A, ">", $asks); print A "#11 first?\n#12 second?\n#13 x?\n"; close A;
+	open(M, ">", "$asks.meta"); print M "100\n200\n300\n"; close M' "$asks.lock" "$asks" "$tmp/held" "$tmp/release" &
+for ((i = 0; i < 1000; i++)); do [ -e "$tmp/held" ] && break; perl -e 'select(undef, undef, undef, 0.01)'; done
 perl "$script" "$asks" '#11 first?' &
 dismiss=$!
-check 'held lock: no write while held' [ "$(cat "$asks")" = $'#11 first?\n#12 second?' ]
 : >"$tmp/release"
 wait "$dismiss"
-check 'held lock: written once free' [ "$(cat "$asks")" = '#12 second?' ]
+check 'held lock: waits, then drops from the holder'"'"'s write' [ "$(cat "$asks")" = $'#12 second?\n#13 x?' ]
+check 'held lock: sidecar follows' [ "$(cat "$asks.meta")" = $'200\n300' ]
 
 [ "$failures" -eq 0 ] && echo "all passed" || { echo "$failures failed"; exit 1; }
