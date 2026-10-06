@@ -112,8 +112,8 @@ async function listDir($: $, path: string): Promise<FsEntry[]> {
   return $.fs.list(path).catch(() => [])
 }
 
-async function tailBytes($: $, path: string): Promise<string> {
-  const ran = await $.process.run(['tail', '-c', String(TAIL_BYTES), path]).catch(() => null)
+async function tailBytes($: $, path: string, bytes = TAIL_BYTES): Promise<string> {
+  const ran = await $.process.run(['tail', '-c', String(bytes), path]).catch(() => null)
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
@@ -325,40 +325,44 @@ async function readReadyPrs($: $, mainSha: string): Promise<PrState> {
   return { prs, gates }
 }
 
-type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null; log: LogFeed | null }
+type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null; log: RunLog | null; logSize: number }
 
-// A file read as it grows: the first read takes the last `window` bytes from a line start, each
-// later one only the whole lines appended since. The offset stays on a line boundary, so a
-// partial last line is read again whole next time. A caller starts over on a shorter file.
-type Cursor = { path: string; offset: number }
+// A main-ci file's last MiB, parsed again whenever its size changes, a first line the window cut
+// into dropped. main-ci only appends, and a whole re-parse costs about a millisecond a tick.
+const MAIN_CI_WINDOW = 1_048_576
+const parsedTails = new Map<string, { size: number; value: Promise<unknown> }>()
 
-// Bytes of `text` as read from the file: a read that starts inside a character decodes each of
-// its stray bytes as one U+FFFD, which TextEncoder would count as three.
-function fileBytes(text: string, fromMidFile: boolean): number {
-  const stray = fromMidFile ? (/^\uFFFD*/.exec(text)?.[0].length ?? 0) : 0
-  return new TextEncoder().encode(text).length - 2 * stray
+async function parsedTail<T>($: $, path: string, size: number, parse: (text: string, isCut: boolean) => T): Promise<T> {
+  const hit = parsedTails.get(path)
+  if (hit?.size === size) return hit.value as Promise<T>
+  const value = tailBytes($, path, MAIN_CI_WINDOW).then(text => {
+    // a failed read is tried again next tick
+    if (text === '' && size > 0) parsedTails.delete(path)
+    const isCut = size > MAIN_CI_WINDOW
+    return parse(isCut ? text.slice(text.indexOf('\n') + 1) : text, isCut)
+  })
+  parsedTails.set(path, { size, value })
+  return value
 }
 
-async function readAppended($: $, cursor: Cursor, size: number, window: number): Promise<{ text: string; midFile: boolean } | null> {
-  if (size === cursor.offset) return null
-  const offset = cursor.offset
-  const start = offset < 0 ? Math.max(0, size - window) : offset
-  const ran = await $.process.run(['tail', '-c', `+${start + 1}`, cursor.path]).catch(() => null)
-  // another render read these bytes while this one waited
-  if (cursor.offset !== offset || ran?.exitCode !== 0) return null
-  const midFile = offset < 0 && start > 0
-  const text = ran.stdout
-  const from = midFile ? text.indexOf('\n') + 1 : 0
-  const cut = text.lastIndexOf('\n') + 1
-  if (cut <= from) return null
-  cursor.offset = start + fileBytes(text.slice(0, cut), midFile)
-  return { text: text.slice(from, cut), midFile }
+const parseRunLog = (text: string): RunLog => {
+  const log = freshRunLog()
+  applyRunLog(log, text)
+  return log
 }
 
-// run.log replayed as it grows; `version` moves when a cancel is added.
-type LogFeed = Cursor & { log: RunLog; version: number }
-const LOG_WINDOW = 1_048_576
-let logFeed: LogFeed | null = null
+// Runs in file order; a cut window can begin inside its oldest run, which is dropped.
+const parseCiRuns = (text: string, isCut: boolean): CiRun[] => {
+  const byRun = new Map<string, MetricRow[]>()
+  for (const row of parseRows(text)) {
+    const list = byRun.get(row.run)
+    if (list) list.push(row)
+    else byRun.set(row.run, [row])
+  }
+  const names = [...byRun.keys()].sort()
+  if (isCut) names.shift()
+  return names.map(name => summarize(name, byRun.get(name) ?? []))
+}
 
 async function readMainStrip($: $): Promise<MainStrip | null> {
   const root = await resolveStateDir($)
@@ -367,76 +371,34 @@ async function readMainStrip($: $): Promise<MainStrip | null> {
   const state = jsonObject(stateText)
   if (!state || typeof state.sha !== 'string') return null
   const main8 = state.sha.slice(0, 8)
-  const logPath = `${root}/main-ci/run.log`
   const listing = await listDir($, `${root}/main-ci`)
   const logStat = listing.find(entry => entry.name === 'run.log' && entry.kind === 'file')
-  if (logStat) {
-    if (!logFeed || logFeed.path !== logPath || logStat.size < logFeed.offset) logFeed = { path: logPath, offset: -1, log: freshRunLog(), version: ++ciVersion }
-    const feed = logFeed
-    const read = await readAppended($, feed, logStat.size, LOG_WINDOW)
-    if (read && logFeed === feed) {
-      const cancels = feed.log.cancels.length
-      applyRunLog(feed.log, read.text)
-      if (feed.log.cancels.length !== cancels) feed.version = ++ciVersion
-    }
-  }
-  const log = logStat ? logFeed : null
+  const log = logStat ? await parsedTail($, `${root}/main-ci/run.log`, logStat.size, parseRunLog) : null
   return {
     sha: main8,
     state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'),
-    queue: log ? previewQueue(log.log, main8) : { running: 0, queued: 0 },
+    queue: log ? previewQueue(log, main8) : { running: 0, queued: 0 },
     log,
+    logSize: logStat?.size ?? -1,
     ciDir: `${root}/main-ci`,
     ci: { sha: state.sha, phase: String(state.phase ?? '') },
     metrics: listing.find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file') ?? null,
   }
 }
 
-// metrics.jsonl as it grows: the first read takes the tail that holds `cap` runs.
-type CiFeed = Cursor & { cap: number; rows: Map<string, MetricRow[]>; runs: CiRun[]; version: number }
-const RUN_BYTES = 16_384
-let ciFeed: CiFeed | null = null
-// Feed versions never repeat, a fresh feed's included, so a chart cached on one cannot match.
-let ciVersion = 0
-const freshFeed = (path: string, cap: number): CiFeed => ({ path, cap, offset: -1, rows: new Map(), runs: [], version: ++ciVersion })
-
-async function readCiRuns($: $, main: MainStrip, need: number): Promise<CiFeed | null> {
-  const path = `${main.ciDir}/metrics.jsonl`
-  const stat = main.metrics
-  if (!stat) return null
-  if (!ciFeed || ciFeed.path !== path || need > ciFeed.cap || stat.size < ciFeed.offset) ciFeed = freshFeed(path, Math.max(need, ciFeed?.cap ?? 0))
-  const feed = ciFeed
-  const read = await readAppended($, feed, stat.size, feed.cap * RUN_BYTES)
-  if (!read || ciFeed !== feed) return ciFeed
-  const rows = parseRows(read.text)
-  if (rows.length === 0) return feed
-  for (const row of rows) {
-    const list = feed.rows.get(row.run)
-    if (list) list.push(row)
-    else feed.rows.set(row.run, [row])
-  }
-  const names = [...feed.rows.keys()].sort()
-  // a read from mid-file can begin inside its oldest run
-  if (read.midFile && names.length > 0) feed.rows.delete(names.shift() as string)
-  for (const name of names.splice(0, Math.max(0, names.length - feed.cap))) feed.rows.delete(name)
-  feed.runs = names.map(name => summarize(name, feed.rows.get(name) ?? []))
-  feed.version = ++ciVersion
-  return feed
-}
-
 type CiCard = ReturnType<typeof cardTable> & { left: number }
 type CiChart = { key: string; metric: Metric; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: Cell[][][] }
 let ciChart: CiChart | null = null
 
-// Encoded again only when a run is added or changes, main-ci's state moves, or the width or the
-// metric does.
+// Encoded again only when a main-ci file grows, main-ci's state moves, or the width or the metric
+// does.
 async function readCiChart($: $, main: MainStrip, bodyColumns: number, metric: Metric): Promise<CiChart | null> {
   const fit = runsFit(bodyColumns)
-  const feed = fit > 0 ? await readCiRuns($, main, fit) : null
-  if (!feed) return null
-  const key = `${feed.version}|${main.log?.version ?? 0}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}|${metric}`
+  if (fit <= 0 || !main.metrics) return null
+  const parsed = await parsedTail($, `${main.ciDir}/metrics.jsonl`, main.metrics.size, parseCiRuns)
+  const key = `${main.ciDir}|${main.metrics.size}|${main.logSize}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}|${metric}`
   if (ciChart?.key === key) return ciChart
-  const runs = markCancelled(withPending(feed.runs, main.ci), main.log?.log.cancels ?? []).slice(-fit)
+  const runs = markCancelled(withPending(parsed.slice(-fit), main.ci), main.log?.cancels ?? []).slice(-fit)
   if (runs.length === 0) return null
   // a card's border and padding take 4 columns beside its content
   const cards = runs.map((run, i) => {
