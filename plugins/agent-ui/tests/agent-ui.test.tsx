@@ -526,7 +526,7 @@ describe('workers pane', () => {
     })
   })
 
-  test('a non-git cwd and root draw no strip; a repo cwd resolves afresh; one cwd runs git once', async ($, on) => {
+  test('a non-git root draws no strip; a repo root resolves afresh; a shell cwd runs no git; one root runs git once', async ($, on) => {
     const root = '/fx/home/state'
     const w = world(on, {
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
@@ -538,19 +538,19 @@ describe('workers pane', () => {
       await ui.unmount()
       return found
     }
-    w.cwd = '/fx/elsewhere'
     w.root = '/fx/elsewhere'
     expect(await strip()).toBeUndefined()
     expect(await strip()).toBeUndefined()
     expect(w.gitRuns).toBe(1)
 
-    w.cwd = '/fx/repo'
+    w.root = '/fx/repo'
     expect((await strip())?.text).toContain('main abcdef01')
     const inRepo = w.gitRuns
+    w.cwd = '/fx/elsewhere'
     expect(await strip()).toBeDefined()
     expect(w.gitRuns).toBe(inRepo)
 
-    w.cwd = '/fx/elsewhere'
+    w.root = '/fx/elsewhere'
     expect(await strip()).toBeUndefined()
     expect(w.gitRuns).toBe(inRepo + 1)
   })

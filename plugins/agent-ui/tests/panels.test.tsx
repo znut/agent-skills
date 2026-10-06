@@ -117,7 +117,7 @@ describe('repo panels', () => {
     await due.unmount()
   })
 
-  test('a non-git cwd keeps the project root strip and panels; a cwd in another repo shows that repo', async ($, on) => {
+  test('a non-git cwd keeps the root strip and panels; a cwd in another repo does not change the repo; the root does', async ($, on) => {
     const w = world(on, {
       ...GIT_CONFIG,
       '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
@@ -130,14 +130,17 @@ describe('repo panels', () => {
     w.repos.add('/fx/other')
     current = w
 
-    w.cwd = '/fx/home/state'
-    const away = await shown($.ui.mount(PANE()))
-    expect((await away.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
-    expect((await away.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 75%')
+    for (const cwd of ['/fx/home/state', '/fx/other']) {
+      w.cwd = cwd
+      const ui = await shown($.ui.mount(PANE()))
+      expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
+      expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 75%')
+      expect(await ui.find({ key: 'panel:other' })).toBeUndefined()
+      await ui.unmount()
+    }
     expect(w.panelRuns.map(run => run.cwd)).toEqual(['/fx/repo'])
-    await away.unmount()
 
-    w.cwd = '/fx/other'
+    w.root = '/fx/other'
     const other = await shown($.ui.mount(PANE()))
     expect(await other.find({ key: 'main-strip' })).toBeUndefined()
     expect(await other.find({ key: 'panel:acme' })).toBeUndefined()

@@ -119,37 +119,31 @@ async function tailBytes($: $, path: string): Promise<string> {
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
-// One answer per session cwd and project root, hit or miss: a non-git cwd costs one lookup per
-// change, and a later repo cwd resolves afresh. The promise is cached, so concurrent callers share one run.
-const byCwd = new Map<string, { cwd: string; value: Promise<unknown> }>()
+// One answer per session project root, hit or miss: a shell `cd` never moves it, while `/cd`, a
+// host directory change or a worktree move does. The promise is cached, so concurrent callers share one run.
+const byRoot = new Map<string, { root: string; value: Promise<unknown> }>()
 
-async function perCwd<T>($: $, name: string, compute: () => Promise<T>): Promise<T> {
-  const cwd = `${await $.session.cwd()}\0${await $.session.root()}`
-  const hit = byCwd.get(name)
-  if (hit?.cwd === cwd) return hit.value as Promise<T>
-  const entry = { cwd, value: compute() }
-  byCwd.set(name, entry)
-  entry.value.catch(() => { if (byCwd.get(name) === entry) byCwd.delete(name) })
+async function perRoot<T>($: $, name: string, compute: (root: string) => Promise<T>): Promise<T> {
+  const root = await $.session.root()
+  const hit = byRoot.get(name)
+  if (hit?.root === root) return hit.value as Promise<T>
+  const entry = { root, value: compute(root) }
+  byRoot.set(name, entry)
+  entry.value.catch(() => { if (byRoot.get(name) === entry) byRoot.delete(name) })
   return entry.value
 }
 
-// The repo of the current cwd, else of the session's project root: a shell `cd` out of the
-// repo keeps its panels, and a cwd inside another repo follows that repo.
 async function gitCommonDir($: $): Promise<string | null> {
-  return perCwd($, 'git', async () => {
-    const commonDir = async (cwd?: string) => {
-      const ran = await $.process
-        .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd ? { cwd } : undefined)
-        .catch(() => null)
-      return ran?.exitCode === 0 ? ran.stdout.trim() : null
-    }
-    const [cwd, root] = await Promise.all([$.session.cwd(), $.session.root()])
-    return (await commonDir()) ?? (root !== cwd ? await commonDir(root) : null)
+  return perRoot($, 'git', async root => {
+    const ran = await $.process
+      .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root })
+      .catch(() => null)
+    return ran?.exitCode === 0 ? ran.stdout.trim() : null
   })
 }
 
 async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
-  return perCwd($, 'roots', async () => {
+  return perRoot($, 'roots', async () => {
     const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
     const children = String(options.childrenDir ?? '').replace(/\/+$/, '') || `${tmp}/agent-tools/children`
     const common = await gitCommonDir($)
@@ -676,7 +670,7 @@ async function localMdOf($: $): Promise<string> {
 }
 
 async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
-  return perCwd($, 'state', async () => {
+  return perRoot($, 'state', async () => {
     const configured = String(options.stateDir ?? '')
     if (configured) return configured.replace(/\/+$/, '')
     return busStateDir(await localMdOf($), (await $.env.get('HOME')) ?? '')
@@ -684,7 +678,7 @@ async function resolveStateDir($: $, options: PluginOptions): Promise<string | n
 }
 
 async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string | null> {
-  return perCwd($, 'gh-status', async () => {
+  return perRoot($, 'gh-status', async () => {
     const configured = String(options.stateDir ?? '')
     if (configured) return `${configured.replace(/\/+$/, '')}/gh-status`
     const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(await localMdOf($))
@@ -694,7 +688,7 @@ async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string 
 }
 
 async function resolveBoardFile($: $, options: PluginOptions): Promise<string | null> {
-  return perCwd($, 'board', async () => {
+  return perRoot($, 'board', async () => {
     const configured = String(options.stateDir ?? '')
     if (configured) return `${configured.replace(/\/+$/, '')}/board-snapshot.md`
     const match = /^- `board_snapshot_file`: `([^`]*)`/m.exec(await localMdOf($))
@@ -783,7 +777,7 @@ function githubSlug(url: string): string | null {
 async function resolveRepo($: $, options: PluginOptions): Promise<string | null> {
   const configured = String(options.repoSlug ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '')
   if (configured) return configured
-  return perCwd($, 'repo', async () => {
+  return perRoot($, 'repo', async () => {
     const common = await gitCommonDir($)
     if (!common) return null
     let inOrigin = false
