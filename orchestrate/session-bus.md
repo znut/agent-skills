@@ -1,10 +1,12 @@
 # Role sessions and the session bus
 
-Role sessions (PM, one TL per lane) run as separate processes and cannot message each other directly. A repo-declared **session bus** — one inbox directory of small marker files per role — bridges them. No bus declared: skip silently.
+Role sessions (PM, one TL per lane) run as separate processes and cannot message each other directly. A **session bus** — one inbox directory of small marker files per role — bridges them. No `state_dir` declared ([§State directory](#state-directory)): skip silently.
 
 ## State directory
 
-`<state>` is the parent of `session_bus_dir` in the repo's `.agent/orchestrate.local.md` (found through Git's common directory, so every worktree of the clone agrees). With no bus declared it is a `state/` directory beside the repo, else `~/.config/agent-tools/var/<repo>`; `boot-report` applies the same rule. What a role keeps between sessions is keyed by role (`pm`, `tl-<lane>`), never by session: the inbox `<session_bus_dir>/<role>-inbox/` with an `archive/` subdirectory, the handoff note `<state>/notes/<role>.md`, the rules-read stamp `<state>/rules-read/<role>.stamp`, and the comment cursor `<comment_cursor_dir>/<role>.json` (its own declared directory). `boot-report <role>` prints the paths a boot needs, such as a missing inbox or cursor and the stamp command; use those, never a guessed path.
+Machine-local paths live in `<main checkout>/.agent/local.env`, read through Git's common directory so every worktree of the clone agrees: one `key=value` per line, `#` comments, the value everything after the first `=`, a leading `~/` read as `$HOME`. Keys: `state_dir`, `worktrees_dir`, `references_dir`. NEVER add override keys or a fallback file: each reader (`boot-report`, the asks hook, the `agent-ui` plugin) takes this one source, and a missing file or key skips the state-scoped work.
+
+`<state>` is `state_dir`. Its entries are fixed names: `gh-status/`, `board-snapshot.md`, `session-bus/`, `self-events/`, `comment-cursor/`, `warm-snapshot/`, `gate/`, `asks/`, `main-ci/`, `chains/`, `notes/`, `rules-read/`. What a role keeps between sessions is keyed by role (`pm`, `tl-<lane>`), never by session: the inbox `<state>/session-bus/<role>-inbox/` with an `archive/` subdirectory, the handoff note `<state>/notes/<role>.md`, the rules-read stamp `<state>/rules-read/<role>.stamp`, and the comment cursor `<state>/comment-cursor/<role>.json`. `boot-report <role>` prints the paths a boot needs, such as a missing inbox or cursor and the stamp command; use those, never a guessed path.
 
 ## Inbox
 

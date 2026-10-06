@@ -41,33 +41,28 @@ read -r role <"$ROLE_DIR/$sid" 2>/dev/null
 [[ $role =~ ^(pm|tl-[a-z0-9-]+)$ ]] || exit 0
 [ -n "$cwd" ] || cwd=$PWD
 
-# Repo config, constant for a session: cached (three lines) after the first git lookup.
-# With ASKS_STATE_DIR the gh-status dir and the board snapshot sit beside it (the plugin's convention).
-MD_RE='^- `(session_bus_dir|gh_status_dir|board_snapshot_file)`: `([^`]*)`'
+# State dir, constant for a session: `state_dir` in the main checkout's .agent/local.env
+# (orchestrate/session-bus.md §State directory), cached after the first git lookup; the gh-status
+# dir and the board snapshot are fixed names under it.
 resolve_state() {
-	local cache="${TMPDIR:-/tmp}/asks-hook.$sid" common line v bus=
-	state=${ASKS_STATE_DIR:-} gh_dir= board_file=
-	if [ -n "$state" ]; then
-		gh_dir=$state/gh-status board_file=$state/board-snapshot.md
-	else
-		{ read -r state; read -r gh_dir; read -r board_file; } <"$cache" 2>/dev/null
+	local cache="${TMPDIR:-/tmp}/asks-hook.$sid" common line
+	state=${ASKS_STATE_DIR:-}
+	if [ -z "$state" ]; then
+		read -r state <"$cache" 2>/dev/null
 		if [ -z "$state" ]; then
 			common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
 			while IFS= read -r line; do
-				[[ $line =~ $MD_RE ]] || continue
-				v=${BASH_REMATCH[2]}
-				v=${v/#\~/${HOME:-}}
-				case ${BASH_REMATCH[1]} in
-				session_bus_dir) bus=$v ;;
-				gh_status_dir) gh_dir=${v%/} ;;
-				*) board_file=$v ;;
-				esac
-			done <"${common%/.git}/.agent/orchestrate.local.md"
-			[ -n "$bus" ] || return 1
-			state=$(dirname "${bus%/}")
-			printf '%s\n%s\n%s\n' "$state" "$gh_dir" "$board_file" >"$cache"
+				[[ $line == state_dir=* ]] || continue
+				state=${line#state_dir=}
+				break
+			done <"${common%/.git}/.agent/local.env"
+			[[ $state == "~/"* ]] && state=${HOME:-}/${state#\~/}
+			state=${state%/}
+			[ -n "$state" ] || return 1
+			printf '%s\n' "$state" >"$cache"
 		fi
 	fi
+	gh_dir=$state/gh-status board_file=$state/board-snapshot.md
 	asks="$state/asks/$sid"
 	detail="$asks.d"
 	logfile="$state/asks/jev-log.jsonl"

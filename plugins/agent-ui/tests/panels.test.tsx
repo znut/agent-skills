@@ -120,7 +120,7 @@ describe('repo panels', () => {
   test('a non-git cwd keeps the root strip and panels; a cwd in another repo does not change the repo; the root does', async ($, on) => {
     const w = world(on, {
       ...GIT_CONFIG,
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
       [CONFIG]: JSON.stringify(SPECS),
       '/fx/other/.agent/pane-panels.json': JSON.stringify([{ id: 'other', title: 'Other', cmd: ['acme-panel', 'other'] }]),
@@ -152,7 +152,7 @@ describe('repo panels', () => {
   test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', { options: { childrenDir: KIDS } }, async ($, on) => {
     const w = world(on, {
       ...RUN_FILES,
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
       [CONFIG]: JSON.stringify(SPECS),
     })
@@ -428,7 +428,7 @@ describe('repo panels', () => {
     const metric = (i: number) => JSON.stringify({ run: `20260101T00000${i}Z-acme`, sha: `acme000${i}aaaa`, job: 'lint', attempt: 1, wall_s: 10, exit: 0 })
     const w = world(on, {
       ...GIT_CONFIG,
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'acme0002aaaa', green: true, phase: 'done' }),
       [`${STATE}/main-ci/metrics.jsonl`]: `${metric(1)}\n${metric(2)}\n`,
       [CONFIG]: JSON.stringify(SPECS),

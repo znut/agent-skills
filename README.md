@@ -85,8 +85,9 @@ Set `childrenDir` to the folder of child run out-dirs: empty, the pane lists no
 child runs from disk and says to set it. The pane lists only runs whose
 `owner-session` file holds this session's id, and reads each run's kind from
 its `provider` file alone. Review panels come from the clone's git common
-directory (`.review-panel/`), the asks state from beside the `session_bus_dir`
-the main checkout's `.agent/orchestrate.local.md` declares (`stateDir`), and
+directory (`.review-panel/`), the asks, gh-status, board and main-ci state from
+`state_dir` in the main checkout's `.agent/local.env`
+([session-bus.md §State directory](orchestrate/session-bus.md#state-directory)), and
 ticket links from the GitHub repository of the session clone's `origin` remote
 (no GitHub remote, no link). The avatars and the main-ci chart draw as terminal
 pictures, which kitty and Ghostty show.

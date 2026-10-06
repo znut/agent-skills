@@ -53,16 +53,17 @@ TypeSafe token in `~/.config/typesafe.token`.
 - **Done tickets.** Every write also drops an ask whose first `#N` is a ticket
   closed after the ask was pinned, never in the write that pins it: an ask
   about an already-closed ticket stays until answered. A PR file
-  `<gh_status_dir>/status/pr-N.json` with a top-level `state` of `MERGED` or
+  `<state>/gh-status/status/pr-N.json` with a top-level `state` of `MERGED` or
   `CLOSED` (read with `jq`, so a nested object's `state` never counts) decides
   by its close time (`mergedAt`, else `closedAt`) against the ask's pin stamp,
   and keeps the ask when it has neither: `updatedAt` moves on later comments,
   so it is never a close time. Without such a file, a row in
-  `board_snapshot_file` whose `Status` column (found by the header row of its
+  `<state>/board-snapshot.md` whose `Status` column (found by the header row of its
   own table; `\|` inside a cell never splits it) reads
   `Done` drops the ask, unless the row was already `Done` at the pin (the
-  `board-done` flag on the ask's `<sid>.meta` line). Both paths come from
-  `.agent/orchestrate.local.md`, or sit beside `ASKS_STATE_DIR` in tests. Local
+  `board-done` flag on the ask's `<sid>.meta` line). `<state>` is `state_dir` in
+  `.agent/local.env` ([session-bus.md §State directory](../../orchestrate/session-bus.md#state-directory)),
+  or `ASKS_STATE_DIR` in tests. Local
   files only, no network; a missing file, close time or snapshot means keep,
   and an ask with no `#N` is never dismissed. The `agent-ui` band hides such asks at render time from the
   same files, so a merge shows within one tick, before the next write.

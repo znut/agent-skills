@@ -6,8 +6,9 @@
 # Read-only: prints bounded, labeled sections from the current checkout and
 # writes no state. The pm role reads only its own lane (issue logs plus PRs
 # labeled `pm`, bot-only logs dropped); TL roles get every section. The
-# worktree section is the newest main-ci cleanup.log summary line. Paths come
-# from the shared .agent/orchestrate.local.md, one `- `key`: `value`` per line.
+# worktree section is the newest main-ci cleanup.log summary line. Paths are
+# fixed names under `state_dir` in the main checkout's .agent/local.env
+# (orchestrate/session-bus.md §State directory).
 set -euo pipefail
 
 role="${1:-}"
@@ -43,19 +44,12 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 section() { printf '\n## %s\n' "$*"; }
 
-path_of() { # <key> <local_md>
+local_env_value() { # <key> <file>: the value after the first `=`, leading ~/ as $HOME
 	local v
-	v=$(grep -m1 "^- \`$1\`" "$2" 2>/dev/null | sed -n 's/^- `[^`]*`: `\([^`]*\)`.*/\1/p')
-	printf '%s' "${v/#\~/$HOME}"
-}
-
-find_local_md() {
-	local common primary candidate
-	common=$(git rev-parse --git-common-dir)
-	primary=$(cd "$(dirname "$common")" && pwd)
-	for candidate in "$primary/.agent/orchestrate.local.md" "$repo_root/.agent/orchestrate.local.md"; do
-		if [ -f "$candidate" ]; then printf '%s' "$candidate"; return; fi
-	done
+	v=$(grep -m1 "^$1=" "$2" 2>/dev/null | cut -d= -f2-)
+	case $v in "~/"*) v="$HOME/${v#\~/}" ;; esac
+	v=${v%"${v##*[!/]}"}
+	printf '%s' "$v"
 }
 
 human_age() { # <seconds>
@@ -106,17 +100,15 @@ file_mtime() {
 
 # --- resolve local paths ---------------------------------------------------
 
-local_md=$(find_local_md)
-if [ -n "$local_md" ]; then
-	gh_status_dir=$(path_of gh_status_dir "$local_md")
-	board_snapshot_file=$(path_of board_snapshot_file "$local_md")
-	session_bus_dir=$(path_of session_bus_dir "$local_md")
-	comment_cursor_dir=$(path_of comment_cursor_dir "$local_md")
-else
-	gh_status_dir=''
-	board_snapshot_file=''
-	session_bus_dir=''
-	comment_cursor_dir=''
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+var_dir=$(local_env_value state_dir "${common_dir%/.git}/.agent/local.env")
+no_state='skipped: no state_dir in .agent/local.env'
+gh_status_dir='' board_snapshot_file='' session_bus_dir='' comment_cursor_dir=''
+if [ -n "$var_dir" ]; then
+	gh_status_dir=$var_dir/gh-status
+	board_snapshot_file=$var_dir/board-snapshot.md
+	session_bus_dir=$var_dir/session-bus
+	comment_cursor_dir=$var_dir/comment-cursor
 fi
 
 printf '# boot-report — role: %s\n' "$role"
@@ -181,15 +173,11 @@ fi
 # Stamp is written by the AGENT after it reads (this script stays read-only);
 # the exact command is printed so the stamp is one paste away.
 section "Rules freshness"
-var_dir=''
-if [ -n "$session_bus_dir" ]; then var_dir=$(dirname "$session_bus_dir"); fi
-# Fallback when the repo declares no bus dir: a `state/` sibling of the repo,
-# else the agent-tools var dir.
-if [ -z "$var_dir" ] && [ -d "$(dirname "$repo_root")/state" ]; then var_dir="$(dirname "$repo_root")/state"; fi
-if [ -z "$var_dir" ]; then var_dir="$HOME/.config/agent-tools/var/$(basename "$repo_root")"; fi
 rules_tree=$(git rev-parse --verify "origin/${default_branch}:.agent" 2>/dev/null || true)
 rules_stamp="$var_dir/rules-read/${role}.stamp"
-if [ -z "$rules_tree" ]; then
+if [ -z "$var_dir" ]; then
+	printf '%s\n' "$no_state"
+elif [ -z "$rules_tree" ]; then
 	printf 'rules:   no .agent/ tree on origin/%s → run /orchestrate setup\n' "$default_branch"
 else
 	rules_short=$(printf '%s' "$rules_tree" | cut -c1-8)
@@ -211,7 +199,9 @@ fi
 # 2b2. Main health — main-ci's last verdict on the default tip.
 section "Main health"
 mh="$var_dir/main-ci/state.json"
-if [ -f "$mh" ]; then
+if [ -z "$var_dir" ]; then
+	printf '%s\n' "$no_state"
+elif [ -f "$mh" ]; then
 	mh_phase=$(jq -r '.phase // "done"' "$mh" 2>/dev/null || printf 'done')
 	mh_green=$(jq -r '.green' "$mh" 2>/dev/null || printf '?')
 	mh_sha=$(jq -r '.sha[0:8]' "$mh" 2>/dev/null || printf '?')
@@ -231,7 +221,9 @@ fi
 # the agent folds it into the ready report.
 section "Handoff note"
 handoff="$var_dir/notes/${role}.md"
-if [ -f "$handoff" ]; then
+if [ -z "$var_dir" ]; then
+	printf '%s\n' "$no_state"
+elif [ -f "$handoff" ]; then
 	printf 'file:    %s (modified %s)\n' "$handoff" "$(date -r "$handoff" '+%Y-%m-%d %H:%M' 2>/dev/null || stat -c %y "$handoff" 2>/dev/null | cut -c1-16)"
 	head -40 "$handoff"
 	if [ "$(wc -l < "$handoff")" -gt 40 ]; then printf '… (truncated at 40 lines; REWRITE DUE at wrap — state only, at most 40 lines, see the /tl skill)\n'; fi
@@ -266,7 +258,7 @@ fi
 # 3. Bus inbox
 section "Bus inbox"
 if [ -z "$session_bus_dir" ]; then
-	printf 'skipped: session_bus_dir not declared (no orchestrate.local.md)\n'
+	printf '%s\n' "$no_state"
 else
 	inbox="$session_bus_dir/$inbox_name"
 	if [ ! -d "$inbox" ]; then
@@ -324,7 +316,7 @@ lane_log_ok() {
 # 4. gh-status
 section "gh-status"
 if [ -z "$gh_status_dir" ]; then
-	printf 'skipped: gh_status_dir not declared (no orchestrate.local.md)\n'
+	printf '%s\n' "$no_state"
 elif [ ! -d "$gh_status_dir" ]; then
 	printf 'missing: %s — fall back to plain gh\n' "$gh_status_dir"
 else
@@ -415,7 +407,7 @@ fi
 # 6. Comment-cursor delta
 section "Comment-cursor delta"
 if [ -z "$comment_cursor_dir" ]; then
-	printf 'skipped: comment_cursor_dir not declared (no orchestrate.local.md)\n'
+	printf '%s\n' "$no_state"
 else
 	cursor_file="$comment_cursor_dir/$role.json"
 	if [ ! -f "$cursor_file" ]; then
@@ -464,7 +456,7 @@ fi
 # 7. Board Ready rows
 section "Board Ready rows"
 if [ -z "$board_snapshot_file" ]; then
-	printf 'skipped: board_snapshot_file not declared (no orchestrate.local.md)\n'
+	printf '%s\n' "$no_state"
 elif [ ! -f "$board_snapshot_file" ]; then
 	printf 'missing: %s\n' "$board_snapshot_file"
 else
@@ -496,6 +488,7 @@ fi
 
 # 8. Worktree hygiene — the newest main-ci cleanup summary, read from disk.
 section "Worktree hygiene"
+[ -n "$var_dir" ] || printf '%s\n' "$no_state"
 for run in $(ls -1t "$var_dir/main-ci/runs" 2>/dev/null || true); do
 	line=$(grep '^summary:' "$var_dir/main-ci/runs/$run/cleanup.log" 2>/dev/null | tail -1 || true)
 	if [ -n "$line" ]; then printf '%s (run %s)\n' "$line" "$run"; break; fi

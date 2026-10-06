@@ -46,7 +46,7 @@ export const RUN_FILES: Record<string, string> = {
   ...under(`${KIDS}/d-foreign`, run('openai', '104', 'sid-other')),
   ...under(`${KIDS}/e-failed`, { ...run('openai', '105'), done: '', 'exit-code': '1', 'end-epoch': epoch(2) }),
   ...under(`${PANEL}/0123abcdef/code`, run('claude', '106')),
-  '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus` (peer inboxes)\n',
+  '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
   ...GIT_CONFIG,
 }
 

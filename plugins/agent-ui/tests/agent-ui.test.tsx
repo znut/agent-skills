@@ -1,6 +1,7 @@
 import { type TestBody, type TestOptions, describe, expect, test as bareTest } from 'claude-code/testing'
 
 import { type Metric, axisLabels, barMax, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
+import { localEnvValue } from '../hooks/lib'
 import { avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -166,7 +167,7 @@ describe('workers pane', () => {
     const head = '12345678abcdef00'
     world(on, {
       ...RUN_FILES,
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: mainSha, green: true, phase: 'done' }),
       [`${root}/main-ci/run.log`]: `preview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: queued (ready)\npreview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: green\n`,
       [`${root}/gh-status/status/pr-4390.json`]: JSON.stringify({ number: 4390, state: 'OPEN', isDraft: false, title: 'Sidebar work', headOid: head, createdAt: '2026-01-01' }),
@@ -185,7 +186,7 @@ describe('workers pane', () => {
     const p1 = `${root}/gh-status/status/pr-4420.json`
     const p2 = `${root}/gh-status/status/pr-4421.json`
     const w = world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'feedbeef12345678', phase: 'running' }),
       [`${root}/main-ci/run.log`]: '',
       [p1]: JSON.stringify({ number: 4420, state: 'OPEN', isDraft: false, title: 'one', headOid: '11111111abcdef' }),
@@ -215,7 +216,7 @@ describe('workers pane', () => {
     const queued = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: queued (ready)`
     const start = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: start`
     const queueFiles = (log: string) => ({
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: `${MAIN}23456789`, green: true }),
       [`${root}/main-ci/run.log`]: log,
     })
@@ -250,7 +251,7 @@ describe('workers pane', () => {
       [`${root}/gate/pr-${n}/${n}0000-${main.slice(0, 8)}.json`]: JSON.stringify(result),
     })
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: main, green: true }),
       ...[4404, 4403, 4402, 4401, 4400, 4399].reduce((all, n) => ({ ...all, ...pr(n) }), {}),
       ...gate(4404, { green: true }),
@@ -465,7 +466,7 @@ describe('workers pane', () => {
   test('a non-git root draws no strip; a repo root resolves afresh; a shell cwd runs no git; one root runs git once', async ($, on) => {
     const root = '/fx/home/state'
     const w = world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'abcdef0123456789', green: true }),
     })
     const strip = async () => {
@@ -529,7 +530,7 @@ describe('asks band', () => {
 
   test('ticket and context links render, and options only prefill the prompt', async ($, on) => {
     const w = world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: 'Ship this? #4390\nReview design https://example.com/brief\n',
       [`${ASKS}.d/1.md`]: 'options: go | wait\nlink: https://example.com/mock',
       [`${ASKS}.d/2.md`]: 'options: inspect',
@@ -550,7 +551,7 @@ describe('asks band', () => {
 
   test('every ask row leads with its own toggle, a ticketless ask included', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: '#123 merge the fold?\npick the panel model?\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
@@ -562,7 +563,7 @@ describe('asks band', () => {
 
   test('a mid-sentence #N keeps the sentence whole and links the ticket beside it', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: 'for #123, should I send it back?\n',
       ...GIT_CONFIG,
     })
@@ -574,7 +575,7 @@ describe('asks band', () => {
 
   test('only the linked #N leaves the label; any other #N stays', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: 'see #12 and #13\n#12 merge #13\n',
     })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
@@ -585,7 +586,7 @@ describe('asks band', () => {
 
   describe('ticket link repository', () => {
     const files = (config?: string) => ({
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: '#123 merge the fold?\n',
       ...(config === undefined ? {} : { '/fx/repo/.git/config': config }),
     })
@@ -629,7 +630,7 @@ describe('asks band', () => {
 
   test('unsafe http links render the asks band as plain text', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: 'Read this http://example.com/brief\n',
       [`${ASKS}.d/1.md`]: 'link: http://example.com/context',
     })
@@ -643,7 +644,7 @@ describe('asks band', () => {
 
   test('the detail shows three text lines (options among them) and the link line', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: '#4390 review the UI?\n',
       [`${ASKS}.d/1.md`]: 'one\ntwo\noptions: go | wait\nfour\nlink: https://example.com/mock\nsix',
     })
@@ -660,7 +661,7 @@ describe('asks band', () => {
 
   test('an expanded ask draws links and its context border', async ($, on) => {
     world(on, {
-      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n',
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
       [ASKS]: '#4390 review the UI?\n',
       [`${ASKS}.d/1.md`]: 'Problem: layout needs hierarchy\nlink: https://github.com/acme/widgets/pull/4390\n',
     })
@@ -711,9 +712,33 @@ describe('asks band', () => {
   }
 })
 
+describe('local.env', () => {
+  test('a value is everything after the first =; # lines are skipped; ~/ is HOME', () => {
+    const text = '# state_dir=/wrong\nother=x\nstate_dir=~/a=b/\n'
+    expect(localEnvValue(text, 'state_dir', '/home/me')).toBe('/home/me/a=b')
+    expect(localEnvValue(text, 'worktrees_dir', '/home/me')).toBeNull()
+    expect(localEnvValue('state_dir=\n', 'state_dir', '/home/me')).toBeNull()
+  })
+
+  for (const [name, env] of [['no state_dir key', 'worktrees_dir=~/wt\n'], ['no local.env', undefined]] as const) {
+    test(`${name} draws no asks`, async ($, on) => {
+      const files: Record<string, string> = { ...RUN_FILES, [ASKS]: '#12 merge the fold?\n' }
+      delete files['/fx/repo/.agent/local.env']
+      world(on, env === undefined ? files : { ...files, '/fx/repo/.agent/local.env': env })
+      on('ui.render', ($, e) => {
+        const { Text } = $.ui.resolve(e)
+        return <Text>engine band</Text>
+      })
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await ui.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+})
+
 describe('asks band: done tickets', () => {
-  const MD = '/fx/repo/.agent/orchestrate.local.md'
-  const CONFIG = '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n- `board_snapshot_file`: `~/state/board-snapshot.md`\n'
+  const MD = '/fx/repo/.agent/local.env'
+  const CONFIG = 'state_dir=~/state\n'
   const pr = (n: number, state: string) => ({ [`${STATE}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state, isDraft: false }) })
   const board = (...rows: [number, string][]) => ({
     [`${STATE}/board-snapshot.md`]: ['| # | Title | Status | Service | Tier | Week | Milestone | Blocked-by |', ...rows.map(([n, status]) => `| #${n} | a \\| Done \\| title | ${status} | Web | Free | Week 16 | M7 | — |`)].join('\n'),
@@ -758,7 +783,7 @@ describe('asks band: done tickets', () => {
 describe('main-ci chart', () => {
   const CI = `${STATE}/main-ci`
   const METRICS = `${CI}/metrics.jsonl`
-  const MD = { '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n' }
+  const MD = { '/fx/repo/.agent/local.env': 'state_dir=~/state\n' }
   const name = (i: number) => `20260101T0000${String(i).padStart(2, '0')}Z-cafe00${String(i).padStart(2, '0')}`
   const sha = (i: number) => `cafe00${String(i).padStart(2, '0')}0123456789abcdef0123456789abcdef`
   const row = (i: number, job: string, extra: Record<string, unknown> = {}) =>

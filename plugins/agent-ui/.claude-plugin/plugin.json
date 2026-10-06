@@ -12,12 +12,6 @@
       "title": "Child run directory",
       "description": "Folder of child out-dirs (<dir>/<slug>/). Empty: the pane lists no child runs from disk.",
       "default": ""
-    },
-    "stateDir": {
-      "type": "string",
-      "title": "State directory",
-      "description": "Folder holding asks/<session-id>. Empty: the parent of session_bus_dir in the main checkout's .agent/orchestrate.local.md.",
-      "default": ""
     }
   }
 }

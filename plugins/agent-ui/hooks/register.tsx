@@ -31,14 +31,13 @@ import {
 } from './ci'
 import {
   TAIL_LINES,
-  busStateDir,
   codexTail,
   elapsed,
   epochMs,
   kindOf,
   labelOf,
   lines,
-  parentDir,
+  localEnvValue,
   applyRunLog,
   freshRunLog,
   previewQueue,
@@ -308,14 +307,14 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
   return cache
 }
 
-async function readReadyPrs($: $, options: PluginOptions, mainSha: string): Promise<PrState> {
-  const dir = await resolveGhStatusDir($, options)
-  if (!dir) return { prs: [], gates: new Map() }
-  const cache = await refreshPrCache($, dir)
+async function readReadyPrs($: $, mainSha: string): Promise<PrState> {
+  const state = await resolveStateDir($)
+  if (!state) return { prs: [], gates: new Map() }
+  const cache = await refreshPrCache($, `${state}/gh-status`)
   const prs = [...cache.open.values()]
   const gates = new Map<number, Record<string, unknown> | null>()
   await Promise.all(prs.map(async pr => {
-    const path = `${parentDir(dir)}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
+    const path = `${state}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
     gates.set(pr.number, jsonObject(await readText($, path)))
   }))
   const rank = (pr: PrRow) => {
@@ -361,10 +360,9 @@ type LogFeed = Cursor & { log: RunLog; version: number }
 const LOG_WINDOW = 1_048_576
 let logFeed: LogFeed | null = null
 
-async function readMainStrip($: $, options: PluginOptions): Promise<MainStrip | null> {
-  const ghDir = await resolveGhStatusDir($, options)
-  if (!ghDir) return null
-  const root = parentDir(ghDir)
+async function readMainStrip($: $): Promise<MainStrip | null> {
+  const root = await resolveStateDir($)
+  if (!root) return null
   const stateText = await readText($, `${root}/main-ci/state.json`)
   const state = jsonObject(stateText)
   if (!state || typeof state.sha !== 'string') return null
@@ -648,46 +646,24 @@ async function repoRoot($: $): Promise<string | null> {
   return (await gitCommonDir($))?.replace(/\/\.git$/, '') ?? null
 }
 
-async function localMdOf($: $): Promise<string> {
-  const main = await repoRoot($)
-  return main ? readText($, `${main}/.agent/orchestrate.local.md`) : ''
-}
-
-async function resolveStateDir($: $, options: PluginOptions): Promise<string | null> {
+// `state_dir` from the main checkout's `.agent/local.env`; every state path is a fixed name under
+// it. No file or no key: null, and the state-scoped sections draw nothing.
+async function resolveStateDir($: $): Promise<string | null> {
   return perRoot($, 'state', async () => {
-    const configured = String(options.stateDir ?? '')
-    if (configured) return configured.replace(/\/+$/, '')
-    return busStateDir(await localMdOf($), (await $.env.get('HOME')) ?? '')
-  })
-}
-
-async function resolveGhStatusDir($: $, options: PluginOptions): Promise<string | null> {
-  return perRoot($, 'gh-status', async () => {
-    const configured = String(options.stateDir ?? '')
-    if (configured) return `${configured.replace(/\/+$/, '')}/gh-status`
-    const match = /^- `gh_status_dir`: `([^`]*)`/m.exec(await localMdOf($))
-    const value = match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '')
-    return value ? value.replace(/\/+$/, '') : null
-  })
-}
-
-async function resolveBoardFile($: $, options: PluginOptions): Promise<string | null> {
-  return perRoot($, 'board', async () => {
-    const configured = String(options.stateDir ?? '')
-    if (configured) return `${configured.replace(/\/+$/, '')}/board-snapshot.md`
-    const match = /^- `board_snapshot_file`: `([^`]*)`/m.exec(await localMdOf($))
-    return match?.[1]?.replace(/^~(?=\/|$)/, (await $.env.get('HOME')) ?? '') || null
+    const main = await repoRoot($)
+    if (!main) return null
+    return localEnvValue(await readText($, `${main}/.agent/local.env`), 'state_dir', (await $.env.get('HOME')) ?? '')
   })
 }
 
 // Tickets that are done, from local files only: a PR MERGED or CLOSED in the gh-status files, or an
 // issue whose board-snapshot row has Status Done. Both are cached on the file's mtime.
-async function readDoneTickets($: $, options: PluginOptions): Promise<Set<number>> {
-  const [ghDir, board] = await Promise.all([resolveGhStatusDir($, options), resolveBoardFile($, options)])
-  const done = new Set<number>(ghDir ? (await refreshPrCache($, ghDir)).done : [])
-  if (board) {
-    const slash = board.lastIndexOf('/')
-    const stat = (await listDir($, board.slice(0, slash))).find(entry => entry.name === board.slice(slash + 1) && entry.kind === 'file')
+async function readDoneTickets($: $): Promise<Set<number>> {
+  const state = await resolveStateDir($)
+  const done = new Set<number>(state ? (await refreshPrCache($, `${state}/gh-status`)).done : [])
+  if (state) {
+    const board = `${state}/board-snapshot.md`
+    const stat = (await listDir($, state)).find(entry => entry.name === 'board-snapshot.md' && entry.kind === 'file')
     if (stat) {
       const key = `${stat.mtimeMs}:${stat.size}`
       if (boardCache.key !== key) {
@@ -791,8 +767,8 @@ function askOptions(detail: string): string[] {
 }
 
 // `n` is the ask's 1-based line number in the file: its detail file is `<n>.md`.
-async function readAsks($: $, options: PluginOptions): Promise<{ asks: Ask[]; detailDir: string }> {
-  const [state, sid] = await Promise.all([resolveStateDir($, options), $.session.id()])
+async function readAsks($: $): Promise<{ asks: Ask[]; detailDir: string }> {
+  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
   if (!state || !sid) return { asks: [], detailDir: '' }
   const file = `${state}/asks/${sid}`
   const all = (await readText($, file))
@@ -801,7 +777,7 @@ async function readAsks($: $, options: PluginOptions): Promise<{ asks: Ask[]; de
     .filter(ask => ask.text !== '')
   // An ask keyed by a done ticket is hidden at once; the hook deletes it on its next write.
   const ticketOf = (ask: Ask) => /#(\d+)/.exec(ask.text)?.[1]
-  const done = all.some(ticketOf) ? await readDoneTickets($, options) : new Set<number>()
+  const done = all.some(ticketOf) ? await readDoneTickets($) : new Set<number>()
   const asks = all.filter(ask => {
     const ticket = ticketOf(ask)
     return ticket === undefined || !done.has(Number(ticket))
@@ -903,7 +879,7 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
       const open = await read($, openAsk)
       if (open === null) return
-      const { asks } = await readAsks($, options)
+      const { asks } = await readAsks($)
       if (!asks.some(ask => isSameAsk(open, ask))) await update($, openAsk, () => null)
     })
 
@@ -920,9 +896,9 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
     const now = await $.clock.now()
-    const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($, options)])
+    const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($)])
     const rows = rowsFor(runs, agents, now)
-    const prState = await readReadyPrs($, options, main?.sha ?? '')
+    const prState = await readReadyPrs($, main?.sha ?? '')
     const [chosen, open, isCiOpen, metric] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen), read($, ciMetric)])
     const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns, metric) : null
     const axis = chart ? axisLabels(chart.max, chart.metric) : null
@@ -1160,7 +1136,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const { asks, detailDir } = await readAsks($, options)
+    const { asks, detailDir } = await readAsks($)
     if (asks.length === 0) return next(e)
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const repo = await resolveRepo($)

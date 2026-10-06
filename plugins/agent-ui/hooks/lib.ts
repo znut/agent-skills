@@ -91,10 +91,12 @@ export function resultJsonMessage(text: string): string {
   return typeof result === 'string' ? result : ''
 }
 
-export function busStateDir(localMd: string, home: string): string | null {
-  const match = /^- `session_bus_dir`: `([^`]*)`/m.exec(localMd)
-  if (!match?.[1]) return null
-  return parentDir(match[1].replace(/^~(?=\/|$)/, home))
+// One key of `.agent/local.env`: `key=value` lines (a `#` line never starts with a key), the
+// value everything after the first `=`, a leading `~/` read as $HOME; null when absent or empty.
+export function localEnvValue(text: string, key: string, home: string): string | null {
+  const line = text.split('\n').find(one => one.startsWith(`${key}=`))
+  const value = line?.slice(key.length + 1).trim().replace(/^~(?=\/)/, home).replace(/(.)\/+$/, '$1')
+  return value || null
 }
 
 // main-ci's run.log, replayed a chunk of lines at a time: the previews still queued or running
