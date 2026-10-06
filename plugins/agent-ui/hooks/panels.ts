@@ -142,7 +142,7 @@ const fit = (text: string, width: number, right: boolean, keepRight = false) => 
 
 // v1.2: the columns at their minimum widths, one gap apart, leave `width - used` cells; those go
 // left to right to columns with a `maxWidth`, each up to it. Header and rows share the result.
-export function layout(columns: Column[], width: number): Column[] {
+function layout(columns: Column[], width: number): Column[] {
   let spare = Math.max(0, width - columns.reduce((sum, column) => sum + column.width, 0) - GAP * Math.max(0, columns.length - 1))
   return columns.map(column => {
     const grow = Math.min(spare, column.maxWidth - column.width)

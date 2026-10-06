@@ -148,7 +148,7 @@ up to it; `width` stays the minimum. `"keep": "right"` keeps an over-long
 value's right end (cut from the left); the default keeps the left end. `{w}` in
 a `label` becomes the column's laid-out width: `{ "key": "trend", "label":
 "trend ({w}d)", "width": 7, "maxWidth": 14, "keep": "right" }` draws its header
-as `trend (9d)` with 2 spare cells, and the header and rows use that one width.
+as `trend (11d)` with 4 spare cells, and the header and rows use that one width.
 A header label longer than the column is cut at its right like any cell.
 
 An optional `filters` list replaces the tab chips with one chip row per filter;
