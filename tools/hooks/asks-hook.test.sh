@@ -509,6 +509,18 @@ check "a leading colon is stripped from the candidate" lines_are "#1111 first?|s
 capture $'Intro.\n\xe2\x80\x94 should we hold #555 a week?'
 check "a leading em dash is stripped from the candidate" lines_are "#1111 first?|should we ship #449 now?|should we hold #555 a week?|"
 
+# ---------- state dir from the main checkout's .agent/local.env ----------
+# A last line with no trailing newline is read; ~/ is HOME; a trailing slash is dropped.
+lrepo=$tmp/lrepo lhome=$tmp/lhome
+mkdir -p "$lrepo/.agent" "$lhome/lstate/asks"
+git init -q "$lrepo"
+printf '# paths\nstate_dir=~/lstate/' >"$lrepo/.agent/local.env"
+echo tl-widgets >"$roles/l1"
+printf '#1111 ask?\n#2222 ask?\n' >"$lhome/lstate/asks/l1"
+jq -nc --arg c "$lrepo" '{session_id:"l1",hook_event_name:"UserPromptSubmit",prompt:"go",cwd:$c}' |
+	HOME=$lhome ASKS_ROLE_DIR=$roles ASKS_TOKEN_FILE=$tmp/none ASKS_SYNC=1 TMPDIR=$tmp bash "$script"
+check "state_dir is read from a local.env with no trailing newline" test "$(cat "$lhome/lstate/asks/l1")" = "#1111 ask?"
+
 # ---------- fail open: every early path exits 0 with no output ----------
 event_json() { # event_json <sid> <event> <prompt-or-message>
 	jq -nc --arg s "$1" --arg e "$2" --arg t "$3" \

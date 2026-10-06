@@ -51,7 +51,7 @@ resolve_state() {
 		read -r state <"$cache" 2>/dev/null
 		if [ -z "$state" ]; then
 			common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir)
-			while IFS= read -r line; do
+			while IFS= read -r line || [ -n "$line" ]; do
 				[[ $line == state_dir=* ]] || continue
 				state=${line#state_dir=}
 				break

@@ -346,6 +346,7 @@ else
 			fi
 			omitted=0
 			bot_only=0
+			: >"$event_tmp"
 			while IFS= read -r log; do
 				[ -n "$log" ] || continue
 				if ! lane_log_ok "$log"; then
