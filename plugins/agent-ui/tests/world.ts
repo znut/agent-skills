@@ -74,8 +74,9 @@ export type World = {
   // each tail run: its -c argument and path
   tails: string[]
   denied: number
-  // the session cwd; `git` succeeds only inside a repo cwd and every run is counted
+  // the session cwd and project root; `git` succeeds only inside a repo dir and every run is counted
   cwd: string
+  root: string
   repos: Set<string>
   gitRuns: number
   // each repo-panel command run, and what it answers: a result, or a deny (the call rejects, as on a timeout)
@@ -98,10 +99,11 @@ export function world(
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
     mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, filled: [], modes: [], lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, redraws: false, tails: [],
-    cwd: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
+    cwd: '/fx/repo', root: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
     panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
   on('session.cwd', () => ({ value: w.cwd }))
+  on('session.root', () => ({ value: w.root }))
   on('session.id', () => ({ value: SID }))
   on('agent.list', () => ({ value: w.agents }))
   on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
@@ -158,7 +160,8 @@ export function world(
     })
     if (command === 'git') {
       w.gitRuns++
-      return w.repos.has(w.cwd) ? ok('/fx/repo/.git\n') : ok('', 128)
+      const dir = e.init?.cwd ?? w.cwd
+      return w.repos.has(dir) ? ok(`${dir}/.git\n`) : ok('', 128)
     }
     if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => w.alive.has(pid)).join('\n'))
     if (command === 'tail') {

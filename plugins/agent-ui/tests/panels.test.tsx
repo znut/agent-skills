@@ -117,6 +117,35 @@ describe('repo panels', () => {
     await due.unmount()
   })
 
+  test('a non-git cwd keeps the project root strip and panels; a cwd in another repo shows that repo', async ($, on) => {
+    const w = world(on, {
+      ...GIT_CONFIG,
+      '/fx/repo/.agent/orchestrate.local.md': '- `session_bus_dir`: `~/state/bus`\n- `gh_status_dir`: `~/state/gh-status`\n',
+      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
+      [CONFIG]: JSON.stringify(SPECS),
+      '/fx/other/.agent/pane-panels.json': JSON.stringify([{ id: 'other', title: 'Other', cmd: ['acme-panel', 'other'] }]),
+    }, [])
+    w.panel = () => ok()
+    w.redraws = true
+    w.repos.add('/fx/other')
+    current = w
+
+    w.cwd = '/fx/home/state'
+    const away = await shown($.ui.mount(PANE()))
+    expect((await away.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
+    expect((await away.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 75%')
+    expect(w.panelRuns.map(run => run.cwd)).toEqual(['/fx/repo'])
+    await away.unmount()
+
+    w.cwd = '/fx/other'
+    const other = await shown($.ui.mount(PANE()))
+    expect(await other.find({ key: 'main-strip' })).toBeUndefined()
+    expect(await other.find({ key: 'panel:acme' })).toBeUndefined()
+    expect((await other.find({ key: 'panel:other' }))?.text).toBe('▸ Other  north  alpha 75%')
+    expect(w.panelRuns.at(-1)?.cwd).toBe('/fx/other')
+    await other.unmount()
+  })
+
   test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', async ($, on) => {
     const w = world(on, {
       ...RUN_FILES,

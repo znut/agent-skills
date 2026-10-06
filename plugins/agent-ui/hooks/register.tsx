@@ -119,12 +119,12 @@ async function tailBytes($: $, path: string): Promise<string> {
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
-// One answer per session cwd, hit or miss: a non-git cwd costs one lookup per cwd change, and
-// a later repo cwd resolves afresh. The promise is cached, so concurrent callers share one run.
+// One answer per session cwd and project root, hit or miss: a non-git cwd costs one lookup per
+// change, and a later repo cwd resolves afresh. The promise is cached, so concurrent callers share one run.
 const byCwd = new Map<string, { cwd: string; value: Promise<unknown> }>()
 
 async function perCwd<T>($: $, name: string, compute: () => Promise<T>): Promise<T> {
-  const cwd = await $.session.cwd()
+  const cwd = `${await $.session.cwd()}\0${await $.session.root()}`
   const hit = byCwd.get(name)
   if (hit?.cwd === cwd) return hit.value as Promise<T>
   const entry = { cwd, value: compute() }
@@ -133,12 +133,18 @@ async function perCwd<T>($: $, name: string, compute: () => Promise<T>): Promise
   return entry.value
 }
 
+// The repo of the current cwd, else of the session's project root: a shell `cd` out of the
+// repo keeps its panels, and a cwd inside another repo follows that repo.
 async function gitCommonDir($: $): Promise<string | null> {
   return perCwd($, 'git', async () => {
-    const ran = await $.process
-      .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-      .catch(() => null)
-    return ran?.exitCode === 0 ? ran.stdout.trim() : null
+    const commonDir = async (cwd?: string) => {
+      const ran = await $.process
+        .run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd ? { cwd } : undefined)
+        .catch(() => null)
+      return ran?.exitCode === 0 ? ran.stdout.trim() : null
+    }
+    const [cwd, root] = await Promise.all([$.session.cwd(), $.session.root()])
+    return (await commonDir()) ?? (root !== cwd ? await commonDir(root) : null)
   })
 }
 
