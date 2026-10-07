@@ -1,7 +1,7 @@
 # bgh — per-clone-identity gh wrapper
 
 `bgh <anything gh takes>` runs `gh` as the identity the clone declares: a bot
-token file, or the user's own login. Scripts and agents call `bgh` for every
+token from the macOS login keychain or a token file, or the user's own login. Scripts and agents call `bgh` for every
 GitHub write, so identity is the clone's choice, never the call site's.
 
 ## Install (once per machine)
@@ -25,8 +25,21 @@ because they share the main `.git/config`:
 
 ```sh
 cd <repo>
-git config agent.bot-token-file '~/.config/<bot>.token'
+git config agent.bot-token-item <keychain service>       # macOS login keychain
+git config agent.bot-token-file '~/.config/<bot>.token'  # or a token file
 ```
+
+`agent.bot-token-item` names a generic-password item in the login keychain;
+bgh reads it with `security find-generic-password -s <item> -w` on each call.
+Store the token once; `-w` with no value prompts for it, so the token never
+goes on a command line:
+
+```sh
+security add-generic-password -U -s <item> -a "$USER" -w
+```
+
+With both keys set, the keychain item wins. A missing or empty item is an
+error that prints the store command.
 
 No config → clear error (never silently falls back to the user's own login).
 One-call override: `BGH_TOKEN_FILE=<path> bgh …`.

@@ -15,9 +15,18 @@ trap 'rm -rf "$tmp" "/tmp/pi-session-roles/test-pi-session" "/tmp/pi-session-rol
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" <<'EOF'
 #!/bin/sh
+[ -n "${STUB_TOKEN_SEEN:-}" ] && printf '%s' "${GH_TOKEN:-}" > "$STUB_TOKEN_SEEN"
 printf '%s\n' 'https://github.com/x/y/pull/1#issuecomment-777001'
 EOF
 chmod +x "$tmp/bin/gh"
+# Stub security: never the real keychain. Item bgh-test-item holds a fake
+# value; any other item is missing (security exits 44).
+cat > "$tmp/bin/security" <<'EOF'
+#!/bin/sh
+[ "$1 $2 $3 $4" = "find-generic-password -s bgh-test-item -w" ] && { echo fake-item-token; exit 0; }
+exit 44
+EOF
+chmod +x "$tmp/bin/security"
 export PATH="$tmp/bin:$PATH"
 
 # Ensure the stub wins; if a real gh exists elsewhere, it must not be first.
@@ -217,6 +226,44 @@ if out=$(cd "$tmp/nogit" && env -u BGH_TOKEN_FILE "$script_dir/bgh" pr view 1 2>
 	echo "PASS: real gh ran outside a repo"
 else
 	echo "FAIL: outside a repo: $out"; ((failures++)) || true
+fi
+
+# (n)-(p) token source: a fresh repo with local config, no BGH_TOKEN_FILE.
+krepo="$tmp/krepo"
+git init -q "$krepo"
+seen="$tmp/token-seen"
+run_k() { (cd "$krepo" && env -u BGH_TOKEN_FILE STUB_TOKEN_SEEN="$seen" "$script_dir/bgh" pr view 1); }
+
+echo "--- case (n): keychain item wins over the token file ---"
+git -C "$krepo" config agent.bot-token-item bgh-test-item
+git -C "$krepo" config agent.bot-token-file "$token_file"
+rm -f "$seen"
+if run_k >/dev/null 2>&1 && [ "$(cat "$seen")" = "fake-item-token" ]; then
+	echo "PASS: keychain item token sent"
+else
+	echo "FAIL: item did not win"; ((failures++)) || true
+fi
+
+echo "--- case (o): missing keychain item exits 1 with the store command ---"
+git -C "$krepo" config agent.bot-token-item bgh-missing-item
+rm -f "$seen"
+rc=0
+err=$(run_k 2>&1 >/dev/null) || rc=$?
+if [ "$rc" -eq 1 ] && [ ! -e "$seen" ] \
+	&& printf '%s' "$err" | grep -qF 'bgh: keychain item not found: bgh-missing-item' \
+	&& printf '%s' "$err" | grep -qF 'security add-generic-password -U -s bgh-missing-item -a "$USER" -w'; then
+	echo "PASS: missing item refused, gh not called"
+else
+	echo "FAIL: missing item: rc=$rc $err"; ((failures++)) || true
+fi
+
+echo "--- case (p): token file still works without an item ---"
+git -C "$krepo" config --unset agent.bot-token-item
+rm -f "$seen"
+if run_k >/dev/null 2>&1 && [ "$(cat "$seen")" = "fake-token" ]; then
+	echo "PASS: token file token sent"
+else
+	echo "FAIL: token file path"; ((failures++)) || true
 fi
 
 if [ "$failures" -eq 0 ]; then

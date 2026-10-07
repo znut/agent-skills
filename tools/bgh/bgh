@@ -7,9 +7,11 @@
 # that clone's identity, the way a per-repo tool-version file picks a runtime.
 #
 # Per-repo config (machine-local .git/config, shared by every worktree).
-# Exactly one of:
-#   git config agent.bot-token-file '~/.config/<bot>.token'   # bot identity
+# Exactly one identity:
+#   git config agent.bot-token-item <keychain service>        # bot, login keychain
+#   git config agent.bot-token-file '~/.config/<bot>.token'   # bot, token file
 #   git config agent.gh-identity personal                     # own gh login
+# With both bot keys set, the keychain item wins.
 # One-call override: BGH_TOKEN_FILE=<path> bgh …
 # A preset GH_TOKEN, or a directory outside any git repo, runs the real gh
 # unchanged: the caller chose the identity, or there is no clone to ask.
@@ -71,14 +73,20 @@ esac
 [ -n "${GH_TOKEN:-}" ] && exec "$real_gh" "$@"
 git rev-parse --git-dir >/dev/null 2>&1 || exec "$real_gh" "$@"
 
-tf=${BGH_TOKEN_FILE:-$(git config --get agent.bot-token-file 2>/dev/null || true)}
+tf=${BGH_TOKEN_FILE:-}
+item=""
 if [ -z "$tf" ]; then
+	item=$(git config --get agent.bot-token-item 2>/dev/null || true)
+	[ -n "$item" ] || tf=$(git config --get agent.bot-token-file 2>/dev/null || true)
+fi
+if [ -z "$tf" ] && [ -z "$item" ]; then
 	ident=$(git config --get agent.gh-identity 2>/dev/null || true)
 	if [ "$ident" = "personal" ]; then
 		[ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
 		exec "$real_gh" "$@"
 	fi
 	echo 'bgh: no identity configured for this repo.' >&2
+	echo '  bot:       git config agent.bot-token-item <keychain service>   (macOS login keychain)' >&2
 	echo "  bot:       git config agent.bot-token-file '~/.config/<bot>.token'" >&2
 	echo '  personal:  git config agent.gh-identity personal   (uses your own `gh auth login`)' >&2
 	exit 1
@@ -86,7 +94,7 @@ fi
 case $tf in
 	"~/"*) tf=$HOME/${tf#"~/"} ;;
 esac
-if [ ! -r "$tf" ]; then
+if [ -n "$tf" ] && [ ! -r "$tf" ]; then
 	echo "bgh: token file not readable: $tf" >&2
 	exit 1
 fi
@@ -132,7 +140,16 @@ if [ -z "${BGH_SELF_LOG:-}" ]; then
 		fi
 	fi
 fi
-GH_TOKEN=$(cat "$tf")
+if [ -n "$item" ]; then
+	GH_TOKEN=$(security find-generic-password -s "$item" -w 2>/dev/null) || GH_TOKEN=""
+	if [ -z "$GH_TOKEN" ]; then
+		echo "bgh: keychain item not found: $item" >&2
+		echo "  store it:  security add-generic-password -U -s $item -a \"\$USER\" -w   (prompts for the token)" >&2
+		exit 1
+	fi
+else
+	GH_TOKEN=$(cat "$tf")
+fi
 export GH_TOKEN
 [ -n "${BGH_SELF_LOG:-}" ] && run_logged "$@"
 exec "$real_gh" "$@"

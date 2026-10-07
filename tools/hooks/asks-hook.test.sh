@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # asks-hook.test.sh: the asks hook's lock (run from the real lock/unlock source) and its
 # deterministic clear (run through the real script). Self-contained: temp dir only, no network
-# (the token file is absent, so a reply that reaches Jev fails fast and logs jev-failed).
+# (the token file is absent, so a reply that reaches Jev fails fast and logs jev-failed; security
+# is a tripwire, so no case reads the real keychain).
 # Needs bash 4 or later: macOS /bin/bash 3.2 hangs on it.
 set -u
 [ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "asks-hook.test.sh needs bash >= 4; run it with a newer bash" >&2; exit 1; }
@@ -11,7 +12,7 @@ tmp=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$tmp"' EXIT
 
 # Isolation: every case runs on a private PATH with only the tools the hook and this harness use.
-# claude, gh and curl are tripwires: they record a violation and exit 97. A case's working curl is
+# claude, gh, curl and security are tripwires: they record a violation and exit 97. A case's working curl is
 # its own Jev stub, put ahead of $bin.
 bin=$tmp/bin
 mkdir -p "$bin"
@@ -19,7 +20,7 @@ for t in jq sed awk tr cut grep find mktemp rm mv cp cat git dirname head tail s
 	ln -s "$(command -v "$t")" "$bin/$t"
 done
 ln -s "$BASH" "$bin/bash"
-for t in claude gh curl; do
+for t in claude gh curl security; do
 	printf '#!/bin/sh\necho "tripwire: real %s called: $*" >&2\necho "%s $*" >>"%s/violation"\nexit 97\n' "$t" "$t" "$tmp" >"$bin/$t"
 	chmod +x "$bin/$t"
 done
@@ -163,7 +164,7 @@ stub=$tmp/stub
 mkdir -p "$stub"
 cat >"$stub/curl" <<'STUB'
 #!/bin/sh
-cat >/dev/null
+if [ -n "${STUB_AUTH:-}" ]; then cat >"$STUB_AUTH"; else cat >/dev/null; fi
 while [ $# -gt 0 ]; do
 	case $1 in -o) out=$2 ;; --data-binary) req=${2#@} ;; esac
 	shift
@@ -300,6 +301,54 @@ reply_jev "lock the mock as drawn, fine by me"
 check "a Jev clear score of exactly 0.45 clears that ask, 0.44 keeps it" lines_are "Ship the second part?|Hold the third?|"
 check "the clear is logged with every ask's score" log_last '.decision == "clear" and .scores == {"1":0.45,"2":0.44,"3":0.1}'
 rm -f "$tmp/answers.json"
+
+# ---------- token source: the keychain item, read only on a Jev call ----------
+# security is stubbed: item kc-test holds a fake value, any other item is missing; each call is logged.
+kstub=$tmp/kstub
+mkdir -p "$kstub"
+cat >"$kstub/security" <<'STUB'
+#!/bin/sh
+echo "$*" >>"$STUB_SEC_LOG"
+[ "$1 $2 $3 $4" = "find-generic-password -s kc-test -w" ] && { echo fake-keychain-token; exit 0; }
+exit 44
+STUB
+chmod +x "$kstub/security"
+kc_run() { # kc_run <item> <event json> [VAR=value...]: through stubbed Jev and keychain, no token file
+	local item=$1 in=$2
+	shift 2
+	printf '%s' "$in" | env -u ASKS_TOKEN_FILE PATH="$kstub:$stub:$bin" ASKS_STATE_DIR="$st" ASKS_ROLE_DIR="$roles" \
+		ASKS_TOKEN_ITEM="$item" STUB_SEC_LOG="$tmp/sec.log" STUB_AUTH="$tmp/auth.last" STUB_HOOK="$script" \
+		ASKS_SYNC=1 TMPDIR="$tmp" "$@" bash "$script" 2>&1
+}
+stop_json() { jq -nc --arg m "$1" --arg cwd "$tmp/repo" '{session_id:"s1",hook_event_name:"Stop",last_assistant_message:$m,cwd:$cwd}'; }
+sec_reads() { [ "$(grep -c '' "$tmp/sec.log" 2>/dev/null || echo 0)" = "$1" ]; }
+
+seed_lines "other?"
+rm -f "$tmp/sec.log" "$tmp/auth.last"
+out=$(kc_run kc-test "$(stop_json 'Ship #5555 now?')")
+check "keychain item: the ask is pinned" lines_are "other?|Ship #5555 now?|"
+check "keychain item: its value is the bearer token" grep -qF 'Bearer fake-keychain-token' "$tmp/auth.last"
+check "keychain item: read once" sec_reads 1
+check "keychain item: silent" test -z "$out"
+
+seed_lines "other?"
+rm -f "$tmp/sec.log" "$tmp/auth.last"
+out=$(kc_run kc-missing "$(stop_json 'Ship #5556 now?')")
+check "missing keychain item: nothing pinned" lines_are "other?|"
+check "missing keychain item: logged jev-failed, Jev not called" bash -c 'grep -q "\"decision\":\"jev-failed\"" "$0" && test ! -e "$1"' "$st/asks/jev-log.jsonl" "$tmp/auth.last"
+check "missing keychain item: silent" test -z "$out"
+
+seed_lines "other?"
+rm -f "$tmp/sec.log" "$tmp/auth.last"
+out=$(kc_run kc-test "$(stop_json 'Ship #5557 now?')" ASKS_TOKEN_FILE="$tmp/token")
+check "an explicit token file still works" grep -qF 'Bearer fake' "$tmp/auth.last"
+check "an explicit token file wins: no keychain read" sec_reads 0
+
+seed 1111 2222
+rm -f "$tmp/sec.log"
+out=$(kc_run kc-test "$(jq -nc '{session_id:"s1",hook_event_name:"UserPromptSubmit",prompt:"1111 go",cwd:"/nonexistent"}')")
+check "a reply with no Jev call reads no keychain item" sec_reads 0
+check "the short reply still clears" asks_are "#2222 "
 
 # A done ticket drops its ask on a later write, only when it closed after the ask was pinned: its PR
 # is MERGED or CLOSED with a close time after the pin, or its board row is Done and was not at the pin.
@@ -555,7 +604,7 @@ check "no resolvable state dir" silent_ok "$(event_json s1 UserPromptSubmit go)"
 check "an unwritable state dir, UserPromptSubmit" silent_ok "$(event_json s1 UserPromptSubmit go)" ASKS_STATE_DIR="$tmp/afile/x"
 check "an unwritable state dir, Stop" silent_ok "$(event_json s1 Stop 'Ship it?')" ASKS_STATE_DIR="$tmp/afile/x"
 check "no jq, curl or perl on PATH" silent_ok "$(event_json s1 UserPromptSubmit go)" PATH=/var/empty
-check "no HOME" silent_ok "$(event_json s1 Stop 'Ship it?')" -u HOME ASKS_TOKEN_FILE=
+check "no HOME" silent_ok "$(event_json s1 Stop 'Ship it?')" -u HOME
 
 # Every tool but perl: the lock fails, so the clear is skipped and the asks stay.
 noperl=$tmp/bin-no-perl

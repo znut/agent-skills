@@ -23,7 +23,9 @@ Other repos exit clean. The session's role comes from the marker that
 
 `asks-hook.sh` is one script for both events. Scope: sessions with a role
 marker naming a manager role, `pm` or any `tl-<lane>`. It needs `jq`, `curl`, `perl` and a
-TypeSafe token in `~/.config/typesafe.token`.
+TypeSafe token in the macOS login keychain item `typesafe`, read only on a turn
+that calls Jev (store it with `security add-generic-password -U -s typesafe -a "$USER" -w`,
+which prompts for the value). A missing item fails open like any Jev failure.
 
 - **Stop (capture).** The candidate is the last line of the final assistant
   message that ends in `?`, cut to its question sentence alone: the last full
@@ -120,7 +122,8 @@ TypeSafe token in `~/.config/typesafe.token`.
   removal appears exactly once.
 
 Dry run: `ASKS_DRY_RUN=1` judges and prints the decision in the foreground, writing no ask. `ASKS_SYNC=1` runs the Jev part in the foreground and writes.
-`ASKS_STATE_DIR`, `ASKS_ROLE_DIR` and `ASKS_TOKEN_FILE` override the paths.
+`ASKS_STATE_DIR` and `ASKS_ROLE_DIR` override the paths, `ASKS_TOKEN_ITEM` the keychain item;
+`ASKS_TOKEN_FILE`, when set, reads the token from that file instead of the keychain.
 
     "Stop": [
       { "hooks": [

@@ -10,7 +10,9 @@
 # hook itself never waits on it.
 # File format (orchestrate/SKILL.md §Pinned asks): <state>/asks/<sid> holds one
 # line per ask; <state>/asks/<sid>.d/<n>.md its context, renumbered on delete.
-# Env overrides (tests): ASKS_STATE_DIR, ASKS_ROLE_DIR, ASKS_TOKEN_FILE,
+# The TypeSafe token is the login-keychain item `typesafe`, read only when a Jev call is made.
+# Env overrides (tests): ASKS_STATE_DIR, ASKS_ROLE_DIR, ASKS_TOKEN_ITEM, ASKS_TOKEN_FILE (a
+# token file, used instead of the keychain when set),
 # ASKS_DRY_RUN=1 (judge and print the decision, write no ask), ASKS_SYNC=1
 # (run the Jev part in the foreground).
 
@@ -27,7 +29,7 @@ SETTLED_MIN=0.6  # yes-probability that the assistant's message settles an open 
 OPTIONS_MIN=0.5 # lower for options: sibling lines split the confidence, the block is kept whole
 JEV_TIMEOUT=3
 ROLE_DIR=${ASKS_ROLE_DIR:-/tmp/cc-session-roles}
-TOKEN_FILE=${ASKS_TOKEN_FILE:-${HOME:-}/.config/typesafe.token}
+TOKEN_ITEM=${ASKS_TOKEN_ITEM:-typesafe}
 DRY=${ASKS_DRY_RUN:-}
 
 # Inline work: builtins and one jq (a fork costs ~5 ms of every turn and prompt).
@@ -112,13 +114,12 @@ log() { # log <hook> <candidate> <decision> [scores-json] [replaced ask text...]
 # jev <questions-json-file> <state-json-file>: prints the answers object; curl's exit
 # status decides (a body is parsed only after curl succeeded), else it fails.
 jev() {
-	[ -r "$TOKEN_FILE" ] || return 1
 	jq -n --slurpfile q "$1" --slurpfile s "$2" \
 		'{model:"jev-latest",state:$s[0],questions:$q[0]}' >"$tmp/req.json" || return 1
 	# The token goes in through curl's config on stdin, never on argv; xtrace stays off
 	# around it so `bash -x` can never print it.
 	{ local x=$- rc; set +x; } 2>/dev/null
-	printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '[:space:]' <"$TOKEN_FILE")" |
+	printf 'header = "Authorization: Bearer %s"\n' "$token" |
 		curl -sS -f --max-time "$JEV_TIMEOUT" -K - -H 'Content-Type: application/json' \
 			--data-binary "@$tmp/req.json" -o "$tmp/resp.json" https://api.typesafe.ai/v1/systemone
 	rc=$?
@@ -127,9 +128,25 @@ jev() {
 	jq -e '.answers' "$tmp/resp.json"
 }
 
-# judge <hook> <label>: Jev's answers into $ans, or log jev-failed and fail.
+# read_token: sets $token from ASKS_TOKEN_FILE when set, else the keychain item; fails when
+# empty. xtrace stays off so the value is never printed.
+read_token() {
+	{ local x=$-; set +x; } 2>/dev/null
+	if [ -n "${ASKS_TOKEN_FILE:-}" ]; then
+		token=$(<"$ASKS_TOKEN_FILE")
+	else
+		token=$(security find-generic-password -s "$TOKEN_ITEM" -w)
+	fi
+	token=${token//[[:space:]]/}
+	[[ $x == *x* ]] && set -x
+	[ -n "$token" ]
+}
+
+# judge <hook> <label>: Jev's answers into $ans, or log jev-failed and fail. The token is read
+# once per process, on the first judge.
+token=""
 judge() {
-	ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
+	{ [ -n "$token" ] || read_token; } && ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
 }
 
 # ---------- Stop: pin the final question, clear the asks the message settles ----------
