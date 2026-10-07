@@ -923,6 +923,14 @@ export const register: Register = (on, options) => {
     // open chart (CHART_ROWS bars, its metric chips and its legend line), the only rows above them
     const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 2 : 0)
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
+    // chain row i sits below the panels (one line each: head, error, chips, columns, rows, no
+    // data, note) and the Needs you list (title, one line per PR, a blank line)
+    const panelLines = panels.reduce(
+      (sum, view) => sum + 1 + (view.error ? 1 : 0) + view.chipRows.length + (view.header.length > 0 ? 1 : 0) + view.rows.length + (view.noData ? 1 : 0) + (view.tab?.note ? 1 : 0),
+      0,
+    )
+    const chainTop = panelTop + panelLines + (prState.prs.length > 0 ? prState.prs.length + 2 : 0)
+    const paneRows = e.props.scroll.offset + e.props.scroll.bodyRows
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
       segments.map((segment, k) => (
         <Text
@@ -1069,22 +1077,6 @@ export const register: Register = (on, options) => {
                     </Box>
                   )
                 })}
-                {/* a hovered #N reveals a card of its board title, painted over the lines below so the
-                    row never reflows */}
-                {chain.map(({ n, mark }, k) => {
-                  const title = board.titles.get(n)
-                  if (title === undefined) return false
-                  const head = `#${n}${mark === 'merged' ? ' ✓' : ''} · `
-                  const width = Math.min(e.props.bodyColumns, head.length + title.length + 4)
-                  return (
-                    <Box key={`chain-card:${i}:${k}`} {...CARD} top={1} left={0} width={width} hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
-                      <Box key="chain-card-line" flexDirection="row" flexWrap="nowrap">
-                        <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : CARD_TEXT}>{head}</Text>
-                        <Text color={CARD_TEXT} wrap="truncate-end">{title}</Text>
-                      </Box>
-                    </Box>
-                  )
-                })}
               </Box>
             ))}
           </Box>
@@ -1167,6 +1159,23 @@ export const register: Register = (on, options) => {
                 ]
               : [],
           ),
+        )}
+        {/* a hovered #N reveals a card of its board title, below its chain row or else above it */}
+        {chains.flatMap((chain, i) =>
+          chain.flatMap(({ n, mark }, k) => {
+            const title = board.titles.get(n)
+            if (title === undefined) return []
+            const head = `#${n}${mark === 'merged' ? ' ✓' : ''} · `
+            const width = Math.min(e.props.bodyColumns, head.length + title.length + 4)
+            return [
+              <Box key={`chain-card:${i}:${k}`} {...CARD} top={placeBeside(chainTop + i, 1, 3, paneRows).x} left={0} width={width} hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
+                <Box key="chain-card-line" flexDirection="row" flexWrap="nowrap">
+                  <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : CARD_TEXT}>{head}</Text>
+                  <Text color={CARD_TEXT} wrap="truncate-end">{title}</Text>
+                </Box>
+              </Box>,
+            ]
+          }),
         )}
       </Box>
     )

@@ -879,6 +879,10 @@ describe('chain row', () => {
     expect(card?.props).toMatchObject({ position: 'absolute', display: 'none' })
     expect(card?.hover).toMatchObject({ display: 'flex', scope: 'chain:0:4549' })
     expect(textOf(card)).toBe('#4549 ✓ · second | part')
+    // drawn after the rest of the pane, just below its row (the pane's first line here)
+    expect(all.indexOf(card as Drawn)).toBeGreaterThan(all.findIndex(node => node.props?.key === 'chains'))
+    expect(all.findLastIndex(node => node.props?.key != null && !String(node.props.key).startsWith('chain-card'))).toBeLessThan(all.indexOf(card as Drawn))
+    expect(card?.props?.top).toBe(1)
     await ui.unmount()
   })
 
