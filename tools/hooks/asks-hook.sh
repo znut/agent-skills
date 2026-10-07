@@ -10,7 +10,7 @@
 # hook itself never waits on it.
 # File format (orchestrate/SKILL.md §Pinned asks): <state>/asks/<sid> holds one
 # line per ask; <state>/asks/<sid>.d/<n>.md its context, renumbered on delete.
-# The TypeSafe token is the login-keychain item `typesafe`, read only when a Jev call is made.
+# The TypeSafe token is the login-keychain item `typesafe`, read only on the path that calls Jev.
 # Env overrides (tests): ASKS_STATE_DIR, ASKS_ROLE_DIR, ASKS_TOKEN_ITEM, ASKS_TOKEN_FILE (a
 # token file, used instead of the keychain when set),
 # ASKS_DRY_RUN=1 (judge and print the decision, write no ask), ASKS_SYNC=1
@@ -128,8 +128,9 @@ jev() {
 	jq -e '.answers' "$tmp/resp.json"
 }
 
-# read_token: sets $token from ASKS_TOKEN_FILE when set, else the keychain item; fails when
-# empty. xtrace stays off so the value is never printed.
+# read_token: sets $token from ASKS_TOKEN_FILE when set, else the keychain item, and
+# $have_token when it is non-empty. xtrace stays off while $token is touched, so the value is
+# never printed.
 read_token() {
 	{ local x=$-; set +x; } 2>/dev/null
 	if [ -n "${ASKS_TOKEN_FILE:-}" ]; then
@@ -138,15 +139,16 @@ read_token() {
 		token=$(security find-generic-password -s "$TOKEN_ITEM" -w)
 	fi
 	token=${token//[[:space:]]/}
+	[ -n "$token" ] && have_token=1
 	[[ $x == *x* ]] && set -x
-	[ -n "$token" ]
+	[ -n "$have_token" ]
 }
 
 # judge <hook> <label>: Jev's answers into $ans, or log jev-failed and fail. The token is read
 # once per process, on the first judge.
-token=""
+token="" have_token=""
 judge() {
-	{ [ -n "$token" ] || read_token; } && ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
+	{ [ -n "$have_token" ] || read_token; } && ans=$(jev "$tmp/q.json" "$tmp/state.json") && [ -n "$ans" ] || { log "$1" "$2" jev-failed; return 1; }
 }
 
 # ---------- Stop: pin the final question, clear the asks the message settles ----------
