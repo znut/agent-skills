@@ -1060,7 +1060,7 @@ export const register: Register = (on, options) => {
                 {chain.map(({ n, mark }, k) => {
                   const href = repo ? safeHref(`https://github.com/${repo}/issues/${n}`) : null
                   return (
-                    <Box key={`chain-issue:${i}:${k}`} flexDirection="row" hover={{ scope: `chain:${i}:${n}`, backgroundColor: COLUMN_LIT }}>
+                    <Box key={`chain-issue:${i}:${k}`} flexDirection="row" flexShrink={0} hover={{ scope: `chain:${i}:${n}`, backgroundColor: COLUMN_LIT }}>
                       {k > 0 && <Text dimColor>{' → '}</Text>}
                       <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : undefined} dimColor={mark === 'merged'}>
                         {href ? <Link href={href} label={`#${n}`} /> : `#${n}`}
@@ -1069,12 +1069,22 @@ export const register: Register = (on, options) => {
                     </Box>
                   )
                 })}
-                {/* a hovered #N shows its board title at the line's end */}
-                {chain.map(({ n }, k) => board.titles.has(n) && (
-                  <Box key={`chain-title:${i}:${k}`} display="none" hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
-                    <Text dimColor wrap="truncate-end">{`  ${board.titles.get(n)}`}</Text>
-                  </Box>
-                ))}
+                {/* a hovered #N reveals a card of its board title, painted over the lines below so the
+                    row never reflows */}
+                {chain.map(({ n, mark }, k) => {
+                  const title = board.titles.get(n)
+                  if (title === undefined) return false
+                  const head = `#${n}${mark === 'merged' ? ' ✓' : ''} · `
+                  const width = Math.min(e.props.bodyColumns, head.length + title.length + 4)
+                  return (
+                    <Box key={`chain-card:${i}:${k}`} {...CARD} top={1} left={0} width={width} hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
+                      <Box key="chain-card-line" flexDirection="row" flexWrap="nowrap">
+                        <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : CARD_TEXT}>{head}</Text>
+                        <Text color={CARD_TEXT} wrap="truncate-end">{title}</Text>
+                      </Box>
+                    </Box>
+                  )
+                })}
               </Box>
             ))}
           </Box>

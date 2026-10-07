@@ -867,16 +867,18 @@ describe('chain row', () => {
     await ui.unmount()
   })
 
-  test('each #N links its issue; hovering it reveals its board title', async ($, on) => {
+  test('each #N links its issue; hovering it reveals a card of its board title', async ($, on) => {
     world(on, chainFiles('4545 4549 4552\n'), undefined, { agents })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect((await ui.find({ type: 'Link', text: '#4552' }))?.props.href).toBe('https://github.com/acme/widgets/issues/4552')
     const all = walk(await ui.drawn())
     expect(all.find(node => node.props?.key === 'chain-issue:0:0')?.hover?.scope).toBe('chain:0:4549')
-    const title = all.find(node => node.props?.key === 'chain-title:0:0')
-    expect(title?.props?.display).toBe('none')
-    expect(title?.hover).toMatchObject({ display: 'flex', scope: 'chain:0:4549' })
-    expect(textOf(title).trim()).toBe('second | part')
+    expect(all.find(node => node.props?.key === 'chain-issue:0:0')?.props?.flexShrink).toBe(0)
+    expect(all.some(node => String(node.props?.key ?? '').startsWith('chain-title:'))).toBe(false)
+    const card = all.find(node => node.props?.key === 'chain-card:0:0')
+    expect(card?.props).toMatchObject({ position: 'absolute', display: 'none' })
+    expect(card?.hover).toMatchObject({ display: 'flex', scope: 'chain:0:4549' })
+    expect(textOf(card)).toBe('#4549 ✓ · second | part')
     await ui.unmount()
   })
 
