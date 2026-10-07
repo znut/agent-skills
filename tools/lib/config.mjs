@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expandHome } from "./fs-util.mjs"
@@ -27,4 +28,35 @@ export function loadAllConfigs() {
 	return readdirSync(dir)
 		.filter((f) => f.endsWith(".json"))
 		.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")))
+}
+
+function keychainItem(item) {
+	return execFileSync("security", ["find-generic-password", "-s", item, "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+}
+
+/**
+ * The GitHub token for a config. `tokenItem` (a macOS login-keychain service
+ * name) wins over `tokenFile`, as in bgh. Throws a message naming the source,
+ * never the token. `readItem` is injectable so tests never touch a keychain.
+ */
+export function readToken(config, readItem = keychainItem) {
+	if (config.tokenItem) {
+		let token = ""
+		try {
+			token = readItem(config.tokenItem).trim()
+		} catch {}
+		if (!token) {
+			throw new Error(
+				`keychain item not found: ${config.tokenItem} (store it: security add-generic-password -U -s ${config.tokenItem} -a "$USER" -w)`,
+			)
+		}
+		return token
+	}
+	if (!config.tokenFile) throw new Error(`config ${config.name} sets neither tokenItem nor tokenFile`)
+	let token = ""
+	try {
+		token = readFileSync(expandHome(config.tokenFile), "utf8").trim()
+	} catch {}
+	if (!token) throw new Error(`token file unreadable or empty: ${config.tokenFile}`)
+	return token
 }

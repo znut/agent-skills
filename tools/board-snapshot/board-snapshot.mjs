@@ -11,8 +11,8 @@ import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { loadConfig, varDir } from "../lib/config.mjs"
-import { expandHome, writeAtomic } from "../lib/fs-util.mjs"
+import { loadConfig, readToken, varDir } from "../lib/config.mjs"
+import { writeAtomic } from "../lib/fs-util.mjs"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const DEBOUNCE_MS = 60_000
@@ -29,9 +29,9 @@ function ghJson(args) {
 function ensureAuth(config) {
 	if (process.env.GH_TOKEN) return
 	try {
-		process.env.GH_TOKEN = readFileSync(expandHome(config.tokenFile), "utf8").trim()
-	} catch {
-		console.error(`GH_TOKEN not set and token file unreadable: ${config.tokenFile}`)
+		process.env.GH_TOKEN = readToken(config)
+	} catch (e) {
+		console.error(`GH_TOKEN not set and ${e.message}`)
 		process.exit(1)
 	}
 }

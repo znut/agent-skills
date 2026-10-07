@@ -45,7 +45,8 @@ shows the shape (fill-me-in placeholders); copy it to
 | `name` | all | yes | Identifies this config; also the directory name under `$AGENT_TOOLS_HOME/var/<name>/` |
 | `org` | gh-status, board-snapshot | yes | GitHub org/owner of the repo to poll (e.g. `YOUR_ORG`) |
 | `repo` | gh-status, board-snapshot | yes | Repo name, without org (e.g. `YOUR_REPO`) |
-| `tokenFile` | gh-status, board-snapshot | yes | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
+| `tokenItem` | gh-status, board-snapshot | one of `tokenItem` / `tokenFile` | macOS login-keychain service holding the GitHub token, read with `security find-generic-password -s <item> -w` once per poll cycle/run; wins over `tokenFile` (same precedence as bgh). Store it: `security add-generic-password -U -s <item> -a "$USER" -w` |
+| `tokenFile` | gh-status, board-snapshot | one of `tokenItem` / `tokenFile` | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
 | `mainCi` | main-ci | yes, if using main-ci | `repo`, `core` steps, optional `builds` lanes, `buildConcurrency`, `warmCache`, `cleanup`, `preview` — see `main-ci/README.md` |
@@ -151,4 +152,4 @@ cat "$AGENT_TOOLS_HOME/var/<name>/gh-status/status/state.json"
 ```
 
 Both smoke tests need a real config at `$AGENT_TOOLS_HOME/config/<name>.json`
-with a valid `tokenFile` — they make live GitHub calls.
+with a valid `tokenItem` or `tokenFile` — they make live GitHub calls.

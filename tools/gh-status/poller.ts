@@ -38,8 +38,7 @@
  */
 
 import { renameSync } from "node:fs"
-import { loadAllConfigs, varDir } from "../lib/config.mjs"
-import { expandHome } from "../lib/fs-util.mjs"
+import { loadAllConfigs, readToken, varDir } from "../lib/config.mjs"
 
 const POLL_MS = 40_000
 const PR_WINDOW = 30
@@ -80,7 +79,8 @@ type RepoConfig = {
 	name: string
 	org: string
 	repo: string
-	tokenFile: string
+	tokenFile?: string
+	tokenItem?: string
 	board?: { owner: string; projectNumber: number }
 }
 
@@ -208,10 +208,6 @@ async function fetchNewComments(owner: string, repo: string, prNumber: number, s
 
 	out.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 	return out
-}
-
-async function readToken(tokenFile: string): Promise<string> {
-	return (await Bun.file(expandHome(tokenFile)).text()).trim()
 }
 
 /** Atomic write: agents reading concurrently never see a partial file. */
@@ -389,7 +385,8 @@ async function probeBoard(config: RepoConfig, prevUpdatedAt: string | null | und
 	if (prevUpdatedAt === updatedAt) return updatedAt
 
 	const script = new URL("../board-snapshot/board-snapshot.mjs", import.meta.url).pathname
-	const proc = Bun.spawn(["bun", script, config.name, "--force"], { stdout: "inherit", stderr: "inherit" })
+	// GH_TOKEN via env (not argv) so the child skips its own token read.
+	const proc = Bun.spawn(["bun", script, config.name, "--force"], { stdout: "inherit", stderr: "inherit", env: { ...process.env, GH_TOKEN: token } })
 	if ((await proc.exited) !== 0) throw new Error("board-snapshot refresh exited non-zero")
 	return updatedAt
 }
@@ -406,7 +403,8 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 	const prevState = await readPrevState(stateFile)
 	const prevCursors = prevState?.commentCursors ?? {}
 
-	const token = await readToken(config.tokenFile)
+	// One read per repo per cycle; tokenItem costs one `security` fork (~15 ms).
+	const token = readToken(config)
 	const res = await fetch("https://api.github.com/graphql", {
 		method: "POST",
 		headers: { authorization: `bearer ${token}`, "content-type": "application/json" },
