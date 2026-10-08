@@ -9,16 +9,25 @@ The driver is one long-lived process: `bun tools/main-ci/main-ci.mjs
 <configName>`, run by the launchd job `com.agent-tools.main-ci` with
 `KeepAlive`. Every 45 s it polls:
 
-1. It runs board-snapshot when the config has a `board` block and the
+1. It re-reads `$AGENT_TOOLS_HOME/config/<name>.json`, so a config edit
+   takes effect without a restart: board-snapshot and git use it on this
+   poll, and the next run starts with it. A run keeps the settings it
+   started with. A changed config logs `config reloaded`; one that fails to
+   read, parse, or validate logs `config FAILED, keeping the last good one`
+   once per distinct cause, and the driver keeps the last good config. A
+   file watcher is rejected because `fs.watch` on macOS misses
+   atomic-rename writes; a launchd `WatchPaths` restart is rejected because
+   it cancels the run in flight on every edit.
+2. It runs board-snapshot when the config has a `board` block and the
    newest mtime under `var/<name>/gh-status/events/` changed since the last
    poll.
-2. It runs `git fetch origin` in `mainCi.repo` and resolves
+3. It runs `git fetch origin` in `mainCi.repo` and resolves
    `origin/<branch>`. Each git call is its own process group, and the whole
    group is killed after 120 s, so a stalled fetch and its helpers (ssh,
    git-remote-https) fail that poll and the next poll retries.
-3. When the tip equals the current run's sha, it hands the poll to the
+4. When the tip equals the current run's sha, it hands the poll to the
    run's preview gate (see Preview gate) and does nothing more.
-4. When the tip moved, it cancels the current run, moves the `origin-main`
+5. When the tip moved, it cancels the current run, moves the `origin-main`
    worktree to the new tip (`checkout --detach -f`,
    `clean -fd -e node_modules`), and starts a run on the new sha.
 

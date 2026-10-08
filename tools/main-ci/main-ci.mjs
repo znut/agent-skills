@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process"
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
-import { loadConfig, varDir } from "../lib/config.mjs"
+import { configDir, varDir } from "../lib/config.mjs"
 import { expandHome } from "../lib/fs-util.mjs"
 import { signal } from "./jobs.mjs"
 import { startRun } from "./run.mjs"
@@ -126,8 +126,40 @@ async function boardSnapshot(config, s) {
 	if (r.code !== 0) s.log(`board-snapshot: FAIL exit=${r.code} — ${reason(r)}`)
 }
 
-async function drive(config) {
-	const s = settings(config)
+// The config is re-read every poll, so an edit takes effect without a
+// restart. A run keeps the settings it started with; a config that fails to
+// parse or validate keeps the last good one. Returns the same object when the
+// file text is unchanged.
+function reloader(name) {
+	const file = join(configDir(), `${name}.json`)
+	let text = null
+	let good = null
+	let bad = null
+	return () => {
+		try {
+			const now = readFileSync(file, "utf8")
+			if (now === text) {
+				bad = null
+				return good
+			}
+			const config = JSON.parse(now)
+			good = { config, s: settings(config) }
+			if (text !== null) good.s.log("config reloaded")
+			text = now
+			bad = null
+		} catch (e) {
+			if (!good) throw e
+			const msg = e instanceof Error ? e.message : String(e)
+			if (msg !== bad) good.s.log(`config FAILED, keeping the last good one: ${msg}`)
+			bad = msg
+		}
+		return good
+	}
+}
+
+async function drive(name) {
+	const reload = reloader(name)
+	let { config, s } = reload()
 	let current = null
 	let lastError = ""
 	// Every exit path, a crash included, takes the run's and any capture's groups with it.
@@ -140,6 +172,7 @@ async function drive(config) {
 
 	for (;;) {
 		try {
+			;({ config, s } = reload())
 			await boardSnapshot(config, s)
 			const branch = await defaultBranch(s)
 			await git(s, s.repo, ["fetch", "-q", "origin"])
@@ -175,4 +208,4 @@ if (!name) {
 	console.error("usage: bun tools/main-ci/main-ci.mjs <configName>")
 	process.exit(1)
 }
-await drive(loadConfig(name))
+await drive(name)
