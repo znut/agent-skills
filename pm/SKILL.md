@@ -72,6 +72,9 @@ references tree is rarely under version control. Every size, colour, and
 spacing in a mock or ticket is a token name, never a pixel value; a value
 with no token is a defect. If repeated changes show the repo lacks written
 design rules, ask the user whether to add them.
+After each design round, open the mock's source file on the user's screen (an
+HTML mock in their browser) so they review the real render. A rendered image is
+only for the PM's own check and stays out of the design source tree.
 
 ## Settle the request
 
