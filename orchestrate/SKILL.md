@@ -99,8 +99,8 @@ Give each worker: the ticket, the absolute worktree path, the base SHA, the
 paths it owns, the delivery mode, the path of the repo's worker rules
 (`.agent/orchestrate.md` unless the repo rules name a worker file), and the
 absolute path of [worker.md](worker.md). Add what this task needs and
-the rules do not say: the sibling file or idiom to mirror, the trust boundary
-or performance budget the reviewer must judge, and each settled choice. Do
+the rules do not say: the sibling file or idiom to mirror and the trust
+boundary or performance budget the reviewer must judge. Do
 not paste the repo rules or the worker procedure; the worker reads the rules
 from `origin/<default>` and the procedure from its file.
 
