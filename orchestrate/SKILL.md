@@ -86,8 +86,8 @@ tip, not from the default branch.
 
 - Search open PRs and remote branches for the ticket and feature terms. Stop
   and ask if the work already exists.
-- Settle choices that change scope or behavior. Never guess a product or
-  business choice.
+- Settle choices that change scope or behavior, and record each in the
+  ticket. Never guess a product or business choice.
 - A change that could harm security, auth, stored data, schema, or money may
   get two workers on the same task in separate worktrees, keeping the better
   result, when the manager judges the comparison worth twice the cost. Say so
