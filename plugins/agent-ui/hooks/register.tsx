@@ -13,6 +13,9 @@ import {
   lines,
   localEnvValue,
   chainLinks,
+  prMark,
+  sortPrs,
+  type PrMark,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -33,6 +36,7 @@ import {
   pickTab,
   placeBeside,
   rowSegments,
+  TONES,
 } from './panels'
 
 type $ = EngineInterface
@@ -55,7 +59,8 @@ type Row = {
   parent?: string
   children: Row[]
 }
-type PrRow = { number: number; title: string }
+type PrRow = { number: number; title: string; mark: PrMark }
+const MARK_TONES: Record<PrMark, number> = { '✓': TONES.good as number, '⋯': TONES.mid as number, '✗': TONES.bad as number, '⚡': TONES.bad as number }
 type PrFile = { mtimeMs: number; pr: PrRow | null; done: number | null }
 type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow>; done: Set<number> }
 
@@ -267,7 +272,7 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
     const parsed = await Promise.all(changed.map(async entry => {
       const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
       const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
-        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '' }
+        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', mark: prMark(value.mergeable, value.checks) }
         : null
       const done = (value?.state === 'MERGED' || value?.state === 'CLOSED') && typeof value.number === 'number' ? value.number : null
       return [entry.name, { mtimeMs: entry.mtimeMs, pr, done }] as const
@@ -284,7 +289,7 @@ async function readReadyPrs($: $): Promise<PrRow[]> {
   const state = await resolveStateDir($)
   if (!state) return []
   const cache = await refreshPrCache($, `${state}/gh-status`)
-  return [...cache.open.values()].sort((a, b) => a.number - b.number)
+  return sortPrs([...cache.open.values()])
 }
 
 // Repo panels: the list re-read when its file changes; each panel's last good output and last
@@ -867,6 +872,9 @@ export const register: Register = (on, options) => {
               const href = repo ? safeHref(`https://github.com/${repo}/pull/${pr.number}`) : null
               return (
                 <Box key={`pr:${pr.number}`}>
+                  <Box key={`pr-mark-${pr.number}`} width={3}>
+                    <Text color={hex(MARK_TONES[pr.mark])}>{pr.mark}</Text>
+                  </Box>
                   {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
                   <Text>{` ${pr.title}`}</Text>
                 </Box>

@@ -108,3 +108,19 @@ export function chainLinks(chain: number[], merged: Set<number>, active: Set<num
   const from = open < 0 ? chain.length - 1 : Math.max(0, open - 1)
   return chain.slice(from).map(n => ({ n, mark: merged.has(n) ? 'merged' : active.has(n) ? 'active' : 'next' }))
 }
+
+// A PR's mark from its gh-status file: a conflict wins, then red, green, and running for the rest.
+export type PrMark = '⚡' | '✗' | '✓' | '⋯'
+
+export function prMark(mergeable: unknown, checks: unknown): PrMark {
+  if (mergeable === 'CONFLICTING') return '⚡'
+  if (checks === 'FAILURE' || checks === 'ERROR') return '✗'
+  return checks === 'SUCCESS' ? '✓' : '⋯'
+}
+
+const MARK_ORDER: Record<PrMark, number> = { '✓': 0, '⋯': 1, '✗': 2, '⚡': 3 }
+
+// Green first, then running, red, conflict; by PR number within each group.
+export function sortPrs<T extends { number: number; mark: PrMark }>(prs: T[]): T[] {
+  return [...prs].sort((a, b) => MARK_ORDER[a.mark] - MARK_ORDER[b.mark] || a.number - b.number)
+}

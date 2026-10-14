@@ -1,6 +1,6 @@
 import { type TestBody, type TestOptions, describe, expect, test as bareTest } from 'claude-code/testing'
 
-import { localEnvValue } from '../hooks/lib'
+import { localEnvValue, prMark } from '../hooks/lib'
 import { avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
 
@@ -178,6 +178,35 @@ describe('workers pane', () => {
     expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work')
     const order = (await ui.findAll({})).map(node => /^pr:(\d+)$/.exec(node.key ?? '')?.[1]).filter(Boolean)
     expect(order).toEqual(['4390', '4391'])
+    await ui.unmount()
+  })
+
+  test('a PR mark comes from its mergeable and checks values', () => {
+    expect(prMark('MERGEABLE', 'SUCCESS')).toBe('✓')
+    expect(prMark('MERGEABLE', 'FAILURE')).toBe('✗')
+    expect(prMark('UNKNOWN', 'PENDING')).toBe('⋯')
+    expect(prMark('MERGEABLE', null)).toBe('⋯')
+    expect(prMark('CONFLICTING', 'SUCCESS')).toBe('⚡')
+  })
+
+  test('ready PRs sort green, running, red, conflict, then by number', async ($, on) => {
+    const root = '/fx/home/state'
+    const pr = (n: number, extra: Record<string, unknown>) => ({
+      [`${root}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state: 'OPEN', isDraft: false, title: `t${n}`, ...extra }),
+    })
+    world(on, {
+      ...RUN_FILES,
+      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
+      ...pr(1, { mergeable: 'CONFLICTING', checks: 'SUCCESS' }),
+      ...pr(2, { checks: 'FAILURE' }),
+      ...pr(3, { checks: 'PENDING' }),
+      ...pr(4, { checks: 'SUCCESS' }),
+      ...pr(5, { checks: 'SUCCESS' }),
+    })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const order = (await ui.findAll({})).map(node => /^pr:(\d+)$/.exec(node.key ?? '')?.[1]).filter(Boolean)
+    expect(order).toEqual(['4', '5', '3', '2', '1'])
+    expect((await ui.find({ key: 'pr:1' }))?.text).toContain('⚡')
     await ui.unmount()
   })
 
