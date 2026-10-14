@@ -875,7 +875,9 @@ export const register: Register = (on, options) => {
                   <Box key={`pr-mark-${pr.number}`} width={3} flexShrink={0}>
                     <Text color={hex(MARK_TONES[pr.mark])}>{pr.mark}</Text>
                   </Box>
-                  {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
+                  <Box key={`pr-num-${pr.number}`} flexShrink={0}>
+                    {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
+                  </Box>
                   <Text wrap="truncate-end">{` ${pr.title}`}</Text>
                 </Box>
               )
