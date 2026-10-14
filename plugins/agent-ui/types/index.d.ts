@@ -20,8 +20,6 @@ declare module 'claude-code' {
       selectedRun: string | null
       openAsk: OpenAsk | null
       expanded: string[]
-      ciOpen: boolean
-      ciMetric: 'wall' | 'cpu' | 'mem'
       panelsOpen: string[]
       panelTabs: Record<string, string>
       panelFilters: Record<string, Record<string, string>>

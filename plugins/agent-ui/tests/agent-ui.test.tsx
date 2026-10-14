@@ -1,6 +1,5 @@
 import { type TestBody, type TestOptions, describe, expect, test as bareTest } from 'claude-code/testing'
 
-import { type Metric, axisLabels, barMax, barParts, cardPlace, cardTable, chartBytes, chartTiles, jobColor, markCancelled, parseRows, runCell, runsFit, summarize, withPending } from '../hooks/ci'
 import { localEnvValue } from '../hooks/lib'
 import { avatarPicture, dim } from '../hooks/sprites'
 import { epoch, GIT_CONFIG, KIDS, NOW, PANEL, RUN_FILES, run, SID, STATE, under, world } from './world'
@@ -161,40 +160,37 @@ describe('workers pane', () => {
     await ui.unmount()
   })
 
-  test('ready PRs and main CI state come from local status files', async ($, on) => {
+  test('ready PRs come from local status files, oldest number first', async ($, on) => {
     const root = '/fx/home/state'
-    const mainSha = 'abcdef0123456789'
-    const head = '12345678abcdef00'
+    const pr = (n: number, extra: Record<string, unknown> = {}) => ({
+      [`${root}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state: 'OPEN', isDraft: false, title: `t${n}`, ...extra }),
+    })
     world(on, {
       ...RUN_FILES,
       '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: mainSha, green: true, phase: 'done' }),
-      [`${root}/main-ci/run.log`]: `preview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: queued (ready)\npreview #4390 ${head.slice(0, 8)}-${mainSha.slice(0, 8)}: green\n`,
-      [`${root}/gh-status/status/pr-4390.json`]: JSON.stringify({ number: 4390, state: 'OPEN', isDraft: false, title: 'Sidebar work', headOid: head, createdAt: '2026-01-01' }),
-      [`${root}/gate/pr-4390/${head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`]: JSON.stringify({ green: false, conflict: true }),
+      ...pr(4391),
+      ...pr(4390, { title: 'Sidebar work' }),
+      ...pr(4392, { isDraft: true }),
+      ...pr(4389, { state: 'MERGED' }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
     expect((await ui.find({ type: 'Link', text: '#4390' }))?.props.href).toBe('https://github.com/acme/widgets/pull/4390')
-    expect((await ui.find({ type: 'Text', text: 'green' }))?.props.color).toBe('green')
-    expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work ✗ ⚡ conflict')
+    expect((await ui.find({ key: 'pr:4390' }))?.text).toContain('Sidebar work')
+    const order = (await ui.findAll({})).map(node => /^pr:(\d+)$/.exec(node.key ?? '')?.[1]).filter(Boolean)
+    expect(order).toEqual(['4390', '4391'])
     await ui.unmount()
   })
 
-  test('main strip uses state with an empty log; status cache reads only changed PR files', async ($, on) => {
+  test('the status cache reads only changed PR files', async ($, on) => {
     const root = '/fx/home/state'
     const p1 = `${root}/gh-status/status/pr-4420.json`
     const p2 = `${root}/gh-status/status/pr-4421.json`
     const w = world(on, {
       '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'feedbeef12345678', phase: 'running' }),
-      [`${root}/main-ci/run.log`]: '',
       [p1]: JSON.stringify({ number: 4420, state: 'OPEN', isDraft: false, title: 'one', headOid: '11111111abcdef' }),
       [p2]: JSON.stringify({ number: 4421, state: 'OPEN', isDraft: false, title: 'two', headOid: '22222222abcdef' }),
     })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe('0/0')
-    expect((await ui.find({ type: 'Text', text: 'running' }))?.props.color).toBeUndefined()
     await ui.unmount()
     const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await again.unmount()
@@ -208,61 +204,6 @@ describe('workers pane', () => {
     await changed.unmount()
     expect(w.reads.filter(path => path === p1)).toHaveLength(2)
     expect(w.reads.filter(path => path === p2)).toHaveLength(1)
-  })
-
-  describe('preview queue', () => {
-    const root = '/fx/home/state'
-    const MAIN = 'abcdef01'
-    const queued = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: queued (ready)`
-    const start = (n: number) => `preview #${n} 1111111${n % 10}-${MAIN}: start`
-    const queueFiles = (log: string) => ({
-      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: `${MAIN}23456789`, green: true }),
-      [`${root}/main-ci/run.log`]: log,
-    })
-    for (const [name, log, expected] of [
-      ['queued only', [queued(4390)], '0/1'],
-      ['queued then start', [queued(4390), start(4390)], '1/0'],
-      ['one running and one queued', [start(4390), queued(4391)], '1/1'],
-      ['start then green', [start(4390), `preview #4390 11111110-${MAIN}: green`], '0/0'],
-      ['red result drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: RED — /x/pr-4390/log`], '0/0'],
-      ['conflict drains a queued preview', [queued(4390), `preview #4390 11111110-${MAIN}: CONFLICT`], '0/0'],
-      ['cancel without a sha pair drains it', [queued(4390), 'preview #4390: cancelled'], '0/0'],
-      ['head move without a sha pair drains it', [queued(4390), 'preview #4390: head moved 11111110 -> 22222222; cancelling its preview'], '0/0'],
-      ['requeue on a new head replaces the running state', [start(4390), `preview #4390 22222222-${MAIN}: queued (ready)`], '0/1'],
-      ['an older main is excluded', ['preview #4390 11111110-ffffffff: queued (ready)'], '0/0'],
-    ] as const) {
-      test(name, async ($, on) => {
-        world(on, queueFiles(`${log.join('\n')}\n`))
-        const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-        expect(/preview (\d+\/\d+)/.exec((await ui.find({ key: 'main-strip' }))?.text ?? '')?.[1]).toBe(expected)
-        await ui.unmount()
-      })
-    }
-  })
-
-  test('Needs you sorts green, pending, then red or conflict; oldest number first within a group', async ($, on) => {
-    const root = '/fx/home/state'
-    const main = 'abcdef0123456789'
-    const pr = (n: number) => ({
-      [`${root}/gh-status/status/pr-${n}.json`]: JSON.stringify({ number: n, state: 'OPEN', isDraft: false, title: `t${n}`, headOid: `${n}0000abcdef` }),
-    })
-    const gate = (n: number, result: Record<string, boolean>) => ({
-      [`${root}/gate/pr-${n}/${n}0000-${main.slice(0, 8)}.json`]: JSON.stringify(result),
-    })
-    world(on, {
-      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: main, green: true }),
-      ...[4404, 4403, 4402, 4401, 4400, 4399].reduce((all, n) => ({ ...all, ...pr(n) }), {}),
-      ...gate(4404, { green: true }),
-      ...gate(4403, { green: false }),
-      ...gate(4402, { green: false, conflict: true }),
-      ...gate(4400, { green: true }),
-    })
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    const order = (await ui.findAll({})).map(node => /^pr:(\d+)$/.exec(node.key ?? '')?.[1]).filter(Boolean)
-    expect(order).toEqual(['4400', '4404', '4399', '4401', '4402', '4403'])
-    await ui.unmount()
   })
 
   test('a done run is not listed or re-probed on the next tick', async ($, on) => {
@@ -463,15 +404,15 @@ describe('workers pane', () => {
     })
   })
 
-  test('a non-git root draws no strip; a repo root resolves afresh; a shell cwd runs no git; one root runs git once', async ($, on) => {
+  test('a non-git root draws no PR row; a repo root resolves afresh; a shell cwd runs no git; one root runs git once', async ($, on) => {
     const root = '/fx/home/state'
     const w = world(on, {
       '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${root}/main-ci/state.json`]: JSON.stringify({ sha: 'abcdef0123456789', green: true }),
+      [`${root}/gh-status/status/pr-4390.json`]: JSON.stringify({ number: 4390, state: 'OPEN', isDraft: false, title: 'Sidebar work' }),
     })
     const strip = async () => {
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      const found = await ui.find({ key: 'main-strip' })
+      const found = await ui.find({ key: 'pr:4390' })
       await ui.unmount()
       return found
     }
@@ -481,7 +422,7 @@ describe('workers pane', () => {
     expect(w.gitRuns).toBe(1)
 
     w.root = '/fx/repo'
-    expect((await strip())?.text).toContain('main abcdef01')
+    expect((await strip())?.text).toContain('Sidebar work')
     const inRepo = w.gitRuns
     w.cwd = '/fx/elsewhere'
     expect(await strip()).toBeDefined()
@@ -897,395 +838,6 @@ describe('chain row', () => {
       await ui.unmount()
     })
   }
-})
-
-describe('main-ci chart', () => {
-  const CI = `${STATE}/main-ci`
-  const METRICS = `${CI}/metrics.jsonl`
-  const MD = { '/fx/repo/.agent/local.env': 'state_dir=~/state\n' }
-  const name = (i: number) => `20260101T0000${String(i).padStart(2, '0')}Z-cafe00${String(i).padStart(2, '0')}`
-  const sha = (i: number) => `cafe00${String(i).padStart(2, '0')}0123456789abcdef0123456789abcdef`
-  const row = (i: number, job: string, extra: Record<string, unknown> = {}) =>
-    JSON.stringify({ run: name(i), sha: sha(i), job, kind: 'core', attempt: 1, wall_s: 10, cpu_user_s: 2, cpu_sys_s: 1, max_rss_mb: 100, exit: 0, load1_start: 2, ...extra })
-  const runRows = (i: number, jobs = ['lint', 'test']) => jobs.map(job => row(i, job)).join('\n')
-  const metrics = (count: number) => `${Array.from({ length: count }, (_, i) => runRows(i + 1)).join('\n')}\n`
-  const files = (text: string, state: Record<string, unknown> = { sha: sha(3), green: true, phase: 'done' }) => ({
-    ...MD,
-    [`${CI}/state.json`]: JSON.stringify(state),
-    [METRICS]: text,
-  })
-  const pane = (bodyColumns = 120, surface: 'terminal' | 'desktop' = 'terminal') => ({ ...PANE, surface, props: { ...PANE.props, bodyColumns } })
-  const cards = async (ui: { findAll: (q: object) => Promise<{ key?: string }[]> }) =>
-    (await ui.findAll({})).map(node => node.key ?? '').filter(key => key.startsWith('ci-run:'))
-  // The drawn tree in document order; `find` leaves out an element's hover, the tree keeps it.
-  type Drawn = { type?: string; props?: Record<string, unknown>; hover?: { scope?: string; display?: string }; children?: unknown[] }
-  const walk = (node: unknown, out: Drawn[] = []): Drawn[] => {
-    if (typeof node !== 'object' || node === null) return out
-    out.push(node as Drawn)
-    for (const child of (node as Drawn).children ?? []) walk(child, out)
-    return out
-  }
-  const textOf = (node: unknown): string =>
-    typeof node === 'string' ? node : typeof node === 'object' && node !== null ? ((node as Drawn).children ?? []).map(textOf).join('') : ''
-  // a run's card: the hidden Box its run column's hover scope reveals
-  const cardOf = async (ui: { drawn: () => Promise<unknown> }, run: string) =>
-    walk(await ui.drawn()).find(node => node.hover?.scope === `ci:${run}` && node.props?.display === 'none')
-
-  test('a run keeps each job at its final attempt and counts its retries', () => {
-    const rows = parseRows([
-      row(1, 'lint'),
-      row(1, 'test', { exit: 1 }),
-      row(1, 'test', { attempt: 2, wall_s: 30 }),
-      JSON.stringify({ run: name(1), job: 'preview-7', kind: 'preview', wall_s: 99 }),
-      'not json',
-    ].join('\n'))
-    expect(rows).toHaveLength(3)
-    const run = summarize(name(1), rows)
-    expect(run.jobs.map(job => [job.job, job.wall, job.retries])).toEqual([['lint', 10, 0], ['test', 30, 1]])
-    expect(run).toMatchObject({ sha8: 'cafe0001', green: true, retries: 1, load: 2, peak: 100, pending: false })
-    expect(summarize(name(2), parseRows(row(2, 'lint', { exit: 2 }))).green).toBe(false)
-  })
-
-  test('the run main-ci is on is pending; an unstarted one is an empty slot', () => {
-    const runs = [1, 2].map(i => summarize(name(i), parseRows(runRows(i))))
-    expect(withPending(runs, { sha: sha(2), phase: 'done' }).map(run => run.pending)).toEqual([false, false])
-    expect(withPending(runs, { sha: sha(2), phase: 'builds' }).map(run => run.pending)).toEqual([false, true])
-    expect(withPending(runs, { sha: sha(1), phase: 'done' }).map(run => run.pending)).toEqual([false, true])
-    const slot = withPending(runs, { sha: sha(9), phase: 'builds' })
-    expect(slot.map(run => [run.sha8, run.pending, run.jobs.length])).toEqual([['cafe0001', false, 2], ['cafe0002', false, 2], ['cafe0009', true, 0]])
-  })
-
-  test('a job keeps its color whatever other jobs exist', () => {
-    expect(jobColor('test')).toBe(jobColor('test'))
-    const pixelOf = (jobs: string[]) => {
-      const { bytes } = chartBytes([summarize(name(1), parseRows(jobs.map(job => row(1, job)).join('\n')))])
-      return [...bytes.slice((67 * 12 + 5) * 4, (67 * 12 + 5) * 4 + 3)]
-    }
-    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-    expect(pixelOf(['aaa'])).toEqual(rgb(jobColor('aaa')))
-    expect(pixelOf(['aaa', 'zzz'])).toEqual(rgb(jobColor('aaa')))
-  })
-
-  test('the picture is 12x72 pixels a run; a red run is underlined, a retry counted in red', () => {
-    const red = summarize(name(1), parseRows([row(1, 'lint', { exit: 1 }), row(1, 'lint', { attempt: 2, exit: 1 })].join('\n')))
-    const { bytes, width, height } = chartBytes([red, summarize(name(2), parseRows(runRows(2)))])
-    expect([width, height]).toEqual([24, 72])
-    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
-    expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
-    expect(at(17, 70)[3]).toBe(0)
-    const redAbove = Array.from({ length: 40 }, (_, y) => at(5, y)).some(px => px[0] === 0xe6 && px[1] === 0x5a)
-    expect(redAbove).toBe(true)
-  })
-
-  test('collapsed by default; the toggle opens the chart and stays open', async ($, on) => {
-    world(on, files(metrics(3)))
-    const ui = await $.ui.mount(pane())
-    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('▸ main cafe0003')
-    expect(await ui.find({ key: 'ci' })).toBeUndefined()
-    await ui.press({ key: 'ci-toggle' })
-    expect(await ui.find({ key: 'ci' })).toBeDefined()
-    expect((await ui.find({ key: 'ci' }))?.text).toContain('last 3 runs')
-    await ui.unmount()
-    const again = await $.ui.mount(pane())
-    expect(await again.find({ key: 'ci' })).toBeDefined()
-    await again.unmount()
-  })
-
-  test('the pane width sets how many runs show, two columns each past the axis', async ($, on) => {
-    expect(runsFit(50)).toBe(22)
-    expect(runsFit(5)).toBe(0)
-    world(on, files(metrics(15)))
-    const ui = await $.ui.mount(pane(26))
-    await ui.press({ key: 'ci-toggle' })
-    expect(await cards(ui)).toHaveLength(10)
-    expect((await ui.find({ key: `ci-bar:${name(15)}` }))?.props).toMatchObject({ columns: 2, rows: 6 })
-    expect((await cards(ui)).at(-1)).toBe(`ci-run:${name(15)}`)
-    await ui.unmount()
-  })
-
-  test("a run's card lists its 8 slowest jobs and stays inside the pane", async ($, on) => {
-    const jobs = Array.from({ length: 10 }, (_, k) => `job-${k}`)
-    const text = `${[1, 2, 3].map(i => jobs.map((job, k) => row(i, job, { wall_s: k + 1 })).join('\n')).join('\n')}\n`
-    world(on, files(text))
-    const ui = await $.ui.mount(pane(60))
-    await ui.press({ key: 'ci-toggle' })
-    const card = await cardOf(ui, name(3))
-    const cardText = textOf(card)
-    expect(walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(3)}`)?.hover).toMatchObject({ scope: `ci:${name(3)}` })
-    const lines = (card?.children ?? []).filter(child => typeof child === 'object' && child !== null)
-    expect(lines).toHaveLength(2 + 8)
-    const slowest = (await ui.findAll({ type: 'Text', text: 'job-9' })).at(-1)
-    expect(slowest?.props.color).toBe(`#${jobColor('job-9').toString(16).padStart(6, '0')}`)
-    expect(cardText).toContain('cafe0003 · load 2.0 · peak 100 MB')
-    expect(cardText).toContain('job-9')
-    expect(cardText).not.toContain('job-0 ')
-    const width = Number(card?.props?.width)
-    for (const key of [name(1), name(3)]) {
-      const left = Number((await cardOf(ui, key))?.props?.left)
-      expect(left).toBeGreaterThanOrEqual(0)
-      expect(left + width).toBeLessThanOrEqual(60)
-    }
-    await ui.unmount()
-  })
-
-  test('on desktop, without Image, the chart is block-glyph Text', async ($, on) => {
-    world(on, { ...RUN_FILES, ...files(metrics(3)) })
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    await ui.unmount()
-    const desktop = await $.ui.mount(pane(120, 'desktop'))
-    expect(await desktop.find({ key: `ci-bar:${name(3)}` })).toBeUndefined()
-    expect((await desktop.find({ key: `ci-run:${name(3)}` }))?.text).toContain('█')
-    await desktop.unmount()
-  })
-
-  test('a file cut to other runs is read afresh, never served from the old chart', async ($, on) => {
-    const w = world(on, files(metrics(3)))
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    expect(await cards(ui)).toHaveLength(3)
-    await ui.unmount()
-    w.files[METRICS] = `${runRows(7)}\n${runRows(8)}\n`
-    const again = await $.ui.mount(pane())
-    expect(await cards(again)).toEqual([`ci-run:${name(7)}`, `ci-run:${name(8)}`])
-    await again.unmount()
-  })
-
-  test('metrics.jsonl is read again only when its size changes; an appended run shows', async ($, on) => {
-    const w = world(on, files(metrics(2)))
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    expect(await cards(ui)).toHaveLength(2)
-    await ui.unmount()
-    const again = await $.ui.mount(pane())
-    await again.unmount()
-    expect(w.tails).toEqual([`1048576 ${METRICS}`])
-
-    w.files[METRICS] += `${runRows(3)}\n`
-    const grown = await $.ui.mount(pane())
-    expect(await cards(grown)).toHaveLength(3)
-    await grown.unmount()
-    expect(w.tails).toHaveLength(2)
-  })
-
-  test('a file past the 1 MiB window drops the run the window began inside', async ($, on) => {
-    // runs of about 420 KB: the last MiB begins inside run 1
-    const jobs = Array.from({ length: 60 }, (_, k) => `job-${String(k).padStart(3, '0')}-${'x'.repeat(7000)}`)
-    world(on, files(`${[1, 2, 3].map(i => runRows(i, jobs)).join('\n')}\n`))
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    expect(await cards(ui)).toEqual([`ci-run:${name(2)}`, `ci-run:${name(3)}`])
-    await ui.unmount()
-  })
-
-  test('in a narrow pane the card and its lines fit the pane width', async ($, on) => {
-    world(on, files(`${runRows(1, ['a-very-long-job-name-indeed', 'test'])}\n`))
-    const ui = await $.ui.mount(pane(30))
-    await ui.press({ key: 'ci-toggle' })
-    const card = await cardOf(ui, name(1))
-    expect(Number(card?.props?.width)).toBeLessThanOrEqual(30)
-    for (const line of card?.children ?? []) expect(textOf(line).length).toBeLessThanOrEqual(26)
-    expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(30)
-    await ui.unmount()
-  })
-
-  for (const bodyColumns of [30, 50]) {
-    test(`at ${bodyColumns} columns each run's bar is drawn inside its own hover column`, async ($, on) => {
-      world(on, files(metrics(30)))
-      const ui = await $.ui.mount(pane(bodyColumns))
-      await ui.press({ key: 'ci-toggle' })
-      const keys = await cards(ui)
-      const shown = keys.map(key => key.slice('ci-run:'.length))
-      expect(shown).toHaveLength(runsFit(bodyColumns))
-      const tiles = chartTiles(shown.map(run => summarize(run, parseRows(runRows(Number(run.slice(13, 15)))))))
-      const row = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
-      const columns = (row.children ?? []) as Drawn[]
-      // the axis, then one 2-cell column per run, in order: column i starts at runCell(i)
-      expect(columns[0]?.props?.width).toBe(6)
-      let at = Number(columns[0]?.props?.width)
-      for (const [i, run] of shown.entries()) {
-        const column = columns[i + 1] as Drawn
-        expect(column.props?.key).toBe(`ci-run:${run}`)
-        expect(at).toBe(runCell(i))
-        at += Number(column.props?.width)
-        const bar = (column.children ?? [])[0] as Drawn
-        expect(bar.props).toMatchObject({ key: `ci-bar:${run}`, columns: 2, rows: 6, source: tiles[i] })
-      }
-      await ui.unmount()
-    })
-  }
-
-  test('a hovered run column lights its background', async ($, on) => {
-    world(on, files(metrics(3)))
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    const column = walk(await ui.drawn()).find(node => node.props?.key === `ci-run:${name(2)}`)
-    expect(column?.hover?.scope).toBe(`ci:${name(2)}`)
-    expect((column?.hover as { backgroundColor?: string } | undefined)?.backgroundColor).toMatch(/^#[0-9a-f]{6}$/)
-    await ui.unmount()
-  })
-
-  test('a run cancelled when the tip moved draws faded, with no red underline, and says so on its card', async ($, on) => {
-    const log = `2026-01-01T00:00:30.000Z cancel run sha=${sha(2)} groups=123\n`
-    world(on, { ...files(`${runRows(1)}\n${row(2, 'lint', { exit: 1 })}\n${runRows(3)}\n`), [`${CI}/run.log`]: log })
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    const card = await cardOf(ui, name(2))
-    expect(textOf(card)).toContain('cafe0002 · cancelled (tip moved) · load 2.0 · peak 100 MB')
-    expect(textOf(await cardOf(ui, name(3)))).not.toContain('cancelled')
-    await ui.unmount()
-
-    const runs = markCancelled([1, 2].map(i => summarize(name(i), parseRows(row(i, 'lint', { exit: 1 })))), [{ sha8: 'cafe0002', at: '20260101T000030' }])
-    expect(runs.map(run => run.cancelled)).toEqual([false, true])
-    const { bytes } = chartBytes(runs)
-    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
-    expect(at(5, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
-    expect(at(17, 70)[3]).toBe(0)
-    expect(at(17, 60)[3]).toBe(128)
-    // a cancel before a run started is not that run's
-    expect(markCancelled(runs.slice(0, 1), [{ sha8: 'cafe0001', at: '20251231T235959' }])[0]?.cancelled).toBe(false)
-  })
-
-  for (const bodyColumns of [30, 50]) {
-    test(`at ${bodyColumns} columns a card never covers its own run column`, () => {
-      const fit = runsFit(bodyColumns)
-      for (const column of [0, Math.floor(fit / 2), fit - 1]) {
-        for (const width of [12, 41, bodyColumns]) {
-          const place = cardPlace(column, width, bodyColumns)
-          const at = runCell(column)
-          expect(place.x).toBeGreaterThanOrEqual(0)
-          expect(place.x + place.width).toBeLessThanOrEqual(bodyColumns)
-          expect(place.x >= at + 2 || place.x + place.width <= at).toBe(true)
-          expect(place.width).toBeGreaterThan(0)
-        }
-      }
-    })
-  }
-
-  test('the cards are drawn after the rest of the pane, so they paint over it', async ($, on) => {
-    world(on, {
-      ...RUN_FILES,
-      ...files(metrics(3)),
-      [`${STATE}/gh-status/status/pr-123.json`]: JSON.stringify({ number: 123, state: 'OPEN', isDraft: false, title: 'widgets', headOid: '12345678abcdef' }),
-    })
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    const all = walk(await ui.drawn())
-    const needsYou = all.findIndex(node => node.props?.key === 'needs-you')
-    const lastRow = all.findIndex(node => node.props?.key === `disk:${KIDS}/e-failed`)
-    const cardAt = all.findIndex(node => node.props?.display === 'none' && node.hover?.scope === `ci:${name(3)}`)
-    expect(needsYou).toBeGreaterThan(-1)
-    expect(lastRow).toBeGreaterThan(-1)
-    expect(cardAt).toBeGreaterThan(needsYou)
-    expect(cardAt).toBeGreaterThan(lastRow)
-    // keyed by run, rows by line, so a run window that shifts keeps each card with its run
-    const card = all[cardAt]
-    expect(card?.props?.key).toBe(`ci-card:${name(3)}`)
-    expect(((card?.children ?? []) as Drawn[]).map(line => line.props?.key)).toEqual(Array.from({ length: 4 }, (_, k) => `ci-line-${k}`))
-    expect(all.filter(node => typeof node.props?.key === 'string' && (node.props.key as string).startsWith('ci-card:')).map(node => node.props?.key)).toEqual([1, 2, 3].map(i => `ci-card:${name(i)}`))
-    await ui.unmount()
-  })
-
-  for (const bodyColumns of [30, 50, 80]) {
-    test(`at ${bodyColumns} columns each card table row is one row Box no wider than the card`, async ($, on) => {
-      const jobs = ['a-very-long-job-name-indeed', 'test', 'lint']
-      world(on, files(`${[1, 2, 3].map(i => jobs.map(job => row(i, job, { wall_s: 70.4, cpu_user_s: 100, cpu_sys_s: 38.5, max_rss_mb: 1994 })).join('\n')).join('\n')}\n`))
-      const ui = await $.ui.mount(pane(bodyColumns))
-      await ui.press({ key: 'ci-toggle' })
-      for (const i of [1, 2, 3]) {
-        const card = await cardOf(ui, name(i))
-        const content = Number(card?.props?.width) - 4
-        const lines = (card?.children ?? []) as Drawn[]
-        expect(lines).toHaveLength(2 + jobs.length)
-        for (const line of lines) {
-          expect(line.type).toBe('Box')
-          expect(line.props?.flexDirection).toBe('row')
-          expect(((line.children ?? []) as Drawn[]).every(cell => cell.type === 'Text')).toBe(true)
-          expect(textOf(line).length).toBeLessThanOrEqual(content)
-        }
-        // a job row: its name cell, then its numbers cell, side by side
-        const test = (lines.find(line => textOf(line).startsWith('test'))?.children ?? []) as Drawn[]
-        expect(test).toHaveLength(2)
-        expect(textOf(test[0]).trim()).toBe('test')
-        expect(Number(card?.props?.left) + Number(card?.props?.width)).toBeLessThanOrEqual(bodyColumns)
-      }
-      await ui.unmount()
-    })
-  }
-
-  test('a narrow card shortens the job name to 8 first, then drops re, then cpu', () => {
-    const run = summarize(name(1), parseRows(row(1, 'a-very-long-job-name-indeed')))
-    const shape = (width: number) => {
-      const table = cardTable(run, width)
-      return [table.nameWidth, `${table.header.name}${table.header.nums}`.replace(/ +/g, ' ').trim(), table.width]
-    }
-    expect(shape(80)).toEqual([16, 'job wall cpu MB re', 37])
-    expect(shape(29)).toEqual([8, 'job wall cpu MB re', 29])
-    expect(shape(28)).toEqual([10, 'job wall cpu MB', 28])
-    expect(shape(23)).toEqual([11, 'job wall MB', 23])
-    expect(shape(22)).toEqual([10, 'job wall MB', 22])
-    expect(shape(20)).toEqual([8, 'job wall MB', 20])
-    for (const width of [12, 20, 29, 37]) {
-      const table = cardTable(run, width)
-      for (const line of [table.header, ...table.rows]) expect(line.name.length + line.nums.length).toBeLessThanOrEqual(width)
-      expect(table.head.length).toBeLessThanOrEqual(width)
-    }
-  })
-
-  test('cpu stacks each job, mem is one bar at the peak in the colour of the job that hit it', () => {
-    const run = summarize(name(1), parseRows([
-      row(1, 'lint', { wall_s: 10, cpu_user_s: 4, cpu_sys_s: 1, max_rss_mb: 300 }),
-      row(1, 'test', { wall_s: 20, cpu_user_s: 30, cpu_sys_s: 2, max_rss_mb: 2458 }),
-    ].join('\n')))
-    expect(barParts(run, 'wall')).toEqual([{ job: 'lint', value: 10 }, { job: 'test', value: 20 }])
-    expect(barParts(run, 'cpu')).toEqual([{ job: 'lint', value: 5 }, { job: 'test', value: 32 }])
-    expect(barParts(run, 'mem')).toEqual([{ job: 'test', value: 2458 }])
-    // a retried job's first attempt may hold the peak: the bar takes that job, not the final rows' top
-    const retried = summarize(name(3), parseRows([
-      row(3, 'build', { attempt: 1, exit: 1, max_rss_mb: 3000 }),
-      row(3, 'build', { attempt: 2, max_rss_mb: 500 }),
-      row(3, 'test', { max_rss_mb: 2000 }),
-    ].join('\n')))
-    expect(barParts(retried, 'mem')).toEqual([{ job: 'build', value: 3000 }])
-    expect(axisLabels(497.4, 'wall')).toEqual({ top: '497s', bottom: '0s' })
-    expect(axisLabels(612, 'cpu')).toEqual({ top: '612s', bottom: '0s' })
-    expect(axisLabels(2458, 'mem')).toEqual({ top: '2.4G', bottom: '0' })
-    expect(axisLabels(900, 'mem')).toEqual({ top: '900M', bottom: '0' })
-    // the mem bar fills from the base to the top in one colour; a red run keeps its underline and retry digit
-    const red = summarize(name(2), parseRows([row(2, 'lint', { exit: 1, max_rss_mb: 50 }), row(2, 'lint', { attempt: 2, exit: 1, max_rss_mb: 50 })].join('\n')))
-    const { bytes } = chartBytes([run, red], 'mem')
-    const at = (x: number, y: number) => [...bytes.slice((y * 24 + x) * 4, (y * 24 + x) * 4 + 4)]
-    const rgb = (n: number) => [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255]
-    expect(at(5, 67)).toEqual(rgb(jobColor('test')))
-    expect(at(5, 9)).toEqual(rgb(jobColor('test')))
-    expect(at(17, 70)).toEqual([0xe6, 0x5a, 0x50, 255])
-    expect(Array.from({ length: 67 }, (_, y) => at(17, y)).some(px => px[0] === 0xe6 && px[1] === 0x5a)).toBe(true)
-  })
-
-  test('the metric chips switch the bars and the axis; the pick persists', async ($, on) => {
-    world(on, files(metrics(3)))
-    const runs = [1, 2, 3].map(i => summarize(name(i), parseRows(runRows(i))))
-    // the bar row: the axis box, then one column per run holding its bar
-    const drawnAs = async (ui: { drawn: () => Promise<unknown>; find: (q: object) => Promise<{ props: Record<string, unknown> } | undefined> }, metric: Metric) => {
-      const labels = axisLabels(barMax(runs, metric), metric)
-      const bars = walk(await ui.drawn()).find(node => node.props?.key === 'ci')?.children?.[0] as Drawn
-      expect(textOf(bars.children?.[0])).toBe(`${labels.top}${labels.bottom}`)
-      expect((await ui.find({ key: `ci-bar:${name(2)}` }))?.props.source).toEqual(chartTiles(runs, metric)[1])
-      for (const one of ['wall', 'cpu', 'mem']) expect((await ui.find({ key: `ci-metric:${one}` }))?.props.dimColor).toBe(one !== metric)
-    }
-    const ui = await $.ui.mount(pane())
-    await ui.press({ key: 'ci-toggle' })
-    await drawnAs(ui, 'wall')
-    await ui.press({ key: 'ci-metric:cpu' })
-    await drawnAs(ui, 'cpu')
-    await ui.unmount()
-    const again = await $.ui.mount(pane())
-    await drawnAs(again, 'cpu')
-    await again.press({ key: 'ci-metric:mem' })
-    await drawnAs(again, 'mem')
-    await again.unmount()
-  })
-
 })
 
 describe('pane auto-open', () => {

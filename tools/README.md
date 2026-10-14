@@ -22,10 +22,6 @@ tools/
                               (install on PATH like bgh:
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
-  main-ci/                    post-merge CI driver: follows the default tip,
-                              cancels and restarts on a tip move, and gates
-                              open PRs' merge previews; steps come from the
-                              config's mainCi block (main-ci/README.md)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
   hooks/                      Claude Code hooks: watch-guard, asks-hook
   launchd/*.plist.template    launchd service templates, rendered by install.sh
@@ -49,7 +45,6 @@ shows the shape (fill-me-in placeholders); copy it to
 | `tokenFile` | gh-status, board-snapshot | one of `tokenItem` / `tokenFile` | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
-| `mainCi` | main-ci | yes, if using main-ci | `repo`, `core` steps, optional `builds` lanes, `buildConcurrency`, `warmCache`, `cleanup`, `preview` — see `main-ci/README.md` |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and polls all of them in one process (one 40s loop, one GraphQL request per
@@ -83,12 +78,6 @@ thirty days are removed, as are issue files idle that long.
 more than 7 days ago; keeps everything else. This version only ever writes a
 local file — it never clones/commits/pushes.
 
-`main-ci/main-ci.mjs <name>` — a long-lived driver, its own launchd job;
-writes `$AGENT_TOOLS_HOME/var/<name>/main-ci/` (`state.json`, `run.log`,
-`runs/`, `previews/`) and one result file per PR preview under
-`mainCi.preview.resultsDir`. boot-report prints `state.json`'s verdict at
-every PM and TL boot. See `main-ci/README.md`.
-
 ## Install
 
 1. `bun install` isn't needed — everything here is dependency-free (bun/node
@@ -106,17 +95,13 @@ every PM and TL boot. See `main-ci/README.md`.
    plists first.
 4. Run the printed `launchctl bootstrap gui/$UID ...` commands.
 
-`<name>` here is only used for the main-ci driver's config argument. If
-you're tracking multiple repos with `gh-status` but only want main-ci for
-one of them, that is the intended use; `gh-status` polls every config
-regardless.
+`gh-status` polls every config regardless of the `<name>` given here.
 
 ### Uninstall
 
 ```bash
 launchctl bootout gui/$UID/com.agent-tools.gh-status
-launchctl bootout gui/$UID/com.agent-tools.main-ci
-rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist ~/Library/LaunchAgents/com.agent-tools.main-ci.plist
+rm ~/Library/LaunchAgents/com.agent-tools.gh-status.plist
 ```
 
 ### Manual runs

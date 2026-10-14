@@ -1,5 +1,3 @@
-import { TONES } from './ci'
-
 // Repo panels: `.agent/pane-panels.json` lists commands, each prints one JSON object of tabs of
 // rows (README, "Repo panels"). This file parses both and lays a row out as colored segments.
 export type PanelSpec = { id: string; title: string; cmd: string[]; refreshMs: number }
@@ -34,6 +32,25 @@ const GAP = 1
 export const BAR_TRACK = 0x3a3c4e
 export const INK_ON_FILL = 0x1e1f28
 export const INK_ON_TRACK = 0xe1e1e6
+// A bar's fill per tone.
+export const TONES: Record<string, number> = { good: 0x8caa5a, mid: 0xc4c45a, bad: 0xe65a50, dim: 0x787a87 }
+
+// A stable hash of a row's id, for its hover scope.
+export function fnv1a(text: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  return hash >>> 0
+}
+
+// Where a card goes along one axis of `span` cells, beside the `size` cells it describes at `at`:
+// after them, else before them, never over them; when it fits on neither side whole, on the
+// roomier side, cut to fit.
+export function placeBeside(at: number, size: number, card: number, span: number): { x: number; width: number } {
+  const after = span - (at + size)
+  if (card <= after) return { x: at + size, width: card }
+  if (card <= at) return { x: at - card, width: card }
+  return after >= at ? { x: at + size, width: after } : { x: 0, width: at }
+}
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 // A control character (a newline, an escape sequence's ESC) would break the row or restyle the

@@ -99,35 +99,6 @@ export function localEnvValue(text: string, key: string, home: string): string |
   return value || null
 }
 
-// main-ci's run.log, replayed a chunk of lines at a time: the previews still queued or running
-// (a PR's entry ends with its result, a cancel, or a head move; the last two carry no sha
-// pair), and each run cancelled because the tip moved (`<ts> cancel run sha=<sha>`).
-export type RunLog = { previews: Map<number, { main: string; state: 'queued' | 'running' }>; cancels: { sha8: string; at: string }[] }
-
-export const freshRunLog = (): RunLog => ({ previews: new Map(), cancels: [] })
-
-export function applyRunLog(log: RunLog, text: string): void {
-  for (const line of text.split('\n')) {
-    const cancel = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)\S* cancel run sha=([0-9a-f]{8})/.exec(line)
-    if (cancel) {
-      const [, y, mo, d, h, mi, s, sha8 = ''] = cancel
-      log.cancels.push({ sha8, at: `${y}${mo}${d}T${h}${mi}${s}` })
-      continue
-    }
-    const match = /preview #(\d+)(?: [0-9a-f]+-([0-9a-f]+))?: (queued|start|green|red|conflict|cancelled|head moved)/i.exec(line)
-    if (!match) continue
-    const [, pr = '', main, event = ''] = match
-    if (/^(queued|start)$/i.test(event)) {
-      if (main) log.previews.set(Number(pr), { main, state: /^start$/i.test(event) ? 'running' : 'queued' })
-    } else log.previews.delete(Number(pr))
-  }
-}
-
-export function previewQueue(log: RunLog, main8: string): { running: number; queued: number } {
-  const current = [...log.previews.values()].filter(entry => entry.main === main8)
-  return { running: current.filter(entry => entry.state === 'running').length, queued: current.filter(entry => entry.state === 'queued').length }
-}
-
 // A chain from its newest merged issue on: the last merged one before the first open one stays,
 // the merged ones before it go.
 export type ChainLink = { n: number; mark: 'merged' | 'active' | 'next' }
