@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
+import { conflictTransition, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const OLD = new Date(Date.now() - PRUNE_AFTER_MS - DAY_MS).toISOString()
@@ -66,5 +66,20 @@ describe("pruneOld", () => {
 		expect(existsSync(join(eventsDir, "issue-7.comments.json"))).toBe(false)
 		expect(existsSync(join(eventsDir, "issue-8.log"))).toBe(true)
 		expect(existsSync(join(eventsDir, "issue-8.comments.json"))).toBe(true)
+	})
+})
+
+describe("conflictTransition", () => {
+	it("fires once when CONFLICTING follows MERGEABLE", () => {
+		const first = conflictTransition("MERGEABLE", "CONFLICTING")
+		expect(first).toEqual({ mergeable: "CONFLICTING", fire: true })
+		expect(conflictTransition(first.mergeable, "CONFLICTING").fire).toBe(false)
+	})
+
+	it("UNKNOWN fires nothing and keeps the stored state", () => {
+		expect(conflictTransition("CONFLICTING", "UNKNOWN")).toEqual({ mergeable: "CONFLICTING", fire: false })
+		expect(conflictTransition("MERGEABLE", "UNKNOWN")).toEqual({ mergeable: "MERGEABLE", fire: false })
+		// a conflict that survives an UNKNOWN poll does not fire again
+		expect(conflictTransition("CONFLICTING", "CONFLICTING").fire).toBe(false)
 	})
 })

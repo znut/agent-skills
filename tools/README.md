@@ -68,7 +68,7 @@ per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
 - `status/pr-<n>.json` (current snapshot per PR), `status/state.json`
 - `events/pr-<n>.log` — the PR's timeline, append-only JSONL: merged, closed,
   checks-success, checks-failure, approved, changes-requested, commented,
-  ready-stale. One watcher per PR sees every event.
+  ready-stale, conflict. One watcher per PR sees every event.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue

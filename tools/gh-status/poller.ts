@@ -12,7 +12,7 @@
  *   events/pr-<n>.log       — the PR's timeline, append-only JSONL
  *     {at, type, id?, actor?, body?, kind?, path?, line?, sha?}: merged,
  *     closed, checks-success, checks-failure, approved, changes-requested,
- *     commented, ready-stale. One watcher per PR plus a line cursor sees
+ *     commented, ready-stale, conflict. One watcher per PR plus a line cursor sees
  *     every event; transitions are detected against the previous snapshot.
  *   events/pr-<n>.merged    — marker, touched once, for watchers that key
  *                             on a path
@@ -59,6 +59,7 @@ query($owner: String!, $name: String!) {
         title
         updatedAt
         reviewDecision
+        mergeable
         commits(last: 1) {
           nodes { commit { oid statusCheckRollup { state } } }
         }
@@ -94,6 +95,7 @@ type Pr = {
 	title: string
 	updatedAt: string
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null
+	mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
 	commits: { nodes: Array<{ commit: { oid: string; statusCheckRollup: { state: string } | null } }> }
 	comments: { totalCount: number; nodes: Array<{ updatedAt: string }> }
 	reviews: { totalCount: number; nodes: Array<{ updatedAt: string; state: string; body: string | null; author: { login: string } | null }> }
@@ -117,6 +119,16 @@ type Snapshot = {
 	headOid?: string | null
 	checks?: string | null
 	reviewDecision?: string | null
+	mergeable?: string | null
+}
+
+/**
+ * Merge-state transition. UNKNOWN (GitHub still computing) keeps the stored
+ * state, so a conflict fires once per MERGEABLE -> CONFLICTING change.
+ */
+export function conflictTransition(prev: string | null | undefined, now: Pr["mergeable"]): { mergeable: string | null; fire: boolean } {
+	if (now === "UNKNOWN") return { mergeable: prev ?? null, fire: false }
+	return { mergeable: now, fire: now === "CONFLICTING" && prev !== "CONFLICTING" }
 }
 
 type CommentPayload = {
@@ -228,7 +240,7 @@ type TimelineEvent = {
 	// lets a session skip fires for events it posted itself (self-echo
 	// exclusion; watch-lane matches against the role's posted-ids file).
 	id?: number
-	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented" | "ready-stale"
+	type: "merged" | "closed" | "checks-success" | "checks-failure" | "approved" | "changes-requested" | "commented" | "ready-stale" | "conflict"
 	actor?: string
 	body?: string
 	kind?: string
@@ -438,6 +450,8 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			prev = null
 		}
 
+		const merge = conflictTransition(prev?.mergeable, pr.mergeable)
+
 		const snapshot = {
 			number: pr.number,
 			state: pr.state,
@@ -448,6 +462,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 			title: pr.title,
 			checks: rollup, // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | null
 			reviewDecision: pr.reviewDecision, // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
+			mergeable: merge.mergeable, // MERGEABLE | CONFLICTING | null; UNKNOWN keeps the last known
 			commentCount, // issue comments + reviews combined
 			lastCommentAt,
 			updatedAt: pr.updatedAt,
@@ -463,6 +478,8 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		if (pr.state === "OPEN" && !pr.isDraft && prev?.state === "OPEN" && prev.isDraft === false && prev.headOid && sha && prev.headOid !== sha) {
 			await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "ready-stale", sha })
 		}
+
+		if (pr.state === "OPEN" && merge.fire) await appendEvent(eventsDir, pr.number, { at: fetchedAt, type: "conflict", sha })
 
 		if (pr.merged) {
 			const marker = `${eventsDir}/pr-${pr.number}.merged`
