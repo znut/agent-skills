@@ -76,10 +76,10 @@ describe("conflictTransition", () => {
 		expect(conflictTransition(first.mergeable, "CONFLICTING").fire).toBe(false)
 	})
 
-	it("UNKNOWN fires nothing and keeps the stored state", () => {
+	it("UNKNOWN or any unrecognised value fires nothing and keeps the stored state", () => {
 		expect(conflictTransition("CONFLICTING", "UNKNOWN")).toEqual({ mergeable: "CONFLICTING", fire: false })
 		expect(conflictTransition("MERGEABLE", "UNKNOWN")).toEqual({ mergeable: "MERGEABLE", fire: false })
-		// a conflict that survives an UNKNOWN poll does not fire again
-		expect(conflictTransition("CONFLICTING", "CONFLICTING").fire).toBe(false)
+		// any other value is treated like UNKNOWN
+		expect(conflictTransition("MERGEABLE", "SOMETHING_NEW" as "UNKNOWN")).toEqual({ mergeable: "MERGEABLE", fire: false })
 	})
 })

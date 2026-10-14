@@ -123,11 +123,11 @@ type Snapshot = {
 }
 
 /**
- * Merge-state transition. UNKNOWN (GitHub still computing) keeps the stored
- * state, so a conflict fires once per MERGEABLE -> CONFLICTING change.
+ * Merge-state transition. UNKNOWN (GitHub still computing), or any other
+ * value, keeps the stored state, so a conflict fires once per MERGEABLE -> CONFLICTING change.
  */
 export function conflictTransition(prev: string | null | undefined, now: Pr["mergeable"]): { mergeable: string | null; fire: boolean } {
-	if (now === "UNKNOWN") return { mergeable: prev ?? null, fire: false }
+	if (now !== "MERGEABLE" && now !== "CONFLICTING") return { mergeable: prev ?? null, fire: false }
 	return { mergeable: now, fire: now === "CONFLICTING" && prev !== "CONFLICTING" }
 }
 
