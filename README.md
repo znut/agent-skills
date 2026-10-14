@@ -61,8 +61,7 @@ review process, so a skill update changes every repo that links these skills.
 ## Tools
 
 `tools/` contains optional local programs: a PR status poller that turns
-GitHub into local files, a board snapshot, a post-merge CI driver with merge
-previews, a per-clone gh identity wrapper, a session boot report,
+GitHub into local files, a board snapshot, a per-clone gh identity wrapper, a session boot report,
 a worktree hook, and Claude Code hooks (watch-guard, asks). Each
 documents its own setup in `tools/README.md` or its folder.
 
@@ -70,10 +69,7 @@ documents its own setup in `tools/README.md` or its folder.
 
 `plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
 pane of the session's child runs (GPT, Claude, Claude review panels) with each
-run's live tail on click and main-ci's verdict line, which expands to a chart of
-recent main-ci runs (its line is the 1-minute load average when each run started;
-chips switch the bars between stacked job wall time, stacked job cpu time, and
-one bar at the run's peak memory; hover a bar for its slowest jobs), opens itself at start in
+run's live tail on click, opens itself at start in
 PM and TL sessions, and pins
 the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
 above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click; a right-click on an ask drops it from the file (under the asks hook's lock), on the surfaces that draw a `Client`. Above its
@@ -90,16 +86,16 @@ Set `childrenDir` to the folder of child run out-dirs: empty, the pane lists no
 child runs from disk and says to set it. The pane lists only runs whose
 `owner-session` file holds this session's id, and reads each run's kind from
 its `provider` file alone. Review panels come from the clone's git common
-directory (`.review-panel/`), the asks, gh-status, board and main-ci state from
+directory (`.review-panel/`), the asks, gh-status and board state from
 `state_dir` in the main checkout's `.agent/local.env`
 ([session-bus.md §State directory](orchestrate/session-bus.md#state-directory)), and
 ticket links from the GitHub repository of the session clone's `origin` remote
-(no GitHub remote, no link). The avatars and the main-ci chart draw as terminal
+(no GitHub remote, no link). The avatars draw as terminal
 pictures, which kitty and Ghostty show.
 Check it with `claude plugin validate`, `claude plugin test` and `tsc -p` on
 that folder.
 
-A repo adds its own panels below the main-ci chart by listing them in
+A repo adds its own panels at the top of the pane by listing them in
 `.agent/pane-panels.json` at the main checkout's root (no file, no panels):
 `[{ "id": "acme", "title": "Acme", "cmd": ["bun", "scripts/pane/acme.mjs"], "refresh_s": 60 }]`.
 The pane runs `cmd` as an argv (no shell) in that root, stdin closed, 10 s
@@ -135,7 +131,7 @@ commands you trust, as with a repo hook. The output:
 user's pick persists per panel id. Cells are strings, or for a `bar` column
 `{ frac 0..1, text, tone }`: a bar the column wide in `good`, `mid`, `bad` or
 `dim` over a dark track, its text right-aligned inside it. A `dim` row draws
-dimmed; `hover` (up to 6 lines) is the row's hover card, as on a main-ci bar.
+dimmed; `hover` (up to 6 lines) is the row's hover card.
 Only `tabs[].id`, `columns` and `rows` are required; a row is cut to the pane
 width, never wrapped. Keep cells to narrow single-width text: a wide glyph (CJK, emoji) can
 wrap a row. A panel draws at most 12 tabs, 12 columns up to 200 wide, and 100

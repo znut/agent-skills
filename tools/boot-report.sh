@@ -5,8 +5,7 @@
 #
 # Read-only: prints bounded, labeled sections from the current checkout and
 # writes no state. The pm role reads only its own lane (issue logs plus PRs
-# labeled `pm`, bot-only logs dropped); TL roles get every section. The
-# worktree section is the newest main-ci cleanup.log summary line. Paths are
+# labeled `pm`, bot-only logs dropped); TL roles get every section. Paths are
 # fixed names under `state_dir` in the main checkout's .agent/local.env
 # (orchestrate/session-bus.md §State directory).
 set -euo pipefail
@@ -194,27 +193,6 @@ else
 		printf 'rules:   .agent/@%s never read by role %s → read .agent/orchestrate.md + the files it names, then stamp:\n' "$rules_short" "$role"
 		printf 'stamp:   mkdir -p %s && echo "%s %s" > %s\n' "$(dirname "$rules_stamp")" "$rules_tree" "$(date +%F)" "$rules_stamp"
 	fi
-fi
-
-# 2b2. Main health — main-ci's last verdict on the default tip.
-section "Main health"
-mh="$var_dir/main-ci/state.json"
-if [ -z "$var_dir" ]; then
-	printf '%s\n' "$no_state"
-elif [ -f "$mh" ]; then
-	mh_phase=$(jq -r '.phase // "done"' "$mh" 2>/dev/null || printf 'done')
-	mh_green=$(jq -r '.green' "$mh" 2>/dev/null || printf '?')
-	mh_sha=$(jq -r '.sha[0:8]' "$mh" 2>/dev/null || printf '?')
-	mh_at=$(jq -r '.finishedAt' "$mh" 2>/dev/null || printf '?')
-	if [ "$mh_green" = true ]; then
-		printf 'green at %s (%s)%s\n' "$mh_sha" "$mh_at" "$([ "$mh_phase" = done ] || printf ' — %s, not final' "$mh_phase")"
-	else
-		printf 'RED at %s (%s): failed %s — see %s/run.log (FAIL lines) and runs/*-%s/step-<name>.log\n' "$mh_sha" "$mh_at" \
-			"$(jq -r '.steps | to_entries[] | select(.value == "FAIL") | .key' "$mh" 2>/dev/null | paste -sd, -)" "$(dirname "$mh")" "$mh_sha"
-	fi
-	[ "$mh_sha" = "$remote_short" ] || printf 'note: verdict is for %s; origin/%s tip is %s\n' "$mh_sha" "$default_branch" "${remote_short:-?}"
-else
-	printf '(no main-ci state under %s)\n' "$var_dir"
 fi
 
 # 2c. Handoff note — the previous same-role session's note, printed bounded;
@@ -486,11 +464,3 @@ else
 		[ "$total" -gt 20 ] && printf '(showing 20 of %s)\n' "$total" || true
 	fi
 fi
-
-# 8. Worktree hygiene — the newest main-ci cleanup summary, read from disk.
-section "Worktree hygiene"
-[ -n "$var_dir" ] || printf '%s\n' "$no_state"
-for run in $(ls -1t "$var_dir/main-ci/runs" 2>/dev/null || true); do
-	line=$(grep '^summary:' "$var_dir/main-ci/runs/$run/cleanup.log" 2>/dev/null | tail -1 || true)
-	if [ -n "$line" ]; then printf '%s (run %s)\n' "$line" "$run"; break; fi
-done

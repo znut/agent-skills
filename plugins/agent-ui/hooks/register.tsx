@@ -4,32 +4,6 @@ import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Time
 import type { OpenAsk, Run } from '../types'
 import { type Avatar, SPRITE_COLS, avatarOf, avatarPicture } from './sprites'
 import {
-  AXIS_COLS,
-  CHART_ROWS,
-  type Cell,
-  type CiRun,
-  METRICS,
-  type MainState,
-  type Metric,
-  type MetricRow,
-  axisLabels,
-  barMax,
-  barTotal,
-  cardPlace,
-  cardTable,
-  chartCells,
-  chartTiles,
-  fnv1a,
-  jobColor,
-  markCancelled,
-  parseRows,
-  placeBeside,
-  runsFit,
-  summarize,
-  tileCells,
-  withPending,
-} from './ci'
-import {
   TAIL_LINES,
   codexTail,
   elapsed,
@@ -38,11 +12,7 @@ import {
   labelOf,
   lines,
   localEnvValue,
-  applyRunLog,
   chainLinks,
-  freshRunLog,
-  previewQueue,
-  type RunLog,
   resultJsonMessage,
   statusOf,
 } from './lib'
@@ -55,11 +25,13 @@ import {
   type Segment,
   clip,
   firstLine,
+  fnv1a,
   headerSegments,
   parsePanelOutput,
   parseSpecs,
   pickOptions,
   pickTab,
+  placeBeside,
   rowSegments,
 } from './panels'
 
@@ -83,7 +55,7 @@ type Row = {
   parent?: string
   children: Row[]
 }
-type PrRow = { number: number; title: string; head: string }
+type PrRow = { number: number; title: string }
 type PrFile = { mtimeMs: number; pr: PrRow | null; done: number | null }
 type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow>; done: Set<number> }
 
@@ -282,8 +254,6 @@ async function readNativeTail($: $, agentId: string): Promise<Tail> {
   return { lines: linesOut, lastMessage: '' }
 }
 
-type PrState = { prs: PrRow[]; gates: Map<number, Record<string, unknown> | null> }
-
 // The gh-status files, re-read only where a file's mtime moved: the open PRs, and the numbers of
 // PRs that are MERGED or CLOSED.
 async function refreshPrCache($: $, dir: string): Promise<PrCache> {
@@ -297,7 +267,7 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
     const parsed = await Promise.all(changed.map(async entry => {
       const value = jsonObject(await readText($, `${dir}/status/${entry.name}`))
       const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
-        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', head: typeof value.headOid === 'string' ? value.headOid : '' }
+        ? { number: value.number, title: typeof value.title === 'string' ? value.title : '' }
         : null
       const done = (value?.state === 'MERGED' || value?.state === 'CLOSED') && typeof value.number === 'number' ? value.number : null
       return [entry.name, { mtimeMs: entry.mtimeMs, pr, done }] as const
@@ -310,115 +280,11 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
   return cache
 }
 
-async function readReadyPrs($: $, mainSha: string): Promise<PrState> {
+async function readReadyPrs($: $): Promise<PrRow[]> {
   const state = await resolveStateDir($)
-  if (!state) return { prs: [], gates: new Map() }
+  if (!state) return []
   const cache = await refreshPrCache($, `${state}/gh-status`)
-  const prs = [...cache.open.values()]
-  const gates = new Map<number, Record<string, unknown> | null>()
-  await Promise.all(prs.map(async pr => {
-    const path = `${state}/gate/pr-${pr.number}/${pr.head.slice(0, 8)}-${mainSha.slice(0, 8)}.json`
-    gates.set(pr.number, jsonObject(await readText($, path)))
-  }))
-  const rank = (pr: PrRow) => {
-    const gate = gates.get(pr.number)
-    return gate?.green === true ? 0 : gate === null ? 1 : 2
-  }
-  prs.sort((a, b) => rank(a) - rank(b) || a.number - b.number)
-  return { prs, gates }
-}
-
-type MainStrip = { sha: string; state: string; queue: { running: number; queued: number }; ciDir: string; ci: MainState; metrics: FsEntry | null; log: RunLog | null; logSize: number }
-
-// A main-ci file's last MiB, parsed again whenever its size changes, a first line the window cut
-// into dropped. main-ci only appends, and a whole re-parse costs about a millisecond a tick.
-const MAIN_CI_WINDOW = 1_048_576
-const parsedTails = new Map<string, { size: number; value: Promise<unknown> }>()
-
-async function parsedTail<T>($: $, path: string, size: number, parse: (text: string, isCut: boolean) => T): Promise<T> {
-  const hit = parsedTails.get(path)
-  if (hit?.size === size) return hit.value as Promise<T>
-  const value = tailBytes($, path, MAIN_CI_WINDOW).then(text => {
-    // a failed read is tried again next tick
-    if (text === '' && size > 0) parsedTails.delete(path)
-    const isCut = size > MAIN_CI_WINDOW
-    return parse(isCut ? text.slice(text.indexOf('\n') + 1) : text, isCut)
-  })
-  parsedTails.set(path, { size, value })
-  return value
-}
-
-const parseRunLog = (text: string): RunLog => {
-  const log = freshRunLog()
-  applyRunLog(log, text)
-  return log
-}
-
-// Runs in file order; a cut window can begin inside its oldest run, which is dropped.
-const parseCiRuns = (text: string, isCut: boolean): CiRun[] => {
-  const byRun = new Map<string, MetricRow[]>()
-  for (const row of parseRows(text)) {
-    const list = byRun.get(row.run)
-    if (list) list.push(row)
-    else byRun.set(row.run, [row])
-  }
-  const names = [...byRun.keys()].sort()
-  if (isCut) names.shift()
-  return names.map(name => summarize(name, byRun.get(name) ?? []))
-}
-
-async function readMainStrip($: $): Promise<MainStrip | null> {
-  const root = await resolveStateDir($)
-  if (!root) return null
-  const stateText = await readText($, `${root}/main-ci/state.json`)
-  const state = jsonObject(stateText)
-  if (!state || typeof state.sha !== 'string') return null
-  const main8 = state.sha.slice(0, 8)
-  const listing = await listDir($, `${root}/main-ci`)
-  const logStat = listing.find(entry => entry.name === 'run.log' && entry.kind === 'file')
-  const log = logStat ? await parsedTail($, `${root}/main-ci/run.log`, logStat.size, parseRunLog) : null
-  return {
-    sha: main8,
-    state: state.green === true ? 'green' : state.phase === 'done' ? 'failed' : String(state.phase ?? 'running'),
-    queue: log ? previewQueue(log, main8) : { running: 0, queued: 0 },
-    log,
-    logSize: logStat?.size ?? -1,
-    ciDir: `${root}/main-ci`,
-    ci: { sha: state.sha, phase: String(state.phase ?? '') },
-    metrics: listing.find(entry => entry.name === 'metrics.jsonl' && entry.kind === 'file') ?? null,
-  }
-}
-
-type CiCard = ReturnType<typeof cardTable> & { left: number }
-type CiChart = { key: string; metric: Metric; runs: CiRun[]; max: number; tiles: ReturnType<typeof chartTiles>; cards: CiCard[]; fallback?: Cell[][][] }
-let ciChart: CiChart | null = null
-
-// Encoded again only when a main-ci file grows, main-ci's state moves, or the width or the metric
-// does.
-async function readCiChart($: $, main: MainStrip, bodyColumns: number, metric: Metric): Promise<CiChart | null> {
-  const fit = runsFit(bodyColumns)
-  if (fit <= 0 || !main.metrics) return null
-  const parsed = await parsedTail($, `${main.ciDir}/metrics.jsonl`, main.metrics.size, parseCiRuns)
-  const key = `${main.ciDir}|${main.metrics.size}|${main.logSize}|${main.ci.sha}|${main.ci.phase}|${bodyColumns}|${metric}`
-  if (ciChart?.key === key) return ciChart
-  const runs = markCancelled(withPending(parsed.slice(-fit), main.ci), main.log?.cancels ?? []).slice(-fit)
-  if (runs.length === 0) return null
-  // a card's border and padding take 4 columns beside its content
-  const cards = runs.map((run, i) => {
-    const place = cardPlace(i, cardTable(run, bodyColumns - 4).width + 4, bodyColumns)
-    return { ...cardTable(run, place.width - 4), left: place.x }
-  })
-  ciChart = { key, metric, runs, max: barMax(runs, metric), tiles: chartTiles(runs, metric), cards }
-  return ciChart
-}
-
-// Block-glyph cells per run, built only on a surface without Image.
-function fallbackOf(chart: CiChart): Cell[][][] {
-  if (!chart.fallback) {
-    const grid = chartCells(chart.runs, chart.metric)
-    chart.fallback = chart.runs.map((_, i) => tileCells(grid, i))
-  }
-  return chart.fallback
+  return [...cache.open.values()].sort((a, b) => a.number - b.number)
 }
 
 // Repo panels: the list re-read when its file changes; each panel's last good output and last
@@ -787,8 +653,6 @@ const PANE = 'workers'
 const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
 const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
-const ciOpen = atom({ plugin: 'agent-ui', key: 'ciOpen' } as const, false)
-const ciMetric = atom({ plugin: 'agent-ui', key: 'ciMetric' } as const, 'wall' as Metric)
 const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
 const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
 const panelFilters = atom({ plugin: 'agent-ui', key: 'panelFilters' } as const, {} as Record<string, Record<string, string>>)
@@ -825,16 +689,13 @@ function syncFrames($: $): void {
   })
 }
 
-// A hovered run column's background, behind its bar's transparent pixels.
+// A hovered row's background.
 const COLUMN_LIT = '#3a3d50'
-// A bar's alt text where a picture cannot be drawn: its height as a block glyph, twice.
-const barGlyphs = (run: CiRun, chart: CiChart) => String.fromCharCode(0x2581 + Math.min(7, Math.floor((barTotal(run, chart.metric) / chart.max) * 8))).repeat(2)
 
 // The card draws on its own dark background, so its text colors are fixed, not the theme's.
 const CARD_TEXT = '#e1e1e6'
-const CARD_DIM = '#9a9cab'
 const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
-// A hover card, the chart's and a panel row's: hidden until its scope is hovered, painted over
+// A hover card, a panel row's or a chain issue's: hidden until its scope is hovered, painted over
 // the pane at its place.
 const CARD = { position: 'absolute', display: 'none', flexDirection: 'column', borderStyle: 'round', backgroundColor: '#2c2e3c', paddingX: 1 } as const
 
@@ -890,12 +751,10 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
     const now = await $.clock.now()
-    const [runs, agents, main] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => []), readMainStrip($)])
+    const [runs, agents] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => [])])
     const rows = rowsFor(runs, agents, now)
-    const prState = await readReadyPrs($, main?.sha ?? '')
-    const [chosen, open, isCiOpen, metric] = await Promise.all([read($, selectedRun), read($, expanded), read($, ciOpen), read($, ciMetric)])
-    const chart = main && isCiOpen ? await readCiChart($, main, e.props.bodyColumns, metric) : null
-    const axis = chart ? axisLabels(chart.max, chart.metric) : null
+    const prs = await readReadyPrs($)
+    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
     const visible = rows.flatMap(row => [
       { row, isChild: false },
       ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
@@ -919,17 +778,15 @@ export const register: Register = (on, options) => {
     const specs = root ? await readPanelSpecs($, root) : []
     const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
     if (root && specs.length > 0) schedulePanels($, root, specs, now)
-    // a card's top counts pane rows: the panels start below the main strip (1 row) and the
-    // open chart (CHART_ROWS bars, its metric chips and its legend line), the only rows above them
-    const panelTop = (main ? 1 : 0) + (chart ? CHART_ROWS + 2 : 0)
-    const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, panelTop, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
+    // a card's top counts pane rows: the panels are the first rows of the pane
+    const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, 0, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     // chain row i sits below the panels (one line each: head, error, chips, columns, rows, no
     // data, note) and the Needs you list (title, one line per PR, a blank line)
     const panelLines = panels.reduce(
       (sum, view) => sum + 1 + (view.error ? 1 : 0) + view.chipRows.length + (view.header.length > 0 ? 1 : 0) + view.rows.length + (view.noData ? 1 : 0) + (view.tab?.note ? 1 : 0),
       0,
     )
-    const chainTop = panelTop + panelLines + (prState.prs.length > 0 ? prState.prs.length + 2 : 0)
+    const chainTop = panelLines + (prs.length > 0 ? prs.length + 2 : 0)
     const paneRows = e.props.scroll.offset + e.props.scroll.bodyRows
     const segmentTexts = (segments: Segment[], dim: boolean, prefix: string) =>
       segments.map((segment, k) => (
@@ -942,51 +799,9 @@ export const register: Register = (on, options) => {
           {segment.text}
         </Text>
       ))
-    const stateColor = main?.state === 'green' ? 'green' : main?.state === 'failed' || main?.state === 'red' ? 'red' : undefined
 
     return (
       <Box flexDirection="column">
-        {main && (
-          <Box key="main-strip" flexDirection="row">
-            <Button key="ci-toggle" plain dimColor label={`${isCiOpen ? '▾' : '▸'} main ${main.sha} · `} onPress={() => update($, ciOpen, was => !was)} />
-            <Text color={stateColor} dimColor={!stateColor}>{main.state}</Text>
-            <Text dimColor>{' · preview '}</Text>
-            <Text color={main.queue.running > 0 ? 'green' : undefined} dimColor={main.queue.running === 0}>{main.queue.running}</Text>
-            <Text dimColor>/</Text>
-            <Text color={main.queue.queued > 0 ? 'red' : undefined} dimColor={main.queue.queued === 0}>{main.queue.queued}</Text>
-          </Box>
-        )}
-        {chart && (
-          <Box key="ci" flexDirection="column">
-            <Box flexDirection="row" height={CHART_ROWS}>
-              <Box width={AXIS_COLS} height={CHART_ROWS} flexDirection="column" justifyContent="space-between">
-                <Text dimColor>{axis?.top}</Text>
-                <Text dimColor>{axis?.bottom}</Text>
-              </Box>
-              {/* each run column holds its own bar: the hover zone and the bar are one box (runCell) */}
-              {chart.runs.map((run, i) => (
-                <Box key={`ci-run:${run.run}`} width={2} height={CHART_ROWS} flexDirection="column" hover={{ scope: `ci:${run.run}`, backgroundColor: COLUMN_LIT }}>
-                  {Image ? (
-                    <Image key={`ci-bar:${run.run}`} source={chart.tiles[i] as CiChart['tiles'][number]} columns={2} rows={CHART_ROWS} alt={barGlyphs(run, chart)} />
-                  ) : (
-                    (fallbackOf(chart)[i] ?? []).map((row, y) => (
-                      <Text key={`ci-cell-${i}-${y}`} color={hex(row[0]?.color ?? 0)}>{row.map(cell => String.fromCharCode(cell.glyph)).join('')}</Text>
-                    ))
-                  )}
-                </Box>
-              ))}
-            </Box>
-            <Box key="ci-metrics" flexDirection="row">
-              {METRICS.map((one, k) => (
-                <Box key={`ci-metric-box:${one}`} flexDirection="row">
-                  {k > 0 && <Text dimColor>{' · '}</Text>}
-                  <Button key={`ci-metric:${one}`} plain dimColor={one !== chart.metric} label={one} onPress={() => update($, ciMetric, () => one)} />
-                </Box>
-              ))}
-            </Box>
-            <Text dimColor>{`last ${chart.runs.length} runs · line = load · red = retry`}</Text>
-          </Box>
-        )}
         {panels.map(({ spec, isOpen, summary, error, data, tab, chipRows, header, noData, rows: panelRows }) => (
           <Box key={`panel:${spec.id}`} flexDirection="column">
             <Box key="panel-head" flexDirection="row">
@@ -1045,17 +860,15 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         ))}
-        {prState.prs.length > 0 && (
+        {prs.length > 0 && (
           <Box key="needs-you" flexDirection="column" marginBottom={1}>
             <Text bold>Needs you</Text>
-            {prState.prs.map(pr => {
-              const gate = prState.gates.get(pr.number) ?? null
-              const result = gate == null ? '…' : gate.green === true ? '✓' : '✗'
+            {prs.map(pr => {
               const href = repo ? safeHref(`https://github.com/${repo}/pull/${pr.number}`) : null
               return (
                 <Box key={`pr:${pr.number}`}>
                   {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
-                  <Text>{` ${pr.title} ${result}${gate?.conflict === true ? ' ⚡ conflict' : ''}`}</Text>
+                  <Text>{` ${pr.title}`}</Text>
                 </Box>
               )
             })}
@@ -1128,25 +941,6 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         )}
-        {/* drawn last so each card paints over the rows below the chart; its run column, in
-            the same hover scope, reveals it */}
-        {chart?.runs.map((run, i) => {
-          const card = chart.cards[i] as CiCard
-          return (
-            <Box key={`ci-card:${run.run}`} {...CARD} top={2} left={card.left} width={card.width + 4} hover={{ display: 'flex', scope: `ci:${run.run}` }}>
-              <Box key="ci-line-0" flexDirection="row" flexWrap="nowrap">
-                <Text color={CARD_TEXT} wrap="truncate-end">{card.head}</Text>
-              </Box>
-              {/* each table row is one line: a row Box of the name cell and the numbers cell */}
-              {[card.header, ...card.rows].map((row, k) => (
-                <Box key={`ci-line-${k + 1}`} flexDirection="row" flexWrap="nowrap">
-                  <Text color={k === 0 ? CARD_DIM : hex(jobColor(row.job))} wrap="truncate-end">{row.name}</Text>
-                  <Text color={k === 0 ? CARD_DIM : CARD_TEXT} wrap="truncate-end">{row.nums}</Text>
-                </Box>
-              ))}
-            </Box>
-          )
-        })}
         {panels.flatMap(({ spec, rows: panelRows }) =>
           panelRows.flatMap(({ key, scope, card }) =>
             card

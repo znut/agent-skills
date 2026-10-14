@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { TONES, placeBeside } from '../hooks/ci'
-import { BAR_TRACK, INK_ON_FILL, INK_ON_TRACK, barSegments, headerSegments, parsePanelOutput, parseSpecs, pickOptions, rowSegments } from '../hooks/panels'
-import { GIT_CONFIG, KIDS, type PanelResult, RUN_FILES, STATE, type World, world } from './world'
+import { BAR_TRACK, INK_ON_FILL, INK_ON_TRACK, TONES, barSegments, headerSegments, parsePanelOutput, parseSpecs, pickOptions, placeBeside, rowSegments } from '../hooks/panels'
+import { GIT_CONFIG, KIDS, type PanelResult, RUN_FILES, type World, world } from './world'
 
 const CONFIG = '/fx/repo/.agent/pane-panels.json'
 const CMD = ['acme-panel', 'report', '--json']
@@ -117,11 +116,10 @@ describe('repo panels', () => {
     await due.unmount()
   })
 
-  test('a non-git cwd keeps the root strip and panels; a cwd in another repo does not change the repo; the root does', async ($, on) => {
+  test('a non-git cwd keeps the root panels; a cwd in another repo does not change the repo; the root does', async ($, on) => {
     const w = world(on, {
       ...GIT_CONFIG,
       '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
       [CONFIG]: JSON.stringify(SPECS),
       '/fx/other/.agent/pane-panels.json': JSON.stringify([{ id: 'other', title: 'Other', cmd: ['acme-panel', 'other'] }]),
     }, [])
@@ -133,7 +131,6 @@ describe('repo panels', () => {
     for (const cwd of ['/fx/home/state', '/fx/other']) {
       w.cwd = cwd
       const ui = await shown($.ui.mount(PANE()))
-      expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
       expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme  north  alpha 75%')
       expect(await ui.find({ key: 'panel:other' })).toBeUndefined()
       await ui.unmount()
@@ -142,18 +139,16 @@ describe('repo panels', () => {
 
     w.root = '/fx/other'
     const other = await shown($.ui.mount(PANE()))
-    expect(await other.find({ key: 'main-strip' })).toBeUndefined()
     expect(await other.find({ key: 'panel:acme' })).toBeUndefined()
     expect((await other.find({ key: 'panel:other' }))?.text).toBe('▸ Other  north  alpha 75%')
     expect(w.panelRuns.at(-1)?.cwd).toBe('/fx/other')
     await other.unmount()
   })
 
-  test('a render never waits for a panel: a run that never ends leaves the strip and workers drawn; an end redraws', { options: { childrenDir: KIDS } }, async ($, on) => {
+  test('a render never waits for a panel: a run that never ends leaves the workers drawn; an end redraws', { options: { childrenDir: KIDS } }, async ($, on) => {
     const w = world(on, {
       ...RUN_FILES,
       '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'cafe0001aaaa', green: true, phase: 'done' }),
       [CONFIG]: JSON.stringify(SPECS),
     })
     let release = () => {}
@@ -161,7 +156,6 @@ describe('repo panels', () => {
     const ui = await $.ui.mount(PANE())
     await w.clock.advance(1)
     expect(w.panelRuns).toHaveLength(1)
-    expect((await ui.find({ key: 'main-strip' }))?.text).toContain('main cafe0001')
     expect(await ui.find({ key: `disk:${KIDS}/a-run` })).toBeDefined()
     expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme')
     expect(w.invalidated).toBe(0)
@@ -411,7 +405,7 @@ describe('repo panels', () => {
     expect(plain(bar(0.5, 3, '100%'))).toBe('100')
   })
 
-  test('bar tones map to the chart palette; an unknown tone is dim', () => {
+  test('bar tones map to their colours; an unknown tone is dim', () => {
     const tab = parsePanelOutput(JSON.stringify({
       tabs: [{
         id: 't',
@@ -469,26 +463,6 @@ describe('repo panels', () => {
     expect(keyed(walk(await short.drawn()), 'panel-card:acme:r2')?.props?.top).toBe(1)
     await short.unmount()
     expect(placeBeside(4, 1, 3, 6)).toEqual({ x: 1, width: 3 })
-  })
-
-  test('with the main-ci chart open, a row card counts the strip, the bars, the metric chips and the legend above the panels', async ($, on) => {
-    const metric = (i: number) => JSON.stringify({ run: `20260101T00000${i}Z-acme`, sha: `acme000${i}aaaa`, job: 'lint', attempt: 1, wall_s: 10, exit: 0 })
-    const w = world(on, {
-      ...GIT_CONFIG,
-      '/fx/repo/.agent/local.env': 'state_dir=~/state\n',
-      [`${STATE}/main-ci/state.json`]: JSON.stringify({ sha: 'acme0002aaaa', green: true, phase: 'done' }),
-      [`${STATE}/main-ci/metrics.jsonl`]: `${metric(1)}\n${metric(2)}\n`,
-      [CONFIG]: JSON.stringify(SPECS),
-    }, [])
-    w.panel = () => ok()
-    w.redraws = true
-    current = w
-    const ui = await shown($.ui.mount(PANE()))
-    await ui.press({ key: 'ci-toggle' })
-    await ui.press({ key: 'panel-toggle:acme' })
-    // strip 0, bars 1-6, chips 7, legend 8; the panel: head 9, tabs 10, columns 11, r1 12, its card 13
-    expect(keyed(walk(await ui.drawn()), 'panel-card:acme:r1')?.props?.top).toBe(13)
-    await ui.unmount()
   })
 
   test('a card fits a narrow pane', async ($, on) => {

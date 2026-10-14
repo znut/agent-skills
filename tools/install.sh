@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Renders the launchd templates in tools/launchd/ into concrete plists
-# (gh-status and main-ci) and installs them into ~/Library/LaunchAgents (or
+# Renders the gh-status launchd template in tools/launchd/ into a concrete
+# plist and installs it into ~/Library/LaunchAgents (or
 # $LAUNCH_AGENTS_DIR, for testing). Never runs `launchctl bootstrap` itself —
 # it only prints the commands, so nothing gets registered with launchd
 # without a separate, explicit step from you.
@@ -84,26 +84,21 @@ render() {
 }
 
 GH_STATUS_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.gh-status.plist"
-MAIN_CI_PLIST="$LAUNCH_AGENTS_DIR/com.agent-tools.main-ci.plist"
 
 render "$TOOLS_DIR/launchd/com.agent-tools.gh-status.plist.template" "$GH_STATUS_PLIST"
-render "$TOOLS_DIR/launchd/com.agent-tools.main-ci.plist.template" "$MAIN_CI_PLIST"
 
 plutil -lint "$GH_STATUS_PLIST"
-plutil -lint "$MAIN_CI_PLIST"
 
 echo
 if [ "$DRY_RUN" = true ]; then
 	echo "Dry run: nothing changed under $TARGET_DIR."
 	echo "launchd PATH: $RENDERED_PATH"
 	echo "real gh:      $GH_PATH"
-	echo "A real run renders these plists there and prints:"
+	echo "A real run renders this plist there and prints:"
 else
 	echo "Rendered:"
 	echo "  $GH_STATUS_PLIST"
-	echo "  $MAIN_CI_PLIST"
 	echo
-	echo "Not installed yet — review the rendered plists, then run:"
+	echo "Not installed yet — review the rendered plist, then run:"
 fi
 echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.gh-status.plist"
-echo "  launchctl bootstrap gui/\$UID $TARGET_DIR/com.agent-tools.main-ci.plist   # only if this config has a mainCi block"

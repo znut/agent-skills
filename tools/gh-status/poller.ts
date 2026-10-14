@@ -375,7 +375,7 @@ async function pollIssueComments(
  * Agents then read the snapshot file with zero API calls of their own.
  * The refresh subprocess passes --force: probe-gating already rate-limits, and
  * the tool's own debounce would silently swallow a change that lands within
- * 60s of main-ci's refresh. The new stamp is stored only after a successful
+ * 60s of an earlier refresh. The new stamp is stored only after a successful
  * refresh, so a failed run self-heals by retrying on the next cycle.
  * Known blind spot: an issue TITLE edit may not bump projectV2.updatedAt —
  * the title stales until the next real board change. Field edits, adds,
