@@ -184,6 +184,7 @@ describe('workers pane', () => {
   test('a PR mark comes from its mergeable and checks values', () => {
     expect(prMark('MERGEABLE', 'SUCCESS')).toBe('✓')
     expect(prMark('MERGEABLE', 'FAILURE')).toBe('✗')
+    expect(prMark('MERGEABLE', 'ERROR')).toBe('✗')
     expect(prMark('UNKNOWN', 'PENDING')).toBe('⋯')
     expect(prMark('MERGEABLE', null)).toBe('⋯')
     expect(prMark('CONFLICTING', 'SUCCESS')).toBe('⚡')
