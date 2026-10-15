@@ -2,7 +2,8 @@
  * gh-status — shared local GitHub PR status poller for agents.
  *
  * Reads every $AGENT_TOOLS_HOME/config/*.json and polls each repo once per
- * cycle via one GraphQL request, materializing PR state as local files under
+ * cycle (one GraphQL request plus two REST calls: issue comments and Actions
+ * runs), materializing PR state as local files under
  * $AGENT_TOOLS_HOME/var/<name>/gh-status/ so any number of agents can watch for
  * merge/CI/comment/review events with zero GitHub calls and zero model-token
  * polling:
@@ -37,9 +38,8 @@
  * ci-slow, host-strain. Fired run ids persist in state.json (ciFired); first
  * sight seeds them without emitting. ci.log rotates to ci.log.1 past CI_LOG_MAX_BYTES.
  *
- * The comments payload fetch only runs on a detected change — the
- * steady-state PR poll is one GraphQL request per configured
- * repo (plus the REST calls above), and a failure in the follow-up call is caught locally so it never
+ * The comments payload fetch only runs on a detected change, and a
+ * follow-up call's failure is caught locally so it never
  * aborts the main poll loop.
  */
 

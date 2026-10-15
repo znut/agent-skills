@@ -43,16 +43,15 @@ shows the shape (fill-me-in placeholders); copy it to
 | `repo` | gh-status, board-snapshot | yes | Repo name, without org (e.g. `YOUR_REPO`) |
 | `tokenItem` | gh-status, board-snapshot | one of `tokenItem` / `tokenFile` | macOS login-keychain service holding the GitHub token, read with `security find-generic-password -s <item> -w` once per poll cycle/run; wins over `tokenFile` (same precedence as bgh). Store it: `security add-generic-password -U -s <item> -a "$USER" -w` |
 | `tokenFile` | gh-status, board-snapshot | one of `tokenItem` / `tokenFile` | Path to a file containing a GitHub token, `~` expanded, read fresh on every poll/run (token rotation picked up automatically) |
-| `defaultBranch` | gh-status | no (default `main`) | Branch whose failed runs fire `main-red` in `events/ci.log` |
+| `defaultBranch` | gh-status | no (default `main`) | Branch for `main-red` in `events/ci.log`: fires when the newest completed run of a workflow on it failed |
 | `board.owner` | board-snapshot, gh-status board probe | yes, if using board-snapshot | GitHub org that owns the ProjectV2 board |
 | `board.projectNumber` | board-snapshot, gh-status board probe | yes, if using board-snapshot | ProjectV2 number (the `N` in `github.com/orgs/<org>/projects/N`) |
 
 `gh-status` reads **every** `$AGENT_TOOLS_HOME/config/*.json` each poll cycle
 and polls all of them in one process (one 40s loop, one GraphQL request per
-configured repo per cycle plus two repo-wide REST calls: `issues/comments?since=`
-and `actions/runs?per_page=20` (CI health, `events/ci.log`);
-the issue-comments call feeding `events/issue-<n>.log|.comments.json` — same shapes as the PR
-comment events; configs with a `board` block add a 1-point
+configured repo per cycle, plus two repo-wide REST calls: `issues/comments?since=`
+(feeds `events/issue-<n>.*`, same shapes as the PR comment events) and
+`actions/runs` (CI health, `events/ci.log`); configs with a `board` block add a 1-point
 `projectV2.updatedAt` probe per cycle and re-derive `board-snapshot.md` only
 when that stamp moves — agents read the board file with zero API calls). `board-snapshot` is invoked
 per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
@@ -68,7 +67,8 @@ per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
   ready-stale, conflict. One watcher per PR sees every event.
 - `events/ci.log` — repo CI health, JSONL `{at, type, run, branch, workflow,
   minutes?, detail?}`: main-red, ci-queued, ci-slow, host-strain. Past 256 KiB it rotates to
-  `ci.log.1` (replacing any older one) and a fresh `ci.log` starts.
+  `ci.log.1` (replacing any older one) and a fresh `ci.log` starts. A line-cursor consumer sees the
+  shrunk file as a reset; events appended since its last read can be in `ci.log.1`.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue
