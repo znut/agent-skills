@@ -43,7 +43,7 @@
  * aborts the main poll loop.
  */
 
-import { appendFileSync, renameSync, statSync } from "node:fs"
+import { appendFileSync, existsSync, renameSync, statSync } from "node:fs"
 import { loadavg } from "node:os"
 import { loadAllConfigs, readToken, varDir } from "../lib/config.mjs"
 
@@ -214,16 +214,20 @@ function sampleHost(): HostSample {
 	return { load, freeGb: parseFreeGb(vmStat()) }
 }
 
+/** Rotate BEFORE appending: a full ci.log moves to ci.log.1, this cycle's events land in the fresh file. */
+export function appendCiEvents(eventsDir: string, events: CiEvent[]): void {
+	if (!events.length) return
+	const log = `${eventsDir}/ci.log`
+	if (existsSync(log) && statSync(log).size > CI_LOG_MAX_BYTES) renameSync(log, `${log}.1`)
+	appendFileSync(log, events.map((e) => `${JSON.stringify(e)}\n`).join(""))
+}
+
 async function pollCi(config: RepoConfig, prev: PollState | null, eventsDir: string, token: string): Promise<Pick<PollState, "ciFired" | "hostStrainAt">> {
 	const res = await fetch(`https://api.github.com/repos/${config.org}/${config.repo}/actions/runs?per_page=${CI_RUNS_PER_PAGE}`, { headers: ghHeaders(token) })
 	if (!res.ok) throw new Error(`actions runs fetch HTTP ${res.status}`)
 	const { workflow_runs } = (await res.json()) as { workflow_runs: CiRun[] }
 	const r = ciTransitions(workflow_runs, Date.now(), config.defaultBranch ?? "main", prev?.ciFired, prev?.hostStrainAt, sampleHost)
-	if (r.events.length) {
-		const log = `${eventsDir}/ci.log`
-		appendFileSync(log, r.events.map((e) => `${JSON.stringify(e)}\n`).join(""))
-		if (statSync(log).size > CI_LOG_MAX_BYTES) renameSync(log, `${log}.1`)
-	}
+	appendCiEvents(eventsDir, r.events)
 	return { ciFired: r.fired, hostStrainAt: r.hostStrainAt }
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type CiRun, ciTransitions, conflictTransition, parseFreeGb, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
+import { appendCiEvents, type CiRun, ciTransitions, conflictTransition, parseFreeGb, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const OLD = new Date(Date.now() - PRUNE_AFTER_MS - DAY_MS).toISOString()
@@ -149,5 +149,16 @@ describe("ciTransitions", () => {
 		expect(types([run(1, "in_progress", 1)], {}, first.hostStrainAt, strained).events).toEqual([])
 		const later = ciTransitions([run(1, "in_progress", 1)], NOW + 10 * 60_000, "main", {}, first.hostStrainAt, () => ({ load: 1, freeGb: 1 }))
 		expect(later.events.filter((e) => e.type === "host-strain")).toHaveLength(1)
+	})
+})
+
+describe("appendCiEvents", () => {
+	it("rotates a log over the cap, then writes the new events to the fresh ci.log", () => {
+		const { eventsDir } = dirs()
+		writeFileSync(join(eventsDir, "ci.log"), "x".repeat(256 * 1024 + 1))
+		const ev = { at: "t", type: "main-red" as const, run: 1, branch: "main", workflow: "ci" }
+		appendCiEvents(eventsDir, [ev])
+		expect(readFileSync(join(eventsDir, "ci.log.1"), "utf8")).toBe("x".repeat(256 * 1024 + 1))
+		expect(readFileSync(join(eventsDir, "ci.log"), "utf8")).toBe(`${JSON.stringify(ev)}\n`)
 	})
 })
