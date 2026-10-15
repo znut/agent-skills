@@ -35,7 +35,7 @@
  * Transitions append to `events/ci.log` (one per config var dir) as JSONL
  * {at, type, run, branch, workflow, minutes?, detail?}: main-red, ci-queued,
  * ci-slow, host-strain. Fired run ids persist in state.json (ciFired); first
- * sight seeds them without emitting. ci.log is capped at CI_LOG_MAX_BYTES.
+ * sight seeds them without emitting. ci.log rotates to ci.log.1 past CI_LOG_MAX_BYTES.
  *
  * The comments payload fetch only runs on a detected change — the
  * steady-state PR poll is one GraphQL request per configured
@@ -43,7 +43,7 @@
  * aborts the main poll loop.
  */
 
-import { appendFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, renameSync, statSync } from "node:fs"
 import { loadavg } from "node:os"
 import { loadAllConfigs, readToken, varDir } from "../lib/config.mjs"
 
@@ -222,10 +222,7 @@ async function pollCi(config: RepoConfig, prev: PollState | null, eventsDir: str
 	if (r.events.length) {
 		const log = `${eventsDir}/ci.log`
 		appendFileSync(log, r.events.map((e) => `${JSON.stringify(e)}\n`).join(""))
-		if (statSync(log).size > CI_LOG_MAX_BYTES) {
-			const lines = readFileSync(log, "utf8").split("\n")
-			writeFileSync(log, lines.slice(Math.floor(lines.length / 2)).join("\n"))
-		}
+		if (statSync(log).size > CI_LOG_MAX_BYTES) renameSync(log, `${log}.1`)
 	}
 	return { ciFired: r.fired, hostStrainAt: r.hostStrainAt }
 }

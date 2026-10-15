@@ -67,7 +67,8 @@ per-config by name (`bun tools/board-snapshot/board-snapshot.mjs <name>`).
   checks-success, checks-failure, approved, changes-requested, commented,
   ready-stale, conflict. One watcher per PR sees every event.
 - `events/ci.log` — repo CI health, JSONL `{at, type, run, branch, workflow,
-  minutes?, detail?}`: main-red, ci-queued, ci-slow, host-strain. Capped in size.
+  minutes?, detail?}`: main-red, ci-queued, ci-slow, host-strain. Past 256 KiB it rotates to
+  `ci.log.1` (replacing any older one) and a fresh `ci.log` starts.
 - `events/pr-<n>.merged` — marker, for watchers that key on a path
 - `events/pr-<n>.comments.json`, `events/issue-<n>.log`,
   `events/issue-<n>.comments.json` — the latest comment batch and the issue
