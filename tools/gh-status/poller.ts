@@ -31,19 +31,36 @@
  * Files of PRs that left the tracked window and have been merged or closed
  * for PRUNE_AFTER_MS are removed, as are issue files idle that long.
  *
+ * CI health: one extra REST call per repo per cycle (`actions/runs?per_page=20`,
+ * so steady state = 1 GraphQL + 1 REST for CI + 1 REST for issue comments, plus
+ * the 1-point board probe when configured). Transitions append to
+ * `events/ci.log` as JSONL {at, type, run, branch, workflow, minutes?, detail?}:
+ * main-red, ci-queued, ci-slow, host-strain. Each config has its own var dir, so
+ * `ci.log` is already one file per repo (no owner/repo in the name). A run id
+ * fires a type once; fired ids persist in state.json (ciFired), so a restart
+ * never re-fires. Thresholds are the CI_* constants below.
+ *
  * The comments payload fetch only runs on a detected change — the
  * steady-state poll is always exactly one GraphQL request per configured
  * repo, and a failure in the follow-up call is caught locally so it never
  * aborts the main poll loop.
  */
 
-import { renameSync } from "node:fs"
+import { appendFileSync, renameSync } from "node:fs"
+import { loadavg } from "node:os"
 import { loadAllConfigs, readToken, varDir } from "../lib/config.mjs"
 
 const POLL_MS = 40_000
 const PR_WINDOW = 30
 export const PRUNE_AFTER_MS = 30 * 24 * 60 * 60 * 1000
 const PRUNE_EVERY_MS = 60 * 60 * 1000
+
+const CI_RUNS_PER_PAGE = 20
+const CI_QUEUED_MIN = 5
+const CI_SLOW_MIN = 10
+const CI_STRAIN_LOAD = 16
+const CI_STRAIN_FREE_GB = 2
+const CI_STRAIN_EVERY_MS = 10 * 60 * 1000
 
 const QUERY = `
 query($owner: String!, $name: String!) {
@@ -82,6 +99,7 @@ type RepoConfig = {
 	repo: string
 	tokenFile?: string
 	tokenItem?: string
+	defaultBranch?: string
 	board?: { owner: string; projectNumber: number }
 }
 
@@ -108,6 +126,75 @@ type PollState = {
 	boardUpdatedAt?: string | null
 	issueCommentCursor?: string | null
 	prunedAt?: string | null
+	ciFired?: Partial<Record<CiType, number[]>>
+	hostStrainAt?: string | null
+}
+
+export type CiType = "main-red" | "ci-queued" | "ci-slow" | "host-strain"
+export type CiRun = { id: number; head_branch: string; name: string | null; status: string; conclusion: string | null; created_at: string }
+export type CiEvent = { at: string; type: CiType; run: number; branch: string; workflow: string; minutes?: number; detail?: string }
+export type HostSample = { load: number; freeGb: number }
+
+/**
+ * CI transitions for one cycle. Pure: `fired` is the persisted per-type run-id
+ * list, returned updated (ids no longer in the window are dropped — they cannot
+ * reappear). host-strain needs a run in progress, fires at most once per
+ * CI_STRAIN_EVERY_MS, and carries the in-progress run it was seen under.
+ */
+export function ciTransitions(
+	runs: CiRun[],
+	now: number,
+	defaultBranch: string,
+	fired: Partial<Record<CiType, number[]>>,
+	lastStrainAt: string | null | undefined,
+	host: () => HostSample,
+): { events: CiEvent[]; fired: Partial<Record<CiType, number[]>>; hostStrainAt: string | null } {
+	const at = new Date(now).toISOString()
+	const events: CiEvent[] = []
+	const next: Partial<Record<CiType, number[]>> = {}
+	const ids = new Set(runs.map((r) => r.id))
+	for (const t of ["main-red", "ci-queued", "ci-slow"] as const) next[t] = (fired[t] ?? []).filter((id) => ids.has(id))
+	const fire = (t: CiType, r: CiRun, extra: Partial<CiEvent> = {}) => {
+		if (next[t]?.includes(r.id)) return
+		next[t]?.push(r.id)
+		events.push({ at, type: t, run: r.id, branch: r.head_branch, workflow: r.name ?? "", ...extra })
+	}
+	let running: CiRun | undefined
+	for (const r of runs) {
+		const minutes = Math.floor((now - Date.parse(r.created_at)) / 60_000)
+		if (r.status === "completed" && r.head_branch === defaultBranch && r.conclusion === "failure") fire("main-red", r)
+		if (r.status === "queued" && minutes > CI_QUEUED_MIN) fire("ci-queued", r, { minutes })
+		if (r.status === "in_progress") {
+			running ??= r
+			if (minutes > CI_SLOW_MIN) fire("ci-slow", r, { minutes })
+		}
+	}
+	let hostStrainAt = lastStrainAt ?? null
+	if (running && (!hostStrainAt || now - Date.parse(hostStrainAt) >= CI_STRAIN_EVERY_MS)) {
+		const h = host()
+		if (h.load > CI_STRAIN_LOAD || h.freeGb < CI_STRAIN_FREE_GB) {
+			events.push({ at, type: "host-strain", run: running.id, branch: running.head_branch, workflow: running.name ?? "", detail: `load ${h.load}, free+inactive ${h.freeGb.toFixed(1)} GB` })
+			hostStrainAt = at
+		}
+	}
+	return { events, fired: next, hostStrainAt }
+}
+
+/** macOS: free+inactive pages from vm_stat (16 KiB pages), load from os.loadavg. */
+function sampleHost(): HostSample {
+	const load = loadavg()[0] ?? 0
+	const out = Bun.spawnSync(["vm_stat"]).stdout.toString()
+	const pages = (label: string) => Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0)
+	return { load: Number(load.toFixed(2)), freeGb: ((pages("free") + pages("inactive")) * 16384) / 1e9 }
+}
+
+async function pollCi(config: RepoConfig, prev: PollState | null, eventsDir: string, token: string): Promise<Pick<PollState, "ciFired" | "hostStrainAt">> {
+	const res = await fetch(`https://api.github.com/repos/${config.org}/${config.repo}/actions/runs?per_page=${CI_RUNS_PER_PAGE}`, { headers: ghHeaders(token) })
+	if (!res.ok) throw new Error(`actions runs fetch HTTP ${res.status}`)
+	const { workflow_runs } = (await res.json()) as { workflow_runs: CiRun[] }
+	const r = ciTransitions(workflow_runs, Date.now(), config.defaultBranch ?? "main", prev?.ciFired ?? {}, prev?.hostStrainAt, sampleHost)
+	if (r.events.length) appendFileSync(`${eventsDir}/ci.log`, r.events.map((e) => `${JSON.stringify(e)}\n`).join(""))
+	return { ciFired: r.fired, hostStrainAt: r.hostStrainAt }
 }
 
 type Snapshot = {
@@ -542,6 +629,14 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		console.error(`${new Date().toISOString()} [${config.name}] issue comments poll failed: ${e instanceof Error ? e.message : e}`)
 	}
 
+	let ci: Pick<PollState, "ciFired" | "hostStrainAt"> = { ciFired: prevState?.ciFired, hostStrainAt: prevState?.hostStrainAt }
+	try {
+		ci = await pollCi(config, prevState, eventsDir, token)
+	} catch (e) {
+		// keep the previous CI state — the next cycle re-evaluates
+		console.error(`${new Date().toISOString()} [${config.name}] ci poll failed: ${e instanceof Error ? e.message : e}`)
+	}
+
 	let prunedAt = prevState?.prunedAt ?? null
 	if (!prunedAt || Date.parse(prunedAt) < Date.now() - PRUNE_EVERY_MS) {
 		try {
@@ -552,7 +647,7 @@ async function pollRepo(config: RepoConfig): Promise<void> {
 		}
 	}
 
-	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt, issueCommentCursor, prunedAt }
+	const state: PollState = { fetchedAt, prs: prs.map((p) => p.number), commentCursors: nextCursors, boardUpdatedAt, issueCommentCursor, prunedAt, ...ci }
 	await writeAtomic(stateFile, `${JSON.stringify(state, null, "\t")}\n`)
 }
 

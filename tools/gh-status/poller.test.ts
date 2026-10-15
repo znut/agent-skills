@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { conflictTransition, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
+import { type CiRun, ciTransitions, conflictTransition, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const OLD = new Date(Date.now() - PRUNE_AFTER_MS - DAY_MS).toISOString()
@@ -81,5 +81,54 @@ describe("conflictTransition", () => {
 		expect(conflictTransition("MERGEABLE", "UNKNOWN")).toEqual({ mergeable: "MERGEABLE", fire: false })
 		// any other value is treated like UNKNOWN
 		expect(conflictTransition("MERGEABLE", "SOMETHING_NEW" as "UNKNOWN")).toEqual({ mergeable: "MERGEABLE", fire: false })
+	})
+})
+
+describe("ciTransitions", () => {
+	const NOW = Date.parse("2026-10-15T12:00:00Z")
+	const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
+	const run = (id: number, status: string, createdMin: number, extra: Partial<CiRun> = {}): CiRun => ({ id, head_branch: "feat", name: "ci", status, conclusion: null, created_at: ago(createdMin), ...extra })
+	const calm = () => ({ load: 1, freeGb: 8 })
+	const types = (runs: CiRun[], fired = {}, strain: string | null = null, host = calm) => ciTransitions(runs, NOW, "main", fired, strain, host)
+
+	it("fires each type once per run on its transition, not before", () => {
+		const runs = [
+			run(1, "completed", 30, { head_branch: "main", conclusion: "failure" }),
+			run(2, "completed", 30, { conclusion: "failure" }), // non-default branch
+			run(3, "queued", 6),
+			run(4, "queued", 4),
+			run(5, "in_progress", 11),
+			run(6, "in_progress", 9),
+		]
+		const r = types(runs)
+		expect(r.events.map((e) => [e.type, e.run])).toEqual([
+			["main-red", 1],
+			["ci-queued", 3],
+			["ci-slow", 5],
+		])
+		expect(r.events[1]?.minutes).toBe(6)
+		expect(types(runs, r.fired).events).toEqual([])
+	})
+
+	it("does not re-fire after a restart from persisted state (JSON round trip)", () => {
+		const runs = [run(1, "queued", 20), run(2, "in_progress", 20)]
+		const persisted = JSON.parse(JSON.stringify(types(runs).fired))
+		expect(types(runs, persisted).events).toEqual([])
+	})
+
+	it("drops fired ids that left the window", () => {
+		const r = types([run(9, "queued", 1)], { "ci-queued": [1, 9] })
+		expect(r.fired["ci-queued"]).toEqual([9])
+	})
+
+	it("host-strain needs a running job and a strained host, once per 10 min", () => {
+		const strained = () => ({ load: 20, freeGb: 8 })
+		expect(types([run(1, "queued", 1)], {}, null, strained).events).toEqual([])
+		expect(types([run(1, "in_progress", 1)], {}, null, calm).events).toEqual([])
+		const first = types([run(1, "in_progress", 1)], {}, null, strained)
+		expect(first.events.map((e) => e.type)).toEqual(["host-strain"])
+		expect(types([run(1, "in_progress", 1)], {}, first.hostStrainAt, strained).events).toEqual([])
+		const later = ciTransitions([run(1, "in_progress", 1)], NOW + 10 * 60_000, "main", {}, first.hostStrainAt, () => ({ load: 1, freeGb: 1 }))
+		expect(later.events.filter((e) => e.type === "host-strain")).toHaveLength(1)
 	})
 })
