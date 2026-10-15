@@ -31,22 +31,19 @@
  * Files of PRs that left the tracked window and have been merged or closed
  * for PRUNE_AFTER_MS are removed, as are issue files idle that long.
  *
- * CI health: one extra REST call per repo per cycle (`actions/runs?per_page=20`,
- * so steady state = 1 GraphQL + 1 REST for CI + 1 REST for issue comments, plus
- * the 1-point board probe when configured). Transitions append to
- * `events/ci.log` as JSONL {at, type, run, branch, workflow, minutes?, detail?}:
- * main-red, ci-queued, ci-slow, host-strain. Each config has its own var dir, so
- * `ci.log` is already one file per repo (no owner/repo in the name). A run id
- * fires a type once; fired ids persist in state.json (ciFired), so a restart
- * never re-fires. Thresholds are the CI_* constants below.
+ * CI health: one extra REST call per repo per cycle (`actions/runs?per_page=20`).
+ * Transitions append to `events/ci.log` (one per config var dir) as JSONL
+ * {at, type, run, branch, workflow, minutes?, detail?}: main-red, ci-queued,
+ * ci-slow, host-strain. Fired run ids persist in state.json (ciFired); first
+ * sight seeds them without emitting. ci.log is capped at CI_LOG_MAX_BYTES.
  *
  * The comments payload fetch only runs on a detected change — the
- * steady-state poll is always exactly one GraphQL request per configured
- * repo, and a failure in the follow-up call is caught locally so it never
+ * steady-state PR poll is one GraphQL request per configured
+ * repo (plus the REST calls above), and a failure in the follow-up call is caught locally so it never
  * aborts the main poll loop.
  */
 
-import { appendFileSync, renameSync } from "node:fs"
+import { appendFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { loadavg } from "node:os"
 import { loadAllConfigs, readToken, varDir } from "../lib/config.mjs"
 
@@ -61,6 +58,7 @@ const CI_SLOW_MIN = 10
 const CI_STRAIN_LOAD = 16
 const CI_STRAIN_FREE_GB = 2
 const CI_STRAIN_EVERY_MS = 10 * 60 * 1000
+const CI_LOG_MAX_BYTES = 256 * 1024
 
 const QUERY = `
 query($owner: String!, $name: String!) {
@@ -131,7 +129,7 @@ type PollState = {
 }
 
 export type CiType = "main-red" | "ci-queued" | "ci-slow" | "host-strain"
-export type CiRun = { id: number; head_branch: string; name: string | null; status: string; conclusion: string | null; created_at: string }
+export type CiRun = { id: number; head_branch: string; name: string | null; status: string; conclusion: string | null; created_at: string; run_started_at?: string | null }
 export type CiEvent = { at: string; type: CiType; run: number; branch: string; workflow: string; minutes?: number; detail?: string }
 export type HostSample = { load: number; freeGb: number }
 
@@ -145,11 +143,13 @@ export function ciTransitions(
 	runs: CiRun[],
 	now: number,
 	defaultBranch: string,
-	fired: Partial<Record<CiType, number[]>>,
+	firedIn: Partial<Record<CiType, number[]>> | undefined,
 	lastStrainAt: string | null | undefined,
 	host: () => HostSample,
 ): { events: CiEvent[]; fired: Partial<Record<CiType, number[]>>; hostStrainAt: string | null } {
 	const at = new Date(now).toISOString()
+	const baseline = firedIn === undefined
+	const fired = firedIn ?? {}
 	const events: CiEvent[] = []
 	const next: Partial<Record<CiType, number[]>> = {}
 	const ids = new Set(runs.map((r) => r.id))
@@ -159,18 +159,29 @@ export function ciTransitions(
 		next[t]?.push(r.id)
 		events.push({ at, type: t, run: r.id, branch: r.head_branch, workflow: r.name ?? "", ...extra })
 	}
+	// main-red: the newest completed default-branch run of a workflow failed (a later green run clears it)
+	const newest = new Map<string, CiRun>()
+	for (const r of runs) {
+		if (r.status !== "completed" || r.head_branch !== defaultBranch) continue
+		const cur = newest.get(r.name ?? "")
+		if (!cur || Date.parse(r.created_at) > Date.parse(cur.created_at)) newest.set(r.name ?? "", r)
+	}
 	let running: CiRun | undefined
 	for (const r of runs) {
-		const minutes = Math.floor((now - Date.parse(r.created_at)) / 60_000)
-		if (r.status === "completed" && r.head_branch === defaultBranch && r.conclusion === "failure") fire("main-red", r)
-		if (r.status === "queued" && minutes > CI_QUEUED_MIN) fire("ci-queued", r, { minutes })
+		if (newest.get(r.name ?? "") === r && r.conclusion === "failure") fire("main-red", r)
+		if (r.status === "queued") {
+			const minutes = Math.floor((now - Date.parse(r.created_at)) / 60_000)
+			if (minutes > CI_QUEUED_MIN) fire("ci-queued", r, { minutes })
+		}
 		if (r.status === "in_progress") {
 			running ??= r
+			const minutes = Math.floor((now - Date.parse(r.run_started_at ?? r.created_at)) / 60_000)
 			if (minutes > CI_SLOW_MIN) fire("ci-slow", r, { minutes })
 		}
 	}
+	if (baseline) events.length = 0
 	let hostStrainAt = lastStrainAt ?? null
-	if (running && (!hostStrainAt || now - Date.parse(hostStrainAt) >= CI_STRAIN_EVERY_MS)) {
+	if (running && !baseline && (!hostStrainAt || now - Date.parse(hostStrainAt) >= CI_STRAIN_EVERY_MS)) {
 		const h = host()
 		if (h.load > CI_STRAIN_LOAD || h.freeGb < CI_STRAIN_FREE_GB) {
 			events.push({ at, type: "host-strain", run: running.id, branch: running.head_branch, workflow: running.name ?? "", detail: `load ${h.load}, free+inactive ${h.freeGb.toFixed(1)} GB` })
@@ -180,20 +191,42 @@ export function ciTransitions(
 	return { events, fired: next, hostStrainAt }
 }
 
+function vmStat(): string {
+	try {
+		return Bun.spawnSync(["vm_stat"]).stdout.toString()
+	} catch {
+		return ""
+	}
+}
+
+export function parseFreeGb(out: string): number {
+	const size = Number(/page size of (\d+) bytes/.exec(out)?.[1])
+	const free = /Pages free:\s+(\d+)/.exec(out)?.[1]
+	const inactive = /Pages inactive:\s+(\d+)/.exec(out)?.[1]
+	if (!size || free === undefined || inactive === undefined) return Number.POSITIVE_INFINITY
+	return ((Number(free) + Number(inactive)) * size) / 1e9
+}
+
 /** macOS: free+inactive pages from vm_stat (16 KiB pages), load from os.loadavg. */
 function sampleHost(): HostSample {
-	const load = loadavg()[0] ?? 0
-	const out = Bun.spawnSync(["vm_stat"]).stdout.toString()
-	const pages = (label: string) => Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0)
-	return { load: Number(load.toFixed(2)), freeGb: ((pages("free") + pages("inactive")) * 16384) / 1e9 }
+	const load = Number((loadavg()[0] ?? 0).toFixed(2))
+	// No reading (non-darwin, spawn failure, unparsable) => Infinity: the memory check is skipped.
+	return { load, freeGb: parseFreeGb(vmStat()) }
 }
 
 async function pollCi(config: RepoConfig, prev: PollState | null, eventsDir: string, token: string): Promise<Pick<PollState, "ciFired" | "hostStrainAt">> {
 	const res = await fetch(`https://api.github.com/repos/${config.org}/${config.repo}/actions/runs?per_page=${CI_RUNS_PER_PAGE}`, { headers: ghHeaders(token) })
 	if (!res.ok) throw new Error(`actions runs fetch HTTP ${res.status}`)
 	const { workflow_runs } = (await res.json()) as { workflow_runs: CiRun[] }
-	const r = ciTransitions(workflow_runs, Date.now(), config.defaultBranch ?? "main", prev?.ciFired ?? {}, prev?.hostStrainAt, sampleHost)
-	if (r.events.length) appendFileSync(`${eventsDir}/ci.log`, r.events.map((e) => `${JSON.stringify(e)}\n`).join(""))
+	const r = ciTransitions(workflow_runs, Date.now(), config.defaultBranch ?? "main", prev?.ciFired, prev?.hostStrainAt, sampleHost)
+	if (r.events.length) {
+		const log = `${eventsDir}/ci.log`
+		appendFileSync(log, r.events.map((e) => `${JSON.stringify(e)}\n`).join(""))
+		if (statSync(log).size > CI_LOG_MAX_BYTES) {
+			const lines = readFileSync(log, "utf8").split("\n")
+			writeFileSync(log, lines.slice(Math.floor(lines.length / 2)).join("\n"))
+		}
+	}
 	return { ciFired: r.fired, hostStrainAt: r.hostStrainAt }
 }
 

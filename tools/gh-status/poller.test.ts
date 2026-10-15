@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type CiRun, ciTransitions, conflictTransition, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
+import { type CiRun, ciTransitions, conflictTransition, parseFreeGb, PRUNE_AFTER_MS, pruneOld } from "./poller.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const OLD = new Date(Date.now() - PRUNE_AFTER_MS - DAY_MS).toISOString()
@@ -89,7 +89,7 @@ describe("ciTransitions", () => {
 	const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
 	const run = (id: number, status: string, createdMin: number, extra: Partial<CiRun> = {}): CiRun => ({ id, head_branch: "feat", name: "ci", status, conclusion: null, created_at: ago(createdMin), ...extra })
 	const calm = () => ({ load: 1, freeGb: 8 })
-	const types = (runs: CiRun[], fired = {}, strain: string | null = null, host = calm) => ciTransitions(runs, NOW, "main", fired, strain, host)
+	const types = (runs: CiRun[], fired: object | null = {}, strain: string | null = null, host = calm) => ciTransitions(runs, NOW, "main", fired === null ? undefined : fired, strain, host)
 
 	it("fires each type once per run on its transition, not before", () => {
 		const runs = [
@@ -107,13 +107,32 @@ describe("ciTransitions", () => {
 			["ci-slow", 5],
 		])
 		expect(r.events[1]?.minutes).toBe(6)
+		// restart: persisted state round-tripped through JSON
+		expect(types(runs, JSON.parse(JSON.stringify(r.fired))).events).toEqual([])
+	})
+
+	it("first sight (no persisted state) seeds without emitting", () => {
+		const runs = [run(1, "completed", 30, { head_branch: "main", conclusion: "failure" }), run(2, "queued", 20)]
+		const r = types(runs, null)
+		expect(r.events).toEqual([])
 		expect(types(runs, r.fired).events).toEqual([])
 	})
 
-	it("does not re-fire after a restart from persisted state (JSON round trip)", () => {
-		const runs = [run(1, "queued", 20), run(2, "in_progress", 20)]
-		const persisted = JSON.parse(JSON.stringify(types(runs).fired))
-		expect(types(runs, persisted).events).toEqual([])
+	it("a later green run of the same workflow suppresses main-red", () => {
+		const runs = [run(1, "completed", 30, { head_branch: "main", conclusion: "failure" }), run(2, "completed", 10, { head_branch: "main", conclusion: "success" })]
+		expect(types(runs).events).toEqual([])
+	})
+
+	it("ci-slow counts from run_started_at", () => {
+		expect(types([run(1, "in_progress", 30, { run_started_at: ago(5) })]).events).toEqual([])
+		expect(types([run(1, "in_progress", 30, { run_started_at: ago(12) })]).events.map((e) => e.type)).toEqual(["ci-slow"])
+	})
+
+	it("no memory reading skips the memory check and never throws", () => {
+		expect(parseFreeGb("")).toBe(Number.POSITIVE_INFINITY)
+		expect(parseFreeGb("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 1000.\nPages inactive: 1000.")).toBeCloseTo(0.032768)
+		const none = () => ({ load: 1, freeGb: parseFreeGb("") })
+		expect(types([run(1, "in_progress", 1)], {}, null, none).events).toEqual([])
 	})
 
 	it("drops fired ids that left the window", () => {
