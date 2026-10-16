@@ -94,6 +94,20 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
+  test('a panel run dir that appears under a known sha dir is listed on the next tick', async ($, on) => {
+    const sha = `${PANEL}/0123abcdef`
+    const w = world(on, RUN_FILES, ['106', '107'], { mtimes: { [`${sha}/code/pid`]: NOW - 60_000 } })
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await first.find({ key: `disk:${sha}/writing` })).toBeUndefined()
+    await first.unmount()
+
+    Object.assign(w.files, under(`${sha}/writing`, run('claude', '107')))
+    w.mtimes[`${sha}/writing/pid`] = NOW
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await again.find({ key: `disk:${sha}/writing` })).toBeDefined()
+    await again.unmount()
+  })
+
   test('lists running runs, then only the 5 newest done runs', async ($, on) => {
     const files: Record<string, string> = {}
     for (const i of [1, 2]) Object.assign(files, under(`${KIDS}/run-${i}`, run('openai', `20${i}`)))

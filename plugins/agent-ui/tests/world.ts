@@ -137,7 +137,6 @@ export function world(
       if (!path.startsWith(`${e.path}/`)) continue
       const [name = '', ...rest] = path.slice(e.path.length + 1).split('/')
       const kind = rest.length > 0 ? 'dir' : 'file'
-      const old = seen.get(name)
       seen.set(name, {
         name,
         kind,
