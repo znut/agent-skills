@@ -93,6 +93,21 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
+  test('a recently done run is re-read each tick: a resume that leaves the parent entry mtime unchanged still shows running', async ($, on) => {
+    const dir = `${KIDS}/b-done`
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 60_000, [`${dir}/pid`]: NOW - 60_000 } })
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await first.find({ key: `disk:${dir}` }))?.text).toContain('done')
+    await first.unmount()
+
+    delete w.files[`${dir}/done`]
+    delete w.files[`${dir}/exit-code`]
+    w.alive.add('102')
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await again.find({ key: `disk:${dir}` }))?.text).toContain('running')
+    await again.unmount()
+  })
+
   test('lists running runs, then only the 5 newest done runs', async ($, on) => {
     const files: Record<string, string> = {}
     for (const i of [1, 2]) Object.assign(files, under(`${KIDS}/run-${i}`, run('openai', `20${i}`)))

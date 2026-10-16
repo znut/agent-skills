@@ -73,7 +73,8 @@ const ASK_ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-// A run with `done` is immutable: it is not re-listed while its parent's entry mtime holds.
+// A run with `done` is not re-listed while its parent's entry mtime holds, unless that mtime is
+// under LIVE_WINDOW_MS old: a resume rewrites files in place, and the parent entry's mtime may not move.
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
@@ -199,7 +200,7 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
     for (const { dir, mtimeMs } of await runDirs($, root)) {
       seen.add(dir)
       let cached = probes.get(dir)
-      if (!(cached?.done && cached.mtimeMs === mtimeMs)) {
+      if (!(cached?.done && cached.mtimeMs === mtimeMs && now - mtimeMs > LIVE_WINDOW_MS)) {
         const entries = await listDir($, dir)
         const key = entries
           .map(entry => entry.name)
