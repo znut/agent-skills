@@ -75,9 +75,10 @@ describe('workers pane', () => {
     }
   })
 
+  // A listing gives a directory's mtime as 0, so a done run is re-read when its own `$.fs.stat` mtime moves.
   test('a resumed run (done removed) shows running again, not its old end', async ($, on) => {
-    const w = world(on, RUN_FILES)
     const dir = `${KIDS}/b-done`
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 600_000 } })
     const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect((await first.find({ key: `disk:${dir}` }))?.text).toContain('4m  done')
     await first.unmount()
@@ -90,6 +91,20 @@ describe('workers pane', () => {
     expect((await again.find({ key: `disk:${dir}` }))?.text).toContain('5m  running')
     await again.press({ key: `disk:${dir}` })
     expect(await again.find({ key: 'last-message' })).toBeUndefined()
+    await again.unmount()
+  })
+
+  test('a panel run dir that appears under a known sha dir is listed on the next tick', async ($, on) => {
+    const sha = `${PANEL}/0123abcdef`
+    const w = world(on, RUN_FILES, ['106', '107'], { mtimes: { [`${sha}/code/pid`]: NOW - 60_000 } })
+    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await first.find({ key: `disk:${sha}/writing` })).toBeUndefined()
+    await first.unmount()
+
+    Object.assign(w.files, under(`${sha}/writing`, run('claude', '107')))
+    w.mtimes[`${sha}/writing/pid`] = NOW
+    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await again.find({ key: `disk:${sha}/writing` })).toBeDefined()
     await again.unmount()
   })
 
@@ -237,8 +252,8 @@ describe('workers pane', () => {
   })
 
   test('a done run is not listed or re-probed on the next tick', async ($, on) => {
-    const w = world(on, RUN_FILES)
     const dir = `${KIDS}/b-done`
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 60_000 } })
     const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await first.unmount()
     expect(w.lists.filter(path => path === dir)).toHaveLength(1)
