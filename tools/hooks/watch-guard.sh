@@ -7,6 +7,7 @@
 # sessions with a /tmp/cc-session-roles marker are gated, each against ITS
 # OWN role's watcher. Fail-open: missing cwd, unreadable input, or
 # stop_hook_active -> allow.
+# A `<session_id>.wrapped` marker beside the role marker allows the stop.
 # Repo opt-out: `- watch_guard: off` under `## Hook settings` in
 # .agent/orchestrate.md.
 
@@ -29,6 +30,10 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 role=""
 case "$sid" in ""|*/*|*..*) ;; *) role=$(cat "/tmp/cc-session-roles/$sid" 2>/dev/null || true) ;; esac
 [ -n "$role" ] || exit 0
+
+# Wrapped session: wrap touches /tmp/cc-session-roles/<session_id>.wrapped
+# (orchestrate/session-bus.md §Wrap) — the PO closed the session on purpose.
+[ -f "/tmp/cc-session-roles/$sid.wrapped" ] && exit 0
 
 if pgrep -f "watch-lane.sh $role" > /dev/null 2>&1; then
 	exit 0
