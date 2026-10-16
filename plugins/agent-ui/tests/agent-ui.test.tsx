@@ -75,9 +75,10 @@ describe('workers pane', () => {
     }
   })
 
+  // A listing gives a directory's mtime as 0, so a done run is re-read when its own `$.fs.stat` mtime moves.
   test('a resumed run (done removed) shows running again, not its old end', async ($, on) => {
-    const w = world(on, RUN_FILES)
     const dir = `${KIDS}/b-done`
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 600_000 } })
     const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect((await first.find({ key: `disk:${dir}` }))?.text).toContain('4m  done')
     await first.unmount()
@@ -91,32 +92,6 @@ describe('workers pane', () => {
     await again.press({ key: `disk:${dir}` })
     expect(await again.find({ key: 'last-message' })).toBeUndefined()
     await again.unmount()
-  })
-
-  test('a recently done run is re-read each tick: a resume that leaves the parent entry mtime unchanged still shows running', async ($, on) => {
-    const dir = `${KIDS}/b-done`
-    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 60_000, [`${dir}/pid`]: NOW - 60_000 } })
-    const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await first.find({ key: `disk:${dir}` }))?.text).toContain('done')
-    await first.unmount()
-
-    delete w.files[`${dir}/done`]
-    delete w.files[`${dir}/exit-code`]
-    w.alive.add('102')
-    const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await again.find({ key: `disk:${dir}` }))?.text).toContain('running')
-    await again.unmount()
-  })
-
-  test('a done run older than an hour keeps the skip: it is not re-listed on the next tick', async ($, on) => {
-    const dir = `${KIDS}/b-done`
-    const old = NOW - 3_600_000 - 60_000
-    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: old, [`${dir}/pid`]: old } })
-    for (let tick = 0; tick < 2; tick++) {
-      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      await ui.unmount()
-    }
-    expect(w.lists.filter(path => path === dir)).toHaveLength(1)
   })
 
   test('lists running runs, then only the 5 newest done runs', async ($, on) => {
@@ -263,8 +238,8 @@ describe('workers pane', () => {
   })
 
   test('a done run is not listed or re-probed on the next tick', async ($, on) => {
-    const w = world(on, RUN_FILES)
     const dir = `${KIDS}/b-done`
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: NOW - 60_000 } })
     const first = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await first.unmount()
     expect(w.lists.filter(path => path === dir)).toHaveLength(1)

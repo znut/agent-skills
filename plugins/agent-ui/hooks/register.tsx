@@ -43,7 +43,7 @@ type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
 type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
-type RunDir = { dir: string; mtimeMs: number }
+type RunDir = { dir: string }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
 type Row = {
@@ -67,15 +67,14 @@ type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRo
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
-const DONE_RELIST_MS = 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 const ASK_ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-// A run with `done` is not re-listed while its parent's entry mtime holds, unless that mtime is
-// under DONE_RELIST_MS old: re-list recent done runs so a resume is never hidden by the cache.
+// A run with `done` is not re-listed while its own dir mtime holds (`$.fs.stat`: a listing's
+// entry carries 0 for a directory).
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
@@ -132,7 +131,10 @@ async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
 }
 
 const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
-  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}`, mtimeMs: entry.mtimeMs }))
+  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}` }))
+
+// A directory's own mtime; 0 when it cannot be read, which never counts as unchanged.
+const dirMtime = ($: $, path: string): Promise<number> => $.fs.stat(path).then(stat => stat.mtimeMs, () => 0)
 
 // A sha dir is re-listed only when its own mtime moves (a new panel run dir appears).
 async function runDirs($: $, root: Root): Promise<RunDir[]> {
@@ -141,8 +143,9 @@ async function runDirs($: $, root: Root): Promise<RunDir[]> {
   const nested = await Promise.all(
     top.map(async sha => {
       let cached = shaRuns.get(sha.dir)
-      if (cached?.mtimeMs !== sha.mtimeMs) {
-        cached = { mtimeMs: sha.mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
+      const mtimeMs = await dirMtime($, sha.dir)
+      if (mtimeMs === 0 || cached?.mtimeMs !== mtimeMs) {
+        cached = { mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
         shaRuns.set(sha.dir, cached)
       }
       return cached.runs
@@ -200,9 +203,11 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   for (const root of await resolveRoots($, options)) {
     const dirs = await runDirs($, root)
     const probed = await Promise.all(
-      dirs.map(async ({ dir, mtimeMs }) => {
+      dirs.map(async ({ dir }) => {
         let cached = probes.get(dir)
-        if (!(cached?.done && cached.mtimeMs === mtimeMs && now - mtimeMs > DONE_RELIST_MS)) {
+        // read before the listing: a change in between shows as a different mtime next tick
+        const mtimeMs = await dirMtime($, dir)
+        if (!(cached?.done && mtimeMs !== 0 && cached.mtimeMs === mtimeMs)) {
           const entries = await listDir($, dir)
           const key = entries
             .map(entry => entry.name)

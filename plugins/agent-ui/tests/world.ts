@@ -142,12 +142,19 @@ export function world(
         name,
         kind,
         size: kind === 'file' ? text.length : 0,
-        mtimeMs: Math.max(old?.mtimeMs ?? 0, w.mtimes[path] ?? 0),
+        mtimeMs: kind === 'file' ? (w.mtimes[path] ?? 0) : 0,
         isLink: false,
       })
     }
     if (seen.size === 0) return { deny: `ENOENT: ${e.path}` }
     return { value: [...seen.values()] }
+  })
+  // A directory's own mtime, as the host's stat gives it: the newest change beneath it, which a test
+  // stages in `mtimes`. A listing entry carries 0 for a directory.
+  on('fs.stat', ($, e) => {
+    const under = Object.keys(w.files).filter(path => path.startsWith(`${e.path}/`))
+    if (under.length === 0) return w.files[e.path] === undefined ? { deny: `ENOENT: ${e.path}` } : { value: { kind: 'file', size: 0, mtimeMs: w.mtimes[e.path] ?? 0, isLink: false } }
+    return { value: { kind: 'dir', size: 0, mtimeMs: Math.max(0, ...under.map(path => w.mtimes[path] ?? 0)), isLink: false } }
   })
   on('process.run', async ($, e) => {
     const [command, ...args] = e.argv
