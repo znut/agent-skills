@@ -32,7 +32,7 @@ case "$sid" in ""|*/*|*..*) ;; *) role=$(cat "/tmp/cc-session-roles/$sid" 2>/dev
 [ -n "$role" ] || exit 0
 
 # Wrapped session: wrap touches /tmp/cc-session-roles/<session_id>.wrapped
-# (orchestrate/session-bus.md §Wrap) — the PO closed the session on purpose.
+# (orchestrate/session-bus.md §Wrap) — the user wrapped the session on purpose.
 [ -f "/tmp/cc-session-roles/$sid.wrapped" ] && exit 0
 
 if pgrep -f "watch-lane.sh $role" > /dev/null 2>&1; then

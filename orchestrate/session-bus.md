@@ -22,7 +22,7 @@ Machine-local paths live in `<main checkout>/.agent/local.env`, read through Git
 
 When the user says wrap, run these in order and report each result:
 
-1. Mark the session wrapped so watch-guard stops nudging: `mkdir -p /tmp/cc-session-roles && touch "/tmp/cc-session-roles/$CLAUDE_CODE_SESSION_ID.wrapped"`.
+1. In Claude Code, mark the session wrapped so watch-guard allows the stop (other harnesses skip this step): `mkdir -p /tmp/cc-session-roles && touch "/tmp/cc-session-roles/$CLAUDE_CODE_SESSION_ID.wrapped"`.
 2. Stop every worker and watcher this session started; name a worker still running and wait for it.
 3. Sweep the inbox: act on or forward each pending message, then move it to `archive/`.
 4. Overwrite the handoff note (`<state>/notes/<role>.md`) with the state the next boot needs: at most 40 lines, no history.
