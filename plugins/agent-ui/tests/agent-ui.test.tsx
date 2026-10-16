@@ -108,6 +108,17 @@ describe('workers pane', () => {
     await again.unmount()
   })
 
+  test('a done run older than an hour keeps the skip: it is not re-listed on the next tick', async ($, on) => {
+    const dir = `${KIDS}/b-done`
+    const old = NOW - 3_600_000 - 60_000
+    const w = world(on, RUN_FILES, undefined, { mtimes: { [`${dir}/done`]: old, [`${dir}/pid`]: old } })
+    for (let tick = 0; tick < 2; tick++) {
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await ui.unmount()
+    }
+    expect(w.lists.filter(path => path === dir)).toHaveLength(1)
+  })
+
   test('lists running runs, then only the 5 newest done runs', async ($, on) => {
     const files: Record<string, string> = {}
     for (const i of [1, 2]) Object.assign(files, under(`${KIDS}/run-${i}`, run('openai', `20${i}`)))

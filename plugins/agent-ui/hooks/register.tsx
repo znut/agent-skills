@@ -67,6 +67,7 @@ type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRo
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
+const DONE_RELIST_MS = 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 const ASK_ACCENT = '#CBA6F7'
@@ -74,7 +75,7 @@ const ASK_ACCENT = '#CBA6F7'
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
 // A run with `done` is not re-listed while its parent's entry mtime holds, unless that mtime is
-// under LIVE_WINDOW_MS old: a resume rewrites files in place, and the parent entry's mtime may not move.
+// under DONE_RELIST_MS old: re-list recent done runs so a resume is never hidden by the cache.
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
@@ -197,24 +198,28 @@ async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[
   const found: Probe[] = []
   const seen = new Set<string>()
   for (const root of await resolveRoots($, options)) {
-    for (const { dir, mtimeMs } of await runDirs($, root)) {
-      seen.add(dir)
-      let cached = probes.get(dir)
-      if (!(cached?.done && cached.mtimeMs === mtimeMs && now - mtimeMs > LIVE_WINDOW_MS)) {
-        const entries = await listDir($, dir)
-        const key = entries
-          .map(entry => entry.name)
-          .sort()
-          .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
-          .join('/')
-        if (cached?.key !== key) {
-          const done = entries.some(entry => entry.name === 'done')
-          cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
-        } else cached.mtimeMs = mtimeMs
-        probes.set(dir, cached)
-      }
-      if (cached.probe) found.push(cached.probe)
-    }
+    const dirs = await runDirs($, root)
+    const probed = await Promise.all(
+      dirs.map(async ({ dir, mtimeMs }) => {
+        let cached = probes.get(dir)
+        if (!(cached?.done && cached.mtimeMs === mtimeMs && now - mtimeMs > DONE_RELIST_MS)) {
+          const entries = await listDir($, dir)
+          const key = entries
+            .map(entry => entry.name)
+            .sort()
+            .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
+            .join('/')
+          if (cached?.key !== key) {
+            const done = entries.some(entry => entry.name === 'done')
+            cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
+          } else cached.mtimeMs = mtimeMs
+          probes.set(dir, cached)
+        }
+        return cached.probe
+      }),
+    )
+    for (const { dir } of dirs) seen.add(dir)
+    for (const one of probed) if (one) found.push(one)
   }
   for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
   // older runs without `done` read as dead: bounds the ps list and ignores reused pids
