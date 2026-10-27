@@ -16,9 +16,10 @@ instructions win over the repo rules, and the repo rules win over this file.
 - Read the PRD and ADR sections the ticket cites before the first edit. A
   Problem or Done line those sections no longer support means the ticket is
   outdated: return `blocked` naming the section, build nothing.
-- Make one small change that satisfies the ticket. Test project logic, edge
-  cases, and known bugs; do not test the framework. Comment only where the
-  code cannot state the reason itself.
+- Make one small change that satisfies the ticket. Write a test only where
+  the repo's test rule keeps it; NEVER one that re-asserts a lower layer,
+  mocks the repo's own code, or asserts copy. Comment only where the code
+  cannot state the reason itself.
 - Branch as `feat/<slug>`, `fix/<slug>`, or `chore/<slug>`. Run the repo's
   checks for the changed paths; fix or report each failure. Stage only task
   files. Commit before review.

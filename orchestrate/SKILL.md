@@ -103,6 +103,8 @@ the rules do not say: the sibling file or idiom to mirror and the trust
 boundary or performance budget the reviewer must judge. Do
 not paste the repo rules or the worker procedure; the worker reads the rules
 from `origin/<default>` and the procedure from its file.
+NEVER list tests to write; the worker applies the repo's test rule, which a
+listed test would override.
 
 ## Worker types
 
