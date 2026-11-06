@@ -242,9 +242,9 @@ else
 	if [ ! -d "$inbox" ]; then
 		printf 'missing: %s\n' "$inbox"
 	else
-		# unread = *.md directly in inbox, excluding archive/
+		# unread = non-hidden regular files directly in inbox, excluding archive/
 		mail_tmp="$tmpdir/mails"
-		find "$inbox" -maxdepth 1 -name '*.md' -type f | sort | head -20 > "$mail_tmp"
+		find "$inbox" -maxdepth 1 -type f ! -name '.*' | sort | head -20 > "$mail_tmp"
 		mail_count=$(wc -l < "$mail_tmp" | tr -d ' ')
 		if [ "$mail_count" -eq 0 ]; then
 			printf 'empty\n'
@@ -257,7 +257,7 @@ else
 				head -n 12 "$m"
 			done < "$mail_tmp"
 		fi
-		left=$(find "$inbox" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ')
+		left=$(find "$inbox" -maxdepth 1 -type f ! -name '.*' | wc -l | tr -d ' ')
 		[ "$left" -gt 20 ] && printf '(showing 20 of %s)\n' "$left" || true
 	fi
 fi
