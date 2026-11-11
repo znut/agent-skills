@@ -10,7 +10,8 @@ description: >
 
 You and the user decide what to build, then you give a worker a ticket it can
 build from the repo alone. Use your judgment: this file says how we work, not
-every step. The repo's rules are in its `AGENTS.md` and `README.md`.
+every step. Read the repo's `PM.md` first: it holds the repo's own rules for
+product work.
 
 ## Working with the user
 
