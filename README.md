@@ -19,7 +19,7 @@ Independent, invoked by the user:
 | `orchestrate` | Why the manager delegates; base, worktree, worker procedure, review, PR, and the final check.       |
 | `tech-debt`   | Weekly debt revisit: gathers friction signals, settles candidates with the user, and cuts tickets.  |
 | `intake`      | Stakeholder interview on the stakeholder's own machine, filed as issues. See `intake/INSTALL.md`.   |
-| `pm-v2`       | Settles product choices with the user, locks the mock and marks tickets ready. Stands alone.        |
+| `pm-v2`       | Product manager: settles choices with the user, locks the mock, starts a worker on a ready ticket.  |
 
 Composed on top of `comm` and `orchestrate`:
 
