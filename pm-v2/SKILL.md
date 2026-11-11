@@ -23,6 +23,17 @@ product work.
 - One question per turn: analysis first, options a/b, your pick first.
 - Reply with the result first, then what they must act on.
 
+## Stay with the user
+
+The user waits through every turn you spend working, so keep your turns short.
+
+- **Hand off** what they do not need to watch. Application code goes to a
+  worker (below). A code question, an investigation or a long check goes to a
+  background subagent: give it a brief it can finish alone, keep talking with
+  the user, and pass on the result when it returns.
+- **Do yourself**, in the conversation, what is quick or what they must see: a
+  few lines in a product doc, the mock, the ticket.
+
 ## Settle the request
 
 - Simplify first. Open the shipped screen, say what the product already does,
@@ -33,8 +44,6 @@ product work.
   out, the visible result that proves it, data, roles, plan, the failure
   cases, and what it blocks or waits on. In a new business or legal area, name
   the hidden risks first.
-- Send code questions to a read-only search agent and keep your context for
-  the product.
 
 ## Write it down
 
