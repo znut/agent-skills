@@ -191,8 +191,9 @@ Called by a subagent to report `done`, `needs_help`, or `error` without exiting.
 ### send_agent_message
 
 Parent → subagent steering. The parent writes a message into the subagent's
-state directory. The subagent's own extension instance watches that file and
-**injects the message as a user message**, so the agent cannot ignore it.
+state directory (atomically). The subagent's own extension instance picks it up
+(`fs.watch` plus a 1 s poll, because `fs.watch` does not fire in `pi -p` children;
+the file is claimed by rename so it is consumed once) and **injects the message as a user message**, so the agent cannot ignore it.
 
 Types:
 
@@ -208,8 +209,10 @@ Parent:
 ```
 
 The subagent does not need to call any special tool to receive the message.
-The extension queues it as a normal user message, delivered in the gap after
-its current assistant turn / tool chain completes.
+`steer` and `stop` are delivered with `deliverAs: "steer"`: right after the
+current tool call finishes, before the next model request (so a steer during a
+long `sleep`/test run lands before the agent writes its reply). `context` is a
+`followUp`, delivered once the agent has finished its tools.
 
 ### agent_status / list_agents / stop_agent
 

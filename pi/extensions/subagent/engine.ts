@@ -812,3 +812,37 @@ export function resolvePingDir(
 	if (!dir) return null;
 	return readLiveFile<{ ownerId?: string }>(dir)?.ownerId === caller.owner ? dir : null;
 }
+
+export interface AgentMessage {
+	type: string;
+	content?: string;
+}
+
+export function writeMessage(dir: string, message: AgentMessage): void {
+	// Write then rename so the child never reads a half-written file.
+	const tmp = path.join(dir, `message.json.${process.pid}.tmp`);
+	fs.writeFileSync(tmp, JSON.stringify(message, null, 2), "utf-8");
+	fs.renameSync(tmp, path.join(dir, "message.json"));
+}
+
+/** Claim message.json by renaming it first, so concurrent readers consume it at most once. */
+export function readAndDeleteMessage(dir: string): AgentMessage | null {
+	const p = path.join(dir, "message.json");
+	const claimed = path.join(dir, `message.json.${process.pid}.claimed`);
+	try {
+		fs.renameSync(p, claimed);
+	} catch {
+		return null;
+	}
+	try {
+		return JSON.parse(fs.readFileSync(claimed, "utf-8")) as AgentMessage;
+	} catch {
+		return null;
+	} finally {
+		try {
+			fs.unlinkSync(claimed);
+		} catch {
+			/* ignore */
+		}
+	}
+}

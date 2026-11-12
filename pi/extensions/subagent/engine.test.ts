@@ -26,7 +26,9 @@ import {
 	resultMessage,
 	scanAgentDirs,
 	findAgentDir,
+	readAndDeleteMessage,
 	resolvePingDir,
+	writeMessage,
 	reviewerFor,
 	seededRandom,
 	skillArgs,
@@ -531,5 +533,22 @@ describe("agent state dirs", () => {
 		// ...but not a sibling it does not own.
 		expect(resolvePingDir(root, "orphan", { selfId: "mine", selfDir: mine, owner: "S1" })).toBeNull();
 		expect(orphan).toBeTruthy();
+	});
+
+	test("message.json is consumed exactly once and leaves no files behind", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		expect(readAndDeleteMessage(dir)).toBeNull();
+		writeMessage(dir, { type: "steer", content: "reply BANANA" });
+		expect(fs.readdirSync(dir)).toEqual(["message.json"]);
+		expect(readAndDeleteMessage(dir)).toEqual({ type: "steer", content: "reply BANANA" });
+		expect(readAndDeleteMessage(dir)).toBeNull();
+		expect(fs.readdirSync(dir)).toEqual([]);
+	});
+
+	test("a half-written message.json is dropped, not delivered twice", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		fs.writeFileSync(path.join(dir, "message.json"), '{"type":"ste');
+		expect(readAndDeleteMessage(dir)).toBeNull();
+		expect(fs.readdirSync(dir)).toEqual([]);
 	});
 });

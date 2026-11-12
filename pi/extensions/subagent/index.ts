@@ -42,7 +42,10 @@ import {
 	findReviewLinks,
 	loadConfig,
 	findAgentDir,
+	readAndDeleteMessage,
 	resolvePingDir,
+	writeMessage,
+	type AgentMessage,
 	scanAgentDirs,
 	normalizeConfig,
 	parseModelSpec,
@@ -302,27 +305,6 @@ function formatTokens(usage: AgentUsage): string {
 // Steer watcher (subagent side)
 // ---------------------------------------------------------------------------
 
-interface AgentMessage {
-	type: string;
-	content?: string;
-}
-
-function writeMessage(dir: string, message: AgentMessage): void {
-	fs.writeFileSync(path.join(dir, "message.json"), JSON.stringify(message, null, 2), "utf-8");
-}
-
-function readAndDeleteMessage(dir: string): AgentMessage | null {
-	const p = path.join(dir, "message.json");
-	if (!fs.existsSync(p)) return null;
-	try {
-		const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
-		fs.unlinkSync(p);
-		return raw as AgentMessage;
-	} catch {
-		return null;
-	}
-}
-
 function formatSteerMessage(message: AgentMessage): string {
 	const prefix = message.type ? `[${message.type.toUpperCase()}] ` : "[STEER] ";
 	const body = message.content ?? "";
@@ -330,46 +312,45 @@ function formatSteerMessage(message: AgentMessage): string {
 		return `${prefix}The parent session has cancelled this task. Stop working immediately, call agent_ping with status error, and exit.`;
 	}
 	if (message.type === "steer") {
-		return `${prefix}Direction change from the parent session — treat this as an override to your previous instructions:\n${body}`;
+		return `${prefix}Update to your task from the parent session that spawned you. It supersedes any conflicting earlier instruction, including any \"unless told otherwise\" default:\n${body}`;
 	}
 	return `${prefix}${body}`;
 }
+
+const STEER_POLL_MS = 1000;
 
 function startSteerWatcher(pi: ExtensionAPI, ctx: any): void {
 	const ownId = process.env.PI_EXT_SUBAGENT_ID;
 	const ownDir = process.env.PI_EXT_SUBAGENT_DIR || (ownId ? agentDir(ctx.cwd, ownId) : null);
 	if (!ownDir) return;
 	ensureAgentDir(ownDir);
-	const messagePath = path.join(ownDir, "message.json");
-
-	// Clear stale messages from a previous run.
-	if (fs.existsSync(messagePath)) {
-		fs.unlinkSync(messagePath);
-	}
-
 	const consume = () => {
 		const message = readAndDeleteMessage(ownDir);
 		if (!message) return;
 		const text = formatSteerMessage(message);
 		try {
-			// Queue as a follow-up user message; pi delivers it in the gap after the
-			// current assistant turn / tool chain completes, without interrupting
-			// an in-flight tool call.
-			pi.sendUserMessage(text, { deliverAs: "followUp" });
+			// "steer" lands after the current tool call finishes, before the next model
+			// request, so it can redirect work in flight; other messages wait for the
+			// agent to finish its tools. sendUserMessage starts a turn when idle.
+			pi.sendUserMessage(text, { deliverAs: message.type === "steer" || message.type === "stop" ? "steer" : "followUp" });
 		} catch {
 			/* ignore */
 		}
 	};
 
 	// Consume messages that arrived before the watcher started.
-	if (fs.existsSync(messagePath)) {
-		consume();
-	}
+	consume();
 
-	fs.watch(ownDir, { persistent: false }, (eventType, filename) => {
-		if (filename !== "message.json" || !fs.existsSync(messagePath)) return;
-		consume();
-	});
+	// fs.watch alone is unreliable in `pi -p` children (it never fired), so poll
+	// too. Both paths are safe to run together: consume() claims the file once.
+	try {
+		fs.watch(ownDir, { persistent: false }, (_eventType, filename) => {
+			if (filename === "message.json") consume();
+		});
+	} catch {
+		/* polling still covers it */
+	}
+	setInterval(consume, STEER_POLL_MS).unref();
 }
 
 // ---------------------------------------------------------------------------
