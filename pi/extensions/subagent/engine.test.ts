@@ -36,7 +36,7 @@ import {
 	resultMessage,
 	scanAgentDirs,
 	findAgentDir,
-	readAndDeleteMessage,
+	readAndDeleteMessages,
 	resolvePingDir,
 	writeMessage,
 	reviewerFor,
@@ -564,21 +564,48 @@ describe("agent state dirs", () => {
 		expect(orphan).toBeTruthy();
 	});
 
-	test("message.json is consumed exactly once and leaves no files behind", () => {
+	test("a message is consumed exactly once and leaves no files behind", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
-		expect(readAndDeleteMessage(dir)).toBeNull();
+		expect(readAndDeleteMessages(dir)).toEqual([]);
 		writeMessage(dir, { type: "steer", content: "reply BANANA" });
-		expect(fs.readdirSync(dir)).toEqual(["message.json"]);
-		expect(readAndDeleteMessage(dir)).toEqual({ type: "steer", content: "reply BANANA" });
-		expect(readAndDeleteMessage(dir)).toBeNull();
-		expect(fs.readdirSync(dir)).toEqual([]);
+		expect(fs.readdirSync(path.join(dir, "messages"))).toHaveLength(1);
+		expect(readAndDeleteMessages(dir)).toEqual([{ type: "steer", content: "reply BANANA" }]);
+		expect(readAndDeleteMessages(dir)).toEqual([]);
+		expect(fs.readdirSync(path.join(dir, "messages"))).toEqual([]);
 	});
 
-	test("a half-written message.json is dropped, not delivered twice", () => {
+	test("two rapid writes are both delivered, in order, once", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		for (let i = 0; i < 20; i++) writeMessage(dir, { type: "steer", content: `m${i}` });
+		const got = readAndDeleteMessages(dir);
+		expect(got.map((m) => m.content)).toEqual(Array.from({ length: 20 }, (_, i) => `m${i}`));
+		expect(readAndDeleteMessages(dir)).toEqual([]);
+	});
+
+	test("a legacy message.json is still read, before newer messages", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		fs.writeFileSync(path.join(dir, "message.json"), JSON.stringify({ type: "steer", content: "old" }));
+		writeMessage(dir, { type: "steer", content: "new" });
+		expect(readAndDeleteMessages(dir).map((m) => m.content)).toEqual(["old", "new"]);
+		expect(fs.existsSync(path.join(dir, "message.json"))).toBe(false);
+	});
+
+	test("a half-written message is dropped, not delivered twice; others still arrive", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		fs.mkdirSync(path.join(dir, "messages"));
+		fs.writeFileSync(path.join(dir, "messages", "0000000000001-x.json"), '{"type":"ste');
 		fs.writeFileSync(path.join(dir, "message.json"), '{"type":"ste');
-		expect(readAndDeleteMessage(dir)).toBeNull();
-		expect(fs.readdirSync(dir)).toEqual([]);
+		writeMessage(dir, { type: "steer", content: "ok" });
+		expect(readAndDeleteMessages(dir).map((m) => m.content)).toEqual(["ok"]);
+		expect(fs.readdirSync(path.join(dir, "messages"))).toEqual([]);
+		expect(fs.readdirSync(dir).filter((n) => n !== "messages")).toEqual([]);
+	});
+
+	test("in-flight tmp files are not delivered", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-msg-"));
+		fs.mkdirSync(path.join(dir, "messages"));
+		fs.writeFileSync(path.join(dir, "messages", "1-2-3.tmp"), JSON.stringify({ type: "steer", content: "partial" }));
+		expect(readAndDeleteMessages(dir)).toEqual([]);
 	});
 });
 

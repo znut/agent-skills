@@ -233,7 +233,7 @@ Subagent state is stored under the pi machine state directory, outside any repo:
   live.json
   status.json
   result.json
-  message.json
+  messages/<ts>-<pid>-<seq>.json   (one file per queued message; child claims each once, in order)
 ```
 
 This keeps spawned processes and their artifacts out of project working trees

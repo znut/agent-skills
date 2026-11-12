@@ -46,7 +46,7 @@ import {
 	loadConfig,
 	classifyFinish,
 	findAgentDir,
-	readAndDeleteMessage,
+	readAndDeleteMessages,
 	resolvePingDir,
 	writeMessage,
 	type AgentMessage,
@@ -329,16 +329,16 @@ function startSteerWatcher(pi: ExtensionAPI, ctx: any): void {
 	if (!ownDir) return;
 	ensureAgentDir(ownDir);
 	const consume = () => {
-		const message = readAndDeleteMessage(ownDir);
-		if (!message) return;
-		const text = formatSteerMessage(message);
-		try {
-			// "steer" lands after the current tool call finishes, before the next model
-			// request, so it can redirect work in flight; other messages wait for the
-			// agent to finish its tools. sendUserMessage starts a turn when idle.
-			pi.sendUserMessage(text, { deliverAs: message.type === "steer" || message.type === "stop" ? "steer" : "followUp" });
-		} catch {
-			/* ignore */
+		for (const message of readAndDeleteMessages(ownDir)) {
+			const text = formatSteerMessage(message);
+			try {
+				// "steer" lands after the current tool call finishes, before the next model
+				// request, so it can redirect work in flight; other messages wait for the
+				// agent to finish its tools. sendUserMessage starts a turn when idle.
+				pi.sendUserMessage(text, { deliverAs: message.type === "steer" || message.type === "stop" ? "steer" : "followUp" });
+			} catch {
+				/* ignore */
+			}
 		}
 	};
 
@@ -346,8 +346,12 @@ function startSteerWatcher(pi: ExtensionAPI, ctx: any): void {
 	consume();
 
 	// fs.watch alone is unreliable in `pi -p` children (it never fired), so poll
-	// too. Both paths are safe to run together: consume() claims the file once.
+	// too. Both paths are safe to run together: consume() claims each file once.
 	try {
+		fs.mkdirSync(path.join(ownDir, "messages"), { recursive: true });
+		fs.watch(path.join(ownDir, "messages"), { persistent: false }, (_eventType, filename) => {
+			if (filename && String(filename).endsWith(".json")) consume();
+		});
 		fs.watch(ownDir, { persistent: false }, (_eventType, filename) => {
 			if (filename === "message.json") consume();
 		});

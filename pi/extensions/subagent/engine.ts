@@ -872,19 +872,27 @@ export interface AgentMessage {
 	content?: string;
 }
 
+let messageSeq = 0;
+
+/**
+ * Queue a message for the child as its own file `messages/<ts>-<pid>-<seq><rand>.json`
+ * (tmp + rename, so the child never reads a half-written file and two sends
+ * between polls never overwrite each other).
+ */
 export function writeMessage(dir: string, message: AgentMessage): void {
-	// Write then rename so the child never reads a half-written file.
-	const tmp = path.join(dir, `message.json.${process.pid}.tmp`);
+	const mdir = path.join(dir, "messages");
+	fs.mkdirSync(mdir, { recursive: true });
+	const name = `${String(Date.now()).padStart(13, "0")}-${String(process.pid).padStart(10, "0")}-${String(messageSeq++).padStart(6, "0")}${Math.random().toString(36).slice(2, 8)}`;
+	const tmp = path.join(mdir, `${name}.tmp`);
 	fs.writeFileSync(tmp, JSON.stringify(message, null, 2), "utf-8");
-	fs.renameSync(tmp, path.join(dir, "message.json"));
+	fs.renameSync(tmp, path.join(mdir, `${name}.json`));
 }
 
-/** Claim message.json by renaming it first, so concurrent readers consume it at most once. */
-export function readAndDeleteMessage(dir: string): AgentMessage | null {
-	const p = path.join(dir, "message.json");
-	const claimed = path.join(dir, `message.json.${process.pid}.claimed`);
+/** Claim one file by renaming it, so concurrent readers consume it at most once; unreadable files are dropped. */
+function claimMessage(file: string): AgentMessage | null {
+	const claimed = `${file}.${process.pid}.claimed`;
 	try {
-		fs.renameSync(p, claimed);
+		fs.renameSync(file, claimed);
 	} catch {
 		return null;
 	}
@@ -899,6 +907,28 @@ export function readAndDeleteMessage(dir: string): AgentMessage | null {
 			/* ignore */
 		}
 	}
+}
+
+/**
+ * Claim and return every pending message, exactly once each, in send order
+ * (filename order). A legacy `message.json` is read first if present.
+ */
+export function readAndDeleteMessages(dir: string): AgentMessage[] {
+	const out: AgentMessage[] = [];
+	const legacy = claimMessage(path.join(dir, "message.json"));
+	if (legacy) out.push(legacy);
+	const mdir = path.join(dir, "messages");
+	let names: string[] = [];
+	try {
+		names = fs.readdirSync(mdir).filter((n) => n.endsWith(".json")).sort();
+	} catch {
+		/* no messages dir yet */
+	}
+	for (const n of names) {
+		const m = claimMessage(path.join(mdir, n));
+		if (m) out.push(m);
+	}
+	return out;
 }
 
 /**
