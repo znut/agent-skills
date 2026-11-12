@@ -67,6 +67,7 @@ export function createWorktree(root: string, task: string, worktreesDir: string)
 		branchExists: (b) => gitOk(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${b}`]),
 		pathExists: (p) => fs.existsSync(p),
 	});
+	if (!gitOk(root, ["check-ref-format", "--branch", plan.branch])) throw new Error(`refusing invalid branch name ${JSON.stringify(plan.branch)}`);
 	const base = git(root, ["rev-parse", baseRef]);
 	fs.mkdirSync(path.dirname(plan.dir), { recursive: true });
 	git(root, ["worktree", "add", "--no-track", "-b", plan.branch, plan.dir, baseRef]);

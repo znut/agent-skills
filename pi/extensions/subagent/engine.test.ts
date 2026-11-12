@@ -8,7 +8,10 @@ import {
 	afterPass,
 	appendRun,
 	buildDirtyPrompt,
+	buildDeliveryPrompt,
 	buildSteerPrompt,
+	isSafeBranchName,
+	shq,
 	ensureCleanTree,
 	branchType,
 	buildReviewPrompt,
@@ -643,5 +646,37 @@ describe("clean tree before review", () => {
 		);
 		expect(left).toEqual(["?? junk.txt"]);
 		expect(turns).toBe(1);
+	});
+});
+
+describe("shell quoting", () => {
+	test("shq single-quotes and escapes embedded single quotes", () => {
+		expect(shq("main")).toBe("'main'");
+		expect(shq("a b")).toBe("'a b'");
+		expect(shq("x;rm -rf /")).toBe("'x;rm -rf /'");
+		expect(shq("$(id)`id`$HOME")).toBe("'$(id)`id`$HOME'");
+		expect(shq("it's")).toBe(`'it'\\''s'`);
+		expect(shq("")).toBe("''");
+	});
+
+	test("shq output round-trips through a real shell", () => {
+		for (const s of ["a b", "x;echo hi", "$HOME", "it's", "'; echo pwned; '", "`id`", "a\nb"]) {
+			expect(execFileSync("sh", ["-c", `printf %s ${shq(s)}`], { encoding: "utf-8" })).toBe(s);
+		}
+	});
+
+	test("delivery prompt quotes the branch and default branch", () => {
+		const p = buildDeliveryPrompt({ branch: "feat/x;y", defaultBranch: "origin/ma in$", task: "t" });
+		expect(p).toContain("git push -u origin 'feat/x;y'");
+		expect(p).toContain("--base 'ma in$' --head 'feat/x;y'");
+	});
+
+	test("engine-created branch names are conservative and planWorktree refuses others", () => {
+		expect(isSafeBranchName("feat/fix-it_2.0")).toBe(true);
+		for (const bad of ["-x", "a b", "a;b", "a..b", "a/", "a.lock", "a$b", "a'b", "", "/a", "a//b"]) expect(isSafeBranchName(bad)).toBe(false);
+		const plan = planWorktree({ task: "Fix: ünïcode `rm` $(x); it's", worktreesDir: "/w", branchExists: () => false, pathExists: () => false });
+		expect(isSafeBranchName(plan.branch)).toBe(true);
+		const ok = execFileSync("git", ["check-ref-format", "--branch", plan.branch], { encoding: "utf-8" });
+		expect(ok.trim()).toBe(plan.branch);
 	});
 });

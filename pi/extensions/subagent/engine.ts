@@ -584,6 +584,22 @@ export interface WorktreePlan {
 	dir: string;
 }
 
+/** Conservative branch name the engine will create: `[A-Za-z0-9._/-]`, no leading `-`, `/` or `.`, no `..`, no trailing `/`, `.` or `.lock`. */
+export function isSafeBranchName(name: string): boolean {
+	return (
+		/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) &&
+		!name.includes("..") &&
+		!name.includes("//") &&
+		!/[./]$/.test(name) &&
+		!/\.lock(\/|$)/.test(name)
+	);
+}
+
+/** POSIX single-quote one shell argument. */
+export function shq(arg: string): string {
+	return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
 export function planWorktree(opts: {
 	task: string;
 	worktreesDir: string;
@@ -595,7 +611,9 @@ export function planWorktree(opts: {
 		taskSlug(opts.task),
 		(s) => opts.branchExists(`${type}/${s}`) || opts.pathExists(path.join(opts.worktreesDir, s)),
 	);
-	return { type, slug, branch: `${type}/${slug}`, dir: path.join(opts.worktreesDir, slug) };
+	const branch = `${type}/${slug}`;
+	if (!isSafeBranchName(branch)) throw new Error(`refusing unsafe branch name ${JSON.stringify(branch)}`);
+	return { type, slug, branch, dir: path.join(opts.worktreesDir, slug) };
 }
 
 // ---------------------------------------------------------------------------
@@ -703,8 +721,8 @@ export function buildSteerPrompt(): string {
 export function buildDeliveryPrompt(o: { branch: string; defaultBranch: string; task: string }): string {
 	return [
 		"The reviewer returned VERDICT: PASS. Deliver the branch:",
-		`1. \`git push -u origin ${o.branch}\``,
-		`2. \`gh pr create --base ${o.defaultBranch.replace(/^origin\//, "")} --head ${o.branch}\` with a clear title and a short body (what changed, why, checks run).`,
+		`1. \`git push -u origin ${shq(o.branch)}\``,
+		`2. \`gh pr create --base ${shq(o.defaultBranch.replace(/^origin\//, ""))} --head ${shq(o.branch)}\` with a clear title and a short body (what changed, why, checks run).`,
 		"3. Finish with the PR URL on its own line. If push or PR creation fails, say exactly why and do not retry in a loop.",
 		"",
 		`Task (for the PR text): ${firstLine(o.task, 300)}`,
