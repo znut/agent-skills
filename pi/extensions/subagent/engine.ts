@@ -719,3 +719,71 @@ export function buildReviewPrompt(o: {
 	for (const doc of o.linked) parts.push("", `## ${doc.path}`, "", clipText(doc.text, MAX_DOC_CHARS, "read the file for the rest"));
 	return parts.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Agent state dirs
+// ---------------------------------------------------------------------------
+
+/**
+ * State dirs are `<subagents-root>/<project-hash>/<agent-id>/`, keyed by the
+ * *subagent's* cwd, so one session's agents can live under several project
+ * hashes (every worktree worker does). Scan all of them.
+ */
+function projectDirs(subagentsRoot: string): string[] {
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(subagentsRoot);
+	} catch {
+		return [];
+	}
+	return entries.map((e) => path.join(subagentsRoot, e)).filter((d) => isDir(d));
+}
+
+function isDir(p: string): boolean {
+	try {
+		return fs.statSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function readLiveFile<T>(dir: string): T | null {
+	try {
+		return JSON.parse(fs.readFileSync(path.join(dir, "live.json"), "utf-8")) as T;
+	} catch {
+		return null;
+	}
+}
+
+/** Every agent dir whose live.json is owned by `owner`, regardless of which cwd it ran in. */
+export function scanAgentDirs<T extends { ownerId?: string }>(
+	subagentsRoot: string,
+	owner: string,
+): { id: string; dir: string; live: T }[] {
+	const found: { id: string; dir: string; live: T }[] = [];
+	for (const project of projectDirs(subagentsRoot)) {
+		let ids: string[];
+		try {
+			ids = fs.readdirSync(project);
+		} catch {
+			continue;
+		}
+		for (const id of ids) {
+			const dir = path.join(project, id);
+			if (!isDir(dir)) continue;
+			const live = readLiveFile<T>(dir);
+			// A state file without an owner cannot be attributed to a session.
+			if (live && live.ownerId === owner) found.push({ id, dir, live });
+		}
+	}
+	return found;
+}
+
+/** Locate an agent's dir by id across all project hashes. */
+export function findAgentDir(subagentsRoot: string, id: string): string | null {
+	for (const project of projectDirs(subagentsRoot)) {
+		const dir = path.join(project, id);
+		if (isDir(dir)) return dir;
+	}
+	return null;
+}

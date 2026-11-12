@@ -41,6 +41,8 @@ import {
 	findPrUrl,
 	findReviewLinks,
 	loadConfig,
+	findAgentDir,
+	scanAgentDirs,
 	normalizeConfig,
 	parseModelSpec,
 	parseNeedsHelp,
@@ -184,8 +186,8 @@ function ownerId(ctx: any): string {
 function ownedAgentDir(ctx: any, agentId: string): string | null {
 	const state = agents.get(agentId);
 	if (state) return state.ownerId === ownerId(ctx) ? state.dir : null;
-	const dir = agentDir(ctx.cwd, agentId);
-	return readLive(dir)?.ownerId === ownerId(ctx) ? dir : null;
+	const dir = findAgentDir(SUBAGENTS_ROOT, agentId);
+	return dir && readLive(dir)?.ownerId === ownerId(ctx) ? dir : null;
 }
 
 function ensureAgentDir(dir: string): void {
@@ -507,40 +509,30 @@ interface WidgetRow {
 	finishedAt?: number;
 }
 
-function collectRows(cwd: string, currentOwnerId: string): WidgetRow[] {
+function collectRows(currentOwnerId: string): WidgetRow[] {
 	const now = Date.now();
 	const rows = new Map<string, WidgetRow>();
-	const root = projectRoot(cwd);
-	if (fs.existsSync(root)) {
-		for (const entry of fs.readdirSync(root)) {
-			const dir = path.join(root, entry);
-			try {
-				if (!fs.statSync(dir).isDirectory()) continue;
-			} catch {
-				continue;
-			}
-			const live = readLive(dir);
-			// A state file without an owner cannot be attributed to a session.
-			if (!live || live.ownerId !== currentOwnerId) continue;
-			const done = live.status !== "running";
-			if (done && live.finishedAt && now - live.finishedAt > FINISHED_VISIBLE_MS) continue;
-			rows.set(entry, {
-				id: entry,
-				status: live.status,
-				role: live.role,
-				model: live.model,
-				modelName: live.modelName,
-				parentId: live.parentId,
-				activity: live.activity,
-				elapsedMs: (live.finishedAt ?? now) - live.startedAt,
-				usage: live.usage,
-				finishedAt: live.finishedAt,
-			});
-		}
+	// Agents are keyed by their own cwd (worktree workers differ from the manager's),
+	// so scan every project root and filter by owner.
+	for (const { id: entry, live } of scanAgentDirs<LiveFile>(SUBAGENTS_ROOT, currentOwnerId)) {
+		const done = live.status !== "running";
+		if (done && live.finishedAt && now - live.finishedAt > FINISHED_VISIBLE_MS) continue;
+		rows.set(entry, {
+			id: entry,
+			status: live.status,
+			role: live.role,
+			model: live.model,
+			modelName: live.modelName,
+			parentId: live.parentId,
+			activity: live.activity,
+			elapsedMs: (live.finishedAt ?? now) - live.startedAt,
+			usage: live.usage,
+			finishedAt: live.finishedAt,
+		});
 	}
 	// In-memory state wins (fresher than the last live.json flush).
 	for (const [id, state] of agents) {
-		if (path.dirname(state.dir) !== root || state.ownerId !== currentOwnerId) continue;
+		if (state.ownerId !== currentOwnerId) continue;
 		// Skip finished agents that already aged out of the widget.
 		if (state.finishedAt && now - state.finishedAt > FINISHED_VISIBLE_MS) continue;
 		rows.set(id, {
@@ -580,7 +572,7 @@ function shortModelName(name?: string): string {
 
 function updateWidget(pi: ExtensionAPI, ctx: any): void {
 	if (ctx.mode !== "tui") return;
-	const rows = collectRows(ctx.cwd, ownerId(ctx));
+	const rows = collectRows(ownerId(ctx));
 	if (rows.length === 0) {
 		ctx.ui.setWidget("subagents", undefined);
 		return;
@@ -1332,7 +1324,11 @@ export default function (pi: ExtensionAPI) {
 			"Signal the parent session. A subagent calls this to report done, needs_help, or error without exiting. The parent receives a follow-up ping in TUI mode; in print/json mode the parent calls await_agent.",
 		parameters: PingParams,
 		async execute(_toolCallId, params) {
-			const dir = agentDir(process.cwd(), params.agent_id);
+			// A subagent's own env names its dir; otherwise search every project root.
+			const dir =
+				process.env.PI_EXT_SUBAGENT_ID === params.agent_id && process.env.PI_EXT_SUBAGENT_DIR
+					? process.env.PI_EXT_SUBAGENT_DIR
+					: (findAgentDir(SUBAGENTS_ROOT, params.agent_id) ?? agentDir(process.cwd(), params.agent_id));
 			ensureAgentDir(dir);
 			writeStatus(dir, { status: params.status, message: params.message });
 			return {
@@ -1404,23 +1400,15 @@ export default function (pi: ExtensionAPI) {
 		description: "List active and recently finished subagents owned by this Pi session.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const root = projectRoot(ctx.cwd);
 			const ids: { agent_id: string; status?: string; activity?: string; running?: boolean }[] = [];
-			if (fs.existsSync(root)) {
-				for (const entry of fs.readdirSync(root)) {
-					const dir = path.join(root, entry);
-					const st = fs.statSync(dir);
-					if (!st.isDirectory()) continue;
-					const status = readStatus(dir);
-					const live = readLive(dir);
-					if (live?.ownerId !== ownerId(ctx)) continue;
-					ids.push({
-						agent_id: entry,
-						status: status?.status ?? (live?.status || undefined),
-						activity: live?.activity,
-						running: isRunning(entry) ?? undefined,
-					});
-				}
+			for (const { id, dir, live } of scanAgentDirs<LiveFile>(SUBAGENTS_ROOT, ownerId(ctx))) {
+				const status = readStatus(dir);
+				ids.push({
+					agent_id: id,
+					status: status?.status ?? (live.status || undefined),
+					activity: live.activity,
+					running: isRunning(id) ?? undefined,
+				});
 			}
 			return {
 				content: [

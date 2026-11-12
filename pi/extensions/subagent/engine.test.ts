@@ -23,6 +23,8 @@ import {
 	resolveSkills,
 	resolveWorktreesDir,
 	resultMessage,
+	scanAgentDirs,
+	findAgentDir,
 	reviewerFor,
 	seededRandom,
 	skillArgs,
@@ -465,5 +467,39 @@ describe("review prompt", () => {
 		const p = buildReviewPrompt({ task: "t", base: "a", tip: "b", diff: "x".repeat(400_000), agentsMd: null, linked: [] });
 		expect(p.length).toBeLessThan(200_000);
 		expect(p).toContain("truncated");
+	});
+});
+
+describe("agent state dirs", () => {
+	function mk(root: string, project: string, id: string, owner: string | null) {
+		const dir = path.join(root, project, id);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "live.json"), JSON.stringify(owner ? { ownerId: owner, status: "running" } : { status: "running" }));
+		return dir;
+	}
+
+	test("scanAgentDirs finds the owner's agents under every project root, not just the manager's", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-scan-"));
+		const managerProject = mk(root, "aaaa", "manager-child", "S1");
+		const worktreeWorker = mk(root, "bbbb", "worktree-worker", "S1");
+		mk(root, "bbbb", "other-session", "S2");
+		mk(root, "cccc", "no-owner", null);
+		fs.writeFileSync(path.join(root, "aaaa", ".cwd"), "/x");
+		fs.mkdirSync(path.join(root, "dddd", "empty-dir"), { recursive: true });
+		fs.writeFileSync(path.join(root, "stray-file"), "x");
+		const found = scanAgentDirs(root, "S1");
+		expect(found.map((f) => f.id).sort()).toEqual(["manager-child", "worktree-worker"]);
+		expect(found.find((f) => f.id === "worktree-worker")?.dir).toBe(worktreeWorker);
+		expect(found.find((f) => f.id === "manager-child")?.dir).toBe(managerProject);
+		expect(scanAgentDirs(root, "S2").map((f) => f.id)).toEqual(["other-session"]);
+		expect(scanAgentDirs(root, "nobody")).toEqual([]);
+		expect(scanAgentDirs(path.join(root, "missing"), "S1")).toEqual([]);
+	});
+
+	test("findAgentDir locates an id in any project root", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-find-"));
+		const dir = mk(root, "bbbb", "w1", "S1");
+		expect(findAgentDir(root, "w1")).toBe(dir);
+		expect(findAgentDir(root, "nope")).toBeNull();
 	});
 });
