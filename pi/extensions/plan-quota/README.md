@@ -19,8 +19,8 @@ when any window has ≤15% remaining. A trailing `?` marks stale data.
 Symlink into pi's extension dir (same pattern as the sibling extensions):
 
 ```bash
-mkdir -p ~/.pi/agent/extensions/kimi-quota
-ln -sf "$PWD/index.ts" ~/.pi/agent/extensions/kimi-quota/index.ts
+mkdir -p ~/.pi/agent/extensions/plan-quota
+ln -sf "$PWD/index.ts" ~/.pi/agent/extensions/plan-quota/index.ts
 ```
 
 Then `/reload` (or restart pi). The segment appears after the first fetch.

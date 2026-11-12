@@ -678,6 +678,8 @@ export default function (pi: ExtensionAPI) {
 				cwd,
 				env: {
 					...process.env,
+					// Subagents are short-lived: 5m cache even when the parent runs with 1h.
+					PI_CACHE_RETENTION: "short",
 					PI_EXT_SUBAGENT_ID: agentId,
 					PI_EXT_SUBAGENT_DIR: dir,
 					PI_EXT_SUBAGENT_OWNER_ID: state.ownerId,
