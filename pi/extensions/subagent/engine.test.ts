@@ -40,7 +40,7 @@ import {
 } from "./engine";
 
 const A = "anthropic/claude-sonnet-5-5:high";
-const B = "openai-codex/gpt-6-luna:high";
+const B = "openai-codex/gpt-6.1-sol:high";
 const NOW = Date.parse("2026-06-15T12:00:00Z");
 const DAY = 24 * 3600 * 1000;
 
@@ -94,7 +94,7 @@ describe("classifyFinish", () => {
 describe("parseModelSpec", () => {
 	test("splits provider, model, effort", () => {
 		expect(parseModelSpec(A)).toEqual({ raw: A, provider: "anthropic", model: "claude-sonnet-5-5", effort: "high" });
-		expect(parseModelSpec("openai-codex/gpt-6-luna:xhigh").effort).toBe("xhigh");
+		expect(parseModelSpec("openai-codex/gpt-6.1-sol:xhigh").effort).toBe("xhigh");
 	});
 	test("effort is optional and only real levels count", () => {
 		expect(parseModelSpec("anthropic/claude-x").effort).toBeNull();
@@ -171,7 +171,7 @@ describe("config", () => {
 	test("reviewerFor uses the map, else any other provider", () => {
 		const cfg = normalizeConfig({
 			classes: { standard: [A, B] },
-			reviewer: { anthropic: "openai-codex/gpt-6-luna:high", "openai-codex": "anthropic/claude-opus-5-5:high" },
+			reviewer: { anthropic: "openai-codex/gpt-6.1-sol:high", "openai-codex": "anthropic/claude-opus-5-5:high" },
 		});
 		expect(reviewerFor(parseModelSpec(A), cfg).provider).toBe("openai-codex");
 		expect(reviewerFor(parseModelSpec(B), cfg).provider).toBe("anthropic");
