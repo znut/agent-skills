@@ -8,8 +8,15 @@
  * Also provides a TUI widget listing live subagents (role, activity, elapsed,
  * tokens).
  *
- * This is harness-only plumbing: the prompts and rules that govern agent
- * behavior live in the project using the extension (e.g. `.pi/prompts/`).
+ * `spawn_agent({ task, size })` runs the managed engine: draw a worker model,
+ * create a git worktree, run the worker, hand its diff to a fresh reviewer on
+ * the other provider, loop on BLOCK findings, then open a PR or leave the
+ * branch ready, and log one row to the run log. Without `size`, spawn_agent is
+ * the plain process spawner (explicit model, role, prompt template).
+ *
+ * Pure logic (config, draw, verdicts, naming) lives in engine.ts, git plumbing
+ * in git.ts. The prompts that govern agent behavior live in the project using
+ * the extension (AGENTS.md, `.pi/prompts/`).
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -20,6 +27,40 @@ import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+	addUsage,
+	appendRun,
+	buildDeliveryPrompt,
+	buildFixPrompt,
+	buildReviewPrompt,
+	buildRunRow,
+	buildWorkerPrompt,
+	candidatesFor,
+	describeStatus,
+	drawModel,
+	findPrUrl,
+	findReviewLinks,
+	loadConfig,
+	normalizeConfig,
+	parseModelSpec,
+	parseNeedsHelp,
+	parseVerdict,
+	readRuns,
+	resolveSkills,
+	resolveWorktreesDir,
+	resultMessage,
+	reviewerFor,
+	seededRandom,
+	skillArgs,
+	SIZES,
+	type Config,
+	type FirstReview,
+	type ModelSpec,
+	type Outcome,
+	type Size,
+	type Usage,
+} from "./engine";
+import { canOpenPr, commitCount, createWorktree, diffRange, headSha, isDirty, repoRoot } from "./git";
 
 // ---------------------------------------------------------------------------
 // Defaults (can be overridden per repo or per spawn)
@@ -49,7 +90,7 @@ interface AgentUsage {
 	turns: number;
 }
 
-/** Resolve a model alias to its catalog display name (e.g. kimi-for-coding → "Kimi K2.7 Code"). */
+/** Resolve a model id to its catalog display name, if the registry knows it. */
 function resolveModelName(ctx: any, modelId?: string): string | undefined {
 	if (!modelId) return undefined;
 	try {
@@ -78,6 +119,10 @@ interface AgentState {
 	activity: string;
 	usage: AgentUsage;
 	finishedAt?: number;
+	/** Quiet agents (phases of a managed task) never notify the parent on their own. */
+	quiet?: boolean;
+	/** Called whenever live state changes (a managed task mirrors its running phase). */
+	onUpdate?: () => void;
 }
 
 interface LiveFile {
@@ -190,6 +235,7 @@ function writeLive(agentId: string, state: AgentState, status: string): void {
 	} catch {
 		/* ignore */
 	}
+	state.onUpdate?.();
 }
 
 function readLive(dir: string): LiveFile | null {
@@ -352,7 +398,7 @@ function sendNotification(
 	agentId: string,
 	status: { status: string; message?: string },
 ): void {
-	if (state.collected) return;
+	if (state.collected || state.quiet) return;
 	const text = status.message
 		? `Subagent ${agentId} is ${status.status}: ${status.message}`
 		: `Subagent ${agentId} is ${status.status}. Result: ${path.join(state.dir, "result.json")}`;
@@ -429,9 +475,7 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 	state.watcher = undefined;
 
 	const existingStatus = readStatus(state.dir);
-	const message = emptyReturn
-		? "empty return (protocol violation: no return block)"
-		: result.errorMessage || result.stderr?.slice(0, 500) || undefined;
+	const message = emptyReturn ? "empty return (protocol violation: no return block)" : resultMessage(result);
 	if (!existingStatus || emptyReturn) {
 		writeStatus(state.dir, { status, message });
 	}
@@ -524,15 +568,14 @@ let widgetTimer: NodeJS.Timeout | null = null;
 
 function shortModel(model?: string): string {
 	if (!model) return "";
-	if (model.includes("kimi")) return "kimi";
 	return truncate(model, 12);
 }
 
-/** Compact a catalog display name for the widget: "Kimi K2.7 Code" → "K2.7", "Kimi K3-256K" → "K3-256K". */
+/** Compact a catalog display name for the widget: drop a leading vendor word, then truncate. */
 function shortModelName(name?: string): string {
 	if (!name) return "";
-	const m = name.match(/K[\d.]+(?:-256K)?/i);
-	return m ? m[0] : truncate(name, 12);
+	const compact = name.replace(/^(claude|gpt|gemini)[\s-]+/i, "").trim();
+	return truncate(compact || name, 12);
 }
 
 function updateWidget(pi: ExtensionAPI, ctx: any): void {
@@ -583,18 +626,534 @@ function updateWidget(pi: ExtensionAPI, ctx: any): void {
 }
 
 // ---------------------------------------------------------------------------
+// Process launcher (one pi child; shared by plain spawns and managed phases)
+// ---------------------------------------------------------------------------
+
+interface LaunchOptions {
+	role: string;
+	model?: string;
+	cwd: string;
+	/** pi flags between `--mode json` and `-p` (model, session, skills, tools, ...). */
+	piArgs: string[];
+	prompt: string;
+	parentId?: string;
+	quiet?: boolean;
+	/** Aborting kills the child. */
+	signal?: AbortSignal;
+	onUpdate?: () => void;
+}
+
+interface Launched {
+	agentId: string;
+	dir: string;
+	state: AgentState;
+	promise: Promise<AgentResult>;
+}
+
+const KILL_GRACE_MS = 5000;
+
+function launchAgent(ctx: any, o: LaunchOptions): Launched {
+	const agentId = randomUUID();
+	const dir = agentDir(o.cwd, agentId);
+	ensureAgentDir(dir);
+	// Remember which project this subagent belongs to.
+	fs.writeFileSync(path.join(projectRoot(o.cwd), ".cwd"), o.cwd, "utf-8");
+
+	const state: AgentState = {
+		dir,
+		process: null as unknown as ChildProcess,
+		collected: false,
+		role: o.role,
+		model: o.model,
+		modelName: resolveModelName(ctx, o.model),
+		// Set when the spawning process is itself a subagent (worker → reviewer).
+		parentId: o.parentId ?? process.env.PI_EXT_SUBAGENT_ID,
+		ownerId: ownerId(ctx),
+		startedAt: Date.now(),
+		activity: "starting",
+		usage: emptyUsage(),
+		quiet: o.quiet,
+		onUpdate: o.onUpdate,
+	};
+	agents.set(agentId, state);
+	writeLive(agentId, state, "running");
+
+	const taskFile = path.join(dir, "task.md");
+	fs.writeFileSync(taskFile, o.prompt, "utf-8");
+	const args = ["--mode", "json", ...o.piArgs, "-p", `@${taskFile}`];
+
+	const proc = spawn("pi", args, {
+		cwd: o.cwd,
+		env: {
+			...process.env,
+			// Subagents are short-lived: 5m cache even when the parent runs with 1h.
+			PI_CACHE_RETENTION: "short",
+			PI_EXT_SUBAGENT_ID: agentId,
+			PI_EXT_SUBAGENT_DIR: dir,
+			PI_EXT_SUBAGENT_OWNER_ID: state.ownerId,
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	state.process = proc;
+
+	const promise = new Promise<AgentResult>((resolve) => {
+		const result: AgentResult = { exitCode: 0, output: "", stderr: "", usage: {} };
+		let buffer = "";
+		proc.stdout.on("data", (data: Buffer) => {
+			buffer += data.toString("utf-8");
+			const lines = buffer.split("\n");
+			buffer = lines.pop() || "";
+			for (const line of lines) {
+				if (!line.trim()) continue;
+				try {
+					const event = JSON.parse(line) as any;
+					if (event.type === "tool_execution_start") {
+						state.activity = summarizeTool(event.toolName, event.args);
+						writeLive(agentId, state, "running");
+					} else if (event.type === "message_end" && event.message?.role === "assistant") {
+						const msg = event.message as any;
+						if (msg.stopReason) result.stopReason = msg.stopReason;
+						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+						const u = msg.usage;
+						if (u) {
+							result.usage.input = (result.usage.input || 0) + (u.input || 0);
+							result.usage.output = (result.usage.output || 0) + (u.output || 0);
+							result.usage.cacheRead = (result.usage.cacheRead || 0) + (u.cacheRead || 0);
+							result.usage.cacheWrite = (result.usage.cacheWrite || 0) + (u.cacheWrite || 0);
+							result.usage.cost = (result.usage.cost || 0) + (u.cost?.total || 0);
+							result.usage.turns = (result.usage.turns || 0) + 1;
+							state.usage.input += u.input || 0;
+							state.usage.output += u.output || 0;
+							state.usage.cacheRead += u.cacheRead || 0;
+							state.usage.cost += u.cost?.total || 0;
+							state.usage.turns += 1;
+						}
+						const textParts = (msg.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text);
+						if (textParts.length) {
+							result.output = textParts.join("\n");
+							state.activity = truncate(textParts[textParts.length - 1], 60);
+						}
+						writeLive(agentId, state, "running");
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+		});
+		proc.stderr.on("data", (data: Buffer) => {
+			result.stderr += data.toString("utf-8");
+		});
+		proc.on("close", (code) => {
+			if (buffer.trim()) {
+				try {
+					const event = JSON.parse(buffer.trim()) as any;
+					if (event.type === "message_end" && event.message?.role === "assistant") {
+						const msg = event.message as any;
+						const textParts = (msg.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text);
+						if (textParts.length) result.output = textParts.join("\n");
+						if (msg.stopReason) result.stopReason = msg.stopReason;
+						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+			result.exitCode = code ?? 0;
+			resolve(result);
+		});
+		proc.on("error", () => {
+			result.exitCode = 1;
+			resolve(result);
+		});
+		if (o.signal) {
+			const kill = () => {
+				proc.kill("SIGTERM");
+				setTimeout(() => {
+					if (proc.exitCode === null) proc.kill("SIGKILL");
+				}, KILL_GRACE_MS).unref();
+			};
+			if (o.signal.aborted) kill();
+			else o.signal.addEventListener("abort", kill, { once: true });
+		}
+	});
+
+	return { agentId, dir, state, promise };
+}
+
+// ---------------------------------------------------------------------------
+// Managed task: worktree -> worker -> fresh review -> fix loop -> PR/branch
+// ---------------------------------------------------------------------------
+
+const REVIEWER_TOOLS = "read,bash,grep,find,ls";
+/** The reviewer is a leaf: no spawning or signalling. */
+const REVIEWER_EXCLUDED_TOOLS = "spawn_agent,await_agent,agent_ping,send_agent_message,agent_status,list_agents,stop_agent";
+
+class StoppedError extends Error {
+	constructor() {
+		super("stopped by parent");
+	}
+}
+
+interface Task {
+	id: string;
+	dir: string;
+	state: AgentState;
+	abort: AbortController;
+	phase: string;
+	/** Usage of finished phases (the running phase is added on top for display). */
+	finishedUsage: AgentUsage;
+	child?: { id: string; dir: string; role: string; state: AgentState };
+	/** Steer messages that arrived while no worker was running. */
+	pending: string[];
+	finished: boolean;
+}
+
+interface TaskEnd {
+	status: "done" | "needs_help" | "error" | "stopped";
+	message: string;
+	outcome: Outcome;
+}
+
+const tasks = new Map<string, Task>();
+
+function sumUsage(a: AgentUsage, b?: AgentUsage): AgentUsage {
+	return {
+		input: a.input + (b?.input ?? 0),
+		output: a.output + (b?.output ?? 0),
+		cacheRead: a.cacheRead + (b?.cacheRead ?? 0),
+		cost: a.cost + (b?.cost ?? 0),
+		turns: a.turns + (b?.turns ?? 0),
+	};
+}
+
+function refreshTask(task: Task): void {
+	task.state.activity = task.child ? `${task.phase} · ${task.child.state.activity}` : task.phase;
+	task.state.usage = sumUsage(task.finishedUsage, task.child?.state.usage);
+	writeLive(task.id, task.state, task.finished ? (readStatus(task.dir)?.status ?? "done") : "running");
+}
+
+function isRunning(id: string): boolean | null {
+	const task = tasks.get(id);
+	if (task) return !task.finished;
+	const state = agents.get(id);
+	return state ? !state.process.killed : null;
+}
+
+function readDoc(file: string): string | null {
+	try {
+		return fs.readFileSync(file, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+function clipMessage(text: string, max = 1500): string {
+	const t = text.trim();
+	return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** Skills for plain spawns: the role's list from config; any config problem means none. */
+function plainSkillArgs(cwd: string, role: string): string[] {
+	try {
+		const root = repoRoot(cwd);
+		const cfg = loadConfig(root);
+		const list = role === "reviewer" ? cfg.skills.reviewer : cfg.skills.worker;
+		return skillArgs(resolveSkills(list, { base: root }));
+	} catch {
+		return skillArgs([]);
+	}
+}
+
+interface ManagedParams {
+	task: string;
+	size: Size;
+	model?: string;
+	prompt_template?: string;
+	tools?: string;
+	cwd?: string;
+}
+
+interface ManagedStart {
+	task: Task;
+	done: Promise<TaskEnd>;
+	summary: string;
+}
+
+/**
+ * Validate, draw a model and create the worktree (all of which may throw back
+ * to the caller), then run the pipeline in the background.
+ */
+function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): ManagedStart {
+	const cwd = params.cwd || ctx.cwd;
+	const root = repoRoot(cwd);
+	const cfg: Config = loadConfig(root);
+
+	let spec: ModelSpec;
+	let why: string;
+	if (params.model) {
+		spec = parseModelSpec(params.model);
+		why = "explicit model";
+	} else {
+		const seed = process.env.PI_SUBAGENT_SEED;
+		({ spec, why } = drawModel({
+			candidates: candidatesFor(cfg, params.size),
+			size: params.size,
+			repo: root,
+			runs: readRuns(),
+			mode: cfg.draw,
+			rand: seed ? seededRandom(seed) : undefined,
+		}));
+	}
+	const reviewerSpec = reviewerFor(spec, cfg);
+	const workerSkills = skillArgs(resolveSkills(cfg.skills.worker, { base: root }));
+	const reviewerSkills = skillArgs(resolveSkills(cfg.skills.reviewer, { base: root }));
+	const wt = createWorktree(root, params.task, resolveWorktreesDir(cfg, root));
+
+	const id = randomUUID();
+	const dir = agentDir(root, id);
+	ensureAgentDir(dir);
+	fs.writeFileSync(path.join(projectRoot(root), ".cwd"), root, "utf-8");
+	fs.writeFileSync(path.join(dir, "task.md"), params.task, "utf-8");
+	const startedAt = Date.now();
+	const task: Task = {
+		id,
+		dir,
+		state: {
+			dir,
+			process: null as unknown as ChildProcess,
+			collected: false,
+			role: "worker",
+			model: spec.model,
+			modelName: resolveModelName(ctx, spec.model),
+			parentId: process.env.PI_EXT_SUBAGENT_ID,
+			ownerId: ownerId(ctx),
+			startedAt,
+			activity: "starting",
+			usage: emptyUsage(),
+		},
+		abort: new AbortController(),
+		phase: "starting",
+		finishedUsage: emptyUsage(),
+		pending: [],
+		finished: false,
+	};
+	tasks.set(id, task);
+	refreshTask(task);
+
+	const sessionDir = path.join(dir, "session");
+	const sessionId = randomUUID();
+	const baseInfo = { task: params.task, branch: wt.branch, worktree: wt.dir, base: wt.base, default_branch: wt.baseRef };
+
+	const phase = async (label: string, role: "worker" | "reviewer", prompt: string): Promise<AgentResult> => {
+		task.phase = label;
+		const piArgs =
+			role === "worker"
+				? [
+						"--session-dir",
+						sessionDir,
+						"--session-id",
+						sessionId,
+						...workerSkills,
+						"--model",
+						spec.raw,
+						...(params.prompt_template ? ["--prompt-template", params.prompt_template] : []),
+						...(params.tools ? ["--tools", params.tools] : []),
+					]
+				: ["--no-session", ...reviewerSkills, "--model", reviewerSpec.raw, "--tools", REVIEWER_TOOLS, "--exclude-tools", REVIEWER_EXCLUDED_TOOLS];
+		const launched = launchAgent(ctx, {
+			role,
+			model: role === "worker" ? spec.model : reviewerSpec.model,
+			cwd: wt.dir,
+			piArgs,
+			prompt,
+			parentId: id,
+			quiet: true,
+			signal: task.abort.signal,
+			onUpdate: () => refreshTask(task),
+		});
+		task.child = { id: launched.agentId, dir: launched.dir, role, state: launched.state };
+		refreshTask(task);
+		const result = await launched.promise;
+		await finalizeAgent(pi, launched.agentId, launched.state, result);
+		launched.state.collected = true;
+		cleanup(launched.agentId);
+		task.finishedUsage = sumUsage(task.finishedUsage, launched.state.usage);
+		totals = addUsage(totals, result.usage);
+		task.child = undefined;
+		if (task.abort.signal.aborted) throw new StoppedError();
+		return result;
+	};
+
+	let totals: Usage = {};
+	let reviews = 0;
+	let blocks = 0;
+	let firstReview: FirstReview = null;
+	let tip = wt.base;
+	let prUrl: string | null = null;
+	const reviewLog: { round: number; verdict: string | null; findings: string }[] = [];
+
+	const withPending = (prompt: string): string => {
+		if (task.pending.length === 0) return prompt;
+		const notes = task.pending.splice(0).map((m) => `- ${m}`);
+		return `Messages from the manager received since your last turn (treat as overrides):\n${notes.join("\n")}\n\n${prompt}`;
+	};
+	const workerFailure = (r: AgentResult): string | null =>
+		r.exitCode !== 0 || r.errorMessage ? (resultMessage(r) ?? `worker exited with code ${r.exitCode}`) : null;
+
+	const pipeline = async (): Promise<TaskEnd> => {
+		let workerPrompt = buildWorkerPrompt({ task: params.task, branch: wt.branch, base: wt.base, defaultBranch: wt.baseRef });
+		for (;;) {
+			const w = await phase(blocks === 0 ? "worker" : `worker fix ${blocks}`, "worker", withPending(workerPrompt));
+			const failure = workerFailure(w);
+			if (failure) return { status: "error", outcome: "error", message: `worker failed: ${failure}` };
+			const question = parseNeedsHelp(w.output);
+			if (question) return { status: "needs_help", outcome: "stopped", message: `worker needs a decision: ${clipMessage(question)}` };
+			tip = headSha(wt.dir);
+			if (tip === wt.base) return { status: "error", outcome: "error", message: `worker made no commits on ${wt.branch}. ${resultMessage(w) ?? ""}`.trim() };
+
+			const agentsMd = readDoc(path.join(wt.dir, "AGENTS.md")) ?? readDoc(path.join(wt.dir, "CLAUDE.md"));
+			const linked = findReviewLinks(agentsMd ?? "").flatMap((rel) => {
+				const abs = path.resolve(wt.dir, rel);
+				const text = abs.startsWith(wt.dir + path.sep) ? readDoc(abs) : null;
+				return text ? [{ path: rel, text }] : [];
+			});
+			const reviewPrompt = buildReviewPrompt({ task: params.task, base: wt.base, tip, diff: diffRange(wt.dir, wt.base, tip), agentsMd, linked });
+			const r = await phase(`review ${reviews + 1}`, "reviewer", reviewPrompt);
+			reviews++;
+			const rFailure = workerFailure(r);
+			if (rFailure) return { status: "error", outcome: "error", message: `reviewer failed: ${rFailure}` };
+			const v = parseVerdict(r.output);
+			reviewLog.push({ round: reviews, verdict: v.verdict, findings: v.findings });
+			if (!v.verdict) return { status: "error", outcome: "error", message: `reviewer returned no VERDICT line: ${clipMessage(r.output, 500)}` };
+			firstReview ??= v.verdict;
+			if (v.verdict === "pass") break;
+			blocks++;
+			if (blocks >= cfg.max_review_rounds) {
+				return {
+					status: "needs_help",
+					outcome: "block",
+					message: `reviewer BLOCKed ${blocks}x (max_review_rounds=${cfg.max_review_rounds}); branch ${wt.branch} in ${wt.dir}. Latest findings:\n${clipMessage(v.findings)}`,
+				};
+			}
+			workerPrompt = buildFixPrompt({ findings: v.findings, round: blocks, max: cfg.max_review_rounds });
+		}
+
+		const n = commitCount(wt.dir, wt.base, tip);
+		const dirty = isDirty(wt.dir) ? " (uncommitted changes left in the worktree)" : "";
+		const summary = `review PASS after ${reviews} round(s), first review ${firstReview}; ${n} commit(s) on ${wt.branch}${dirty}`;
+		if (!canOpenPr(wt.dir)) {
+			return { status: "done", outcome: "pass", message: `${summary}. No GitHub remote/gh here: branch ready in ${wt.dir}, not pushed.` };
+		}
+		const d = await phase("deliver", "worker", withPending(buildDeliveryPrompt({ branch: wt.branch, defaultBranch: wt.baseRef, task: params.task })));
+		prUrl = findPrUrl(d.output);
+		const dFailure = workerFailure(d);
+		if (prUrl) return { status: "done", outcome: "pass", message: `${summary}. PR: ${prUrl}` };
+		return {
+			status: "needs_help",
+			outcome: "pass",
+			message: `${summary}, but no PR URL came back${dFailure ? ` (${dFailure})` : ""}. Branch ${wt.branch} in ${wt.dir}; check push/gh. Worker said: ${clipMessage(d.output, 400)}`,
+		};
+	};
+
+	const done = (async (): Promise<TaskEnd> => {
+		let end: TaskEnd;
+		try {
+			end = await pipeline();
+		} catch (e) {
+			end =
+				e instanceof StoppedError || task.abort.signal.aborted
+					? { status: "stopped", outcome: "stopped", message: "stopped by parent" }
+					: { status: "error", outcome: "error", message: `engine error: ${(e as Error).message}` };
+		}
+		task.finished = true;
+		const wallMs = Date.now() - startedAt;
+		task.state.finishedAt = Date.now();
+		const row = buildRunRow({
+			repo: root,
+			branch: wt.branch,
+			task: params.task,
+			size: params.size,
+			spec,
+			reviewRounds: reviews,
+			firstReview,
+			outcome: end.outcome,
+			usage: totals,
+			wallMs,
+			why,
+		});
+		try {
+			appendRun(row);
+		} catch {
+			/* a log failure must not hide the result */
+		}
+		writeResult(dir, {
+			...end,
+			...baseInfo,
+			tip,
+			pr_url: prUrl,
+			worker: spec.raw,
+			reviewer: reviewerSpec.raw,
+			reviews: reviewLog,
+			usage: totals,
+			row,
+			output: end.message,
+		});
+		writeStatus(dir, { status: end.status, message: end.message });
+		task.phase = end.status;
+		refreshTask(task);
+		sendNotification(pi, task.state, id, { status: end.status, message: end.message });
+		return end;
+	})();
+
+	const summary = [
+		`worker: ${spec.raw}`,
+		`reviewer: ${reviewerSpec.raw}`,
+		`branch: ${wt.branch}`,
+		`worktree: ${wt.dir}`,
+		`why: ${why}`,
+	].join("\n");
+	return { task, done, summary };
+}
+
+/** Deliver a manager message to a managed task. Returns false if `id` is not a managed task. */
+function messageTask(id: string, message: AgentMessage): boolean {
+	const task = tasks.get(id);
+	if (!task) return false;
+	if (message.type === "stop") {
+		task.state.collected = true; // the manager asked for this; no echo notification
+		task.abort.abort();
+		return true;
+	}
+	if (task.child?.role === "worker") writeMessage(task.child.dir, message);
+	else task.pending.push(formatSteerMessage(message));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
 
 const SpawnParams = Type.Object({
-	role: StringEnum(["worker", "reviewer"] as const, {
-		description: "Agent role; selects default model and prompt template",
-	}),
+	role: Type.Optional(
+		StringEnum(["worker", "reviewer"] as const, {
+			description: "Agent role (default worker); selects default prompt template. Managed mode (size) is always a worker",
+		}),
+	),
 	task: Type.String({ description: "Self-contained task contract passed to the subagent" }),
-	model: Type.Optional(Type.String({ description: "Model for the subagent (defaults to the current session's default model if omitted)" })),
+	size: Type.Optional(
+		StringEnum(["S", "M", "L", "XL"] as const, {
+			description: "Managed mode: task size. Draws the worker model from the size's class, then worktree -> worker -> fresh review -> fix loop -> PR/branch",
+		}),
+	),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Model for the subagent as provider/model[:effort] (plain mode: defaults to the current session's default model; managed mode: skips the draw)",
+		}),
+	),
 	prompt_template: Type.Optional(Type.String({ description: "Override the default prompt template for the role" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process (defaults to current cwd)" })),
-	async: Type.Optional(Type.Boolean({ description: "Return a handle and notify/ping when done instead of blocking", default: false })),
+	async: Type.Optional(Type.Boolean({ description: "Return a handle and notify/ping when done instead of blocking (default: false; true in managed mode)" })),
 	tools: Type.Optional(Type.String({ description: "Comma-separated tool allowlist for the subagent" })),
 });
 
@@ -635,168 +1194,69 @@ export default function (pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn agent",
 		description:
-			"Spawn a fresh pi process as a worker or reviewer. With async=false the tool blocks until the subagent exits; with async=true it returns a handle and the parent receives a follow-up message when the subagent finishes or calls agent_ping. The parent can steer a running async subagent with send_agent_message; the subagent receives the steer as an injected user message. Pass model explicitly if the subagent needs a different model from the session default.",
+			"Spawn a fresh pi process. Managed mode: pass `size` (S|M|L|XL) and no model. The engine then draws the worker model from the configured class for that size, creates a git worktree, runs the worker (which runs the repo's own checks and commits), starts a fresh reviewer on the other provider, sends BLOCK findings back to the same worker, and finally opens a PR (GitHub remote + gh) or leaves the branch ready. It reports with a follow-up ping (done / needs_help) and logs one run row; it defaults to async. Plain mode (no `size`): spawn one pi process as a worker or reviewer with an explicit model/prompt_template/cwd; with async=false the tool blocks until it exits, with async=true it returns a handle and the parent receives a follow-up message when the subagent finishes or calls agent_ping. The parent can steer a running async subagent with send_agent_message; the subagent receives the steer as an injected user message. In plain mode, pass model explicitly if the subagent needs a different model from the session default.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const agentId = randomUUID();
+			const role = (params.role ?? "worker") as string;
 			const cwd = params.cwd || ctx.cwd;
-			const dir = agentDir(cwd, agentId);
-			ensureAgentDir(dir);
-			// Remember which project this subagent belongs to.
-			fs.writeFileSync(path.join(projectRoot(cwd), ".cwd"), cwd, "utf-8");
+
+			if (params.size) {
+				if (role !== "worker") throw new Error("size (managed mode) only applies to role worker; the engine starts the reviewer itself");
+				const asyncRun = params.async ?? true;
+				const { task, done, summary } = startManaged(pi, ctx, { ...params, size: params.size as Size });
+				if (asyncRun) {
+					done.catch(() => {});
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Spawned managed task ${task.id} (size ${params.size}).\n${summary}\nIt runs worker → fresh review → fixes in the background; you get a follow-up ping when it is done or needs help (or use await_agent).`,
+							},
+						],
+						details: { agent_id: task.id, size: params.size, async: true },
+					};
+				}
+				if (signal) signal.addEventListener("abort", () => task.abort.abort(), { once: true });
+				const end = await done;
+				task.state.collected = true;
+				tasks.delete(task.id);
+				return {
+					content: [{ type: "text", text: `${summary}\n\n${end.status}: ${end.message}` }],
+					details: { agent_id: task.id, end },
+					isError: end.status === "error",
+				};
+			}
 
 			const model = params.model;
-			const modelName = resolveModelName(ctx, model);
-			const promptTemplate = params.prompt_template || DEFAULT_PROMPTS[params.role];
+			const promptTemplate = params.prompt_template || DEFAULT_PROMPTS[role];
+			const piArgs = ["--no-session", ...plainSkillArgs(cwd, role)];
+			if (model) piArgs.push("--model", model);
+			if (promptTemplate) piArgs.push("--prompt-template", promptTemplate);
+			if (params.tools) piArgs.push("--tools", params.tools);
 
-			const state: AgentState = {
-				dir,
-				process: null as unknown as ChildProcess,
-				collected: false,
-				role: params.role,
+			// Only SYNC spawns tie the child's lifetime to the tool-call abort
+			// signal. Async workers must survive turn aborts (Esc) in the parent;
+			// they are reaped via stop_agent or session_shutdown instead.
+			const { agentId, dir, state, promise } = launchAgent(ctx, {
+				role,
 				model,
-				modelName,
-				// Set when the spawning process is itself a subagent (worker → reviewer).
-				parentId: process.env.PI_EXT_SUBAGENT_ID,
-				ownerId: ownerId(ctx),
-				startedAt: Date.now(),
-				activity: "starting",
-				usage: emptyUsage(),
-			};
-			agents.set(agentId, state);
-			writeLive(agentId, state, "running");
-
-			const taskFile = path.join(dir, "task.md");
-			fs.writeFileSync(taskFile, params.task, "utf-8");
-			const args = ["--mode", "json", "--no-session"];
-			if (model) args.push("--model", model);
-			if (promptTemplate) args.push("--prompt-template", promptTemplate);
-			if (params.tools) args.push("--tools", params.tools);
-			args.push("-p", `@${taskFile}`);
-
-			const proc = spawn("pi", args, {
 				cwd,
-				env: {
-					...process.env,
-					// Subagents are short-lived: 5m cache even when the parent runs with 1h.
-					PI_CACHE_RETENTION: "short",
-					PI_EXT_SUBAGENT_ID: agentId,
-					PI_EXT_SUBAGENT_DIR: dir,
-					PI_EXT_SUBAGENT_OWNER_ID: state.ownerId,
-				},
-				stdio: ["ignore", "pipe", "pipe"],
+				piArgs,
+				prompt: params.task,
+				signal: params.async ? undefined : signal,
 			});
-			state.process = proc;
-
-			// Capture result
-			const capturePromise = new Promise<AgentResult>((resolve) => {
-				const result: AgentResult = {
-					exitCode: 0,
-					output: "",
-					stderr: "",
-					usage: {},
-				};
-				let buffer = "";
-				proc.stdout.on("data", (data: Buffer) => {
-					buffer += data.toString("utf-8");
-					const lines = buffer.split("\n");
-					buffer = lines.pop() || "";
-					for (const line of lines) {
-						if (!line.trim()) continue;
-						try {
-							const event = JSON.parse(line) as any;
-							if (event.type === "tool_execution_start") {
-								state.activity = summarizeTool(event.toolName, event.args);
-								writeLive(agentId, state, "running");
-							} else if (event.type === "message_end" && event.message?.role === "assistant") {
-								const msg = event.message as any;
-								if (msg.stopReason) result.stopReason = msg.stopReason;
-								if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-								const u = msg.usage;
-								if (u) {
-									result.usage.input = (result.usage.input || 0) + (u.input || 0);
-									result.usage.output = (result.usage.output || 0) + (u.output || 0);
-									result.usage.cacheRead = (result.usage.cacheRead || 0) + (u.cacheRead || 0);
-									result.usage.cacheWrite = (result.usage.cacheWrite || 0) + (u.cacheWrite || 0);
-									result.usage.cost = (result.usage.cost || 0) + (u.cost?.total || 0);
-									result.usage.turns = (result.usage.turns || 0) + 1;
-									state.usage.input += u.input || 0;
-									state.usage.output += u.output || 0;
-									state.usage.cacheRead += u.cacheRead || 0;
-									state.usage.cost += u.cost?.total || 0;
-									state.usage.turns += 1;
-								}
-								const textParts = (msg.content || [])
-									.filter((c: any) => c.type === "text")
-									.map((c: any) => c.text);
-								if (textParts.length) {
-									result.output = textParts.join("\n");
-									state.activity = truncate(textParts[textParts.length - 1], 60);
-								}
-								writeLive(agentId, state, "running");
-							}
-						} catch {
-							/* ignore */
-						}
-					}
-				});
-				proc.stderr.on("data", (data: Buffer) => {
-					result.stderr += data.toString("utf-8");
-				});
-				proc.on("close", (code) => {
-					if (buffer.trim()) {
-						try {
-							const event = JSON.parse(buffer.trim()) as any;
-							if (event.type === "message_end" && event.message?.role === "assistant") {
-								const msg = event.message as any;
-								const textParts = (msg.content || [])
-									.filter((c: any) => c.type === "text")
-									.map((c: any) => c.text);
-								if (textParts.length) result.output = textParts.join("\n");
-								if (msg.stopReason) result.stopReason = msg.stopReason;
-								if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-							}
-						} catch {
-							/* ignore */
-						}
-					}
-					result.exitCode = code ?? 0;
-					resolve(result);
-				});
-
-				proc.on("error", () => {
-					result.exitCode = 1;
-					resolve(result);
-				});
-				// Only SYNC spawns tie the child's lifetime to the tool-call abort
-				// signal. Async workers must survive turn aborts (Esc) in the parent;
-				// they are reaped via stop_agent or session_shutdown instead.
-				if (!params.async && signal) {
-					signal.addEventListener(
-						"abort",
-						() => {
-							proc.kill("SIGTERM");
-							setTimeout(() => {
-								if (!proc.killed) proc.kill("SIGKILL");
-							}, 5000);
-						},
-						{ once: true },
-					);
-				}
-			});
+			const modelName = state.modelName;
 
 			// Async: finalize on completion and notify parent.
 			if (params.async) {
-				capturePromise
-					.then((result) => finalizeAgent(pi, agentId, state, result))
-					.catch(() => {});
+				promise.then((result) => finalizeAgent(pi, agentId, state, result)).catch(() => {});
 				watchStatus(pi, agentId, state);
 				const modelText = model ? ` (${model})` : "";
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Spawned ${params.role} ${agentId}${modelText}. It will run in the background; use await_agent or wait for the follow-up ping.`,
+							text: `Spawned ${role} ${agentId}${modelText}. It will run in the background; use await_agent or wait for the follow-up ping.`,
 						},
 					],
 					details: { agent_id: agentId, dir, model, modelName, prompt_template: promptTemplate, async: true },
@@ -804,7 +1264,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Sync: block until done.
-			const result = await capturePromise;
+			const result = await promise;
 			await finalizeAgent(pi, agentId, state, result);
 			state.collected = true;
 			cleanup(agentId);
@@ -825,7 +1285,7 @@ export default function (pi: ExtensionAPI) {
 			"Block until a subagent writes a status signal. Uses filesystem events, not polling. Returns the status and captured result.",
 		parameters: AwaitParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = agents.get(params.agent_id);
+			const state = agents.get(params.agent_id) ?? tasks.get(params.agent_id)?.state;
 			const dir = ownedAgentDir(ctx, params.agent_id);
 			if (!dir) throw new Error(`No subagent ${params.agent_id} belongs to this Pi session`);
 			const timeoutMs = params.timeout_ms ?? DEFAULT_AWAIT_TIMEOUT_MS;
@@ -858,12 +1318,7 @@ export default function (pi: ExtensionAPI) {
 				cleanup(params.agent_id);
 			}
 			return {
-				content: [
-					{
-						type: "text",
-						text: `Subagent ${params.agent_id} status: ${status.status}${status.message ? ` — ${status.message}` : ""}`,
-					},
-				],
+				content: [{ type: "text", text: describeStatus(params.agent_id, status, result as { output?: string; stderr?: string } | null) }],
 				details: { agent_id: params.agent_id, status, result },
 				isError: status.status === "error",
 			};
@@ -901,7 +1356,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const dir = ownedAgentDir(ctx, params.agent_id);
 			if (!dir) throw new Error(`No subagent ${params.agent_id} belongs to this Pi session`);
-			writeMessage(dir, { type: params.type, content: params.content });
+			const message = { type: params.type, content: params.content };
+			if (!messageTask(params.agent_id, message)) writeMessage(dir, message);
 			return {
 				content: [{ type: "text", text: `Sent ${params.type} message to ${params.agent_id}` }],
 				details: { agent_id: params.agent_id, type: params.type },
@@ -927,7 +1383,7 @@ export default function (pi: ExtensionAPI) {
 			const status = readStatus(dir);
 			const result = readResult(dir);
 			const live = readLive(dir);
-			const running = state ? !state.process.killed : null;
+			const running = isRunning(params.agent_id);
 			return {
 				content: [
 					{
@@ -955,7 +1411,6 @@ export default function (pi: ExtensionAPI) {
 					const dir = path.join(root, entry);
 					const st = fs.statSync(dir);
 					if (!st.isDirectory()) continue;
-					const state = agents.get(entry);
 					const status = readStatus(dir);
 					const live = readLive(dir);
 					if (live?.ownerId !== ownerId(ctx)) continue;
@@ -963,7 +1418,7 @@ export default function (pi: ExtensionAPI) {
 						agent_id: entry,
 						status: status?.status ?? (live?.status || undefined),
 						activity: live?.activity,
-						running: state ? !state.process.killed : undefined,
+						running: isRunning(entry) ?? undefined,
 					});
 				}
 			}
@@ -987,6 +1442,16 @@ export default function (pi: ExtensionAPI) {
 		description: "Send SIGTERM to a running subagent and mark it stopped.",
 		parameters: AgentIdParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const task = tasks.get(params.agent_id);
+			if (task && !task.finished && task.state.ownerId === ownerId(ctx)) {
+				// The pipeline unwinds, kills the running phase, logs the run as "stopped".
+				messageTask(task.id, { type: "stop" });
+				writeStatus(task.dir, { status: "stopped", message: "Stopped by parent" });
+				return {
+					content: [{ type: "text", text: `Stopped ${params.agent_id}` }],
+					details: { agent_id: params.agent_id },
+				};
+			}
 			const state = agents.get(params.agent_id);
 			if (state && state.ownerId === ownerId(ctx)) {
 				killAgent(state);
@@ -1010,6 +1475,7 @@ export default function (pi: ExtensionAPI) {
 			clearInterval(widgetTimer);
 			widgetTimer = null;
 		}
+		for (const task of tasks.values()) task.abort.abort();
 		for (const [agentId, state] of agents) {
 			killAgent(state);
 			cleanup(agentId);
