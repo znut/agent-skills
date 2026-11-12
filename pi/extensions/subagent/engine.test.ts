@@ -7,6 +7,7 @@ import {
 	branchType,
 	buildReviewPrompt,
 	buildRunRow,
+	classifyFinish,
 	candidatesFor,
 	describeStatus,
 	drawModel,
@@ -39,7 +40,7 @@ import {
 } from "./engine";
 
 const A = "anthropic/claude-sonnet-5-5:high";
-const B = "openai-codex/gpt-6.1-sol:high";
+const B = "openai-codex/gpt-6-luna:high";
 const NOW = Date.parse("2026-06-15T12:00:00Z");
 const DAY = 24 * 3600 * 1000;
 
@@ -71,10 +72,29 @@ function row(over: Partial<RunRow> & { spec?: string; ageDays?: number }): RunRo
 
 const many = (n: number, over: Parameters<typeof row>[0]) => Array.from({ length: n }, () => row(over));
 
+describe("classifyFinish", () => {
+	const ERR = "The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.";
+	test("a first-turn provider error with empty output ends error with that message", () => {
+		const r = classifyFinish({ exitCode: 0, output: "", stderr: "", errorMessage: ERR });
+		expect(r.status).toBe("error");
+		expect(r.emptyReturn).toBe(false);
+		expect(r.message).toBe(ERR);
+	});
+	test("empty output with no error is still an empty-return protocol error", () => {
+		const r = classifyFinish({ exitCode: 0, output: " ", stderr: "" });
+		expect(r).toMatchObject({ status: "error", emptyReturn: true });
+		expect(r.message).toContain("empty return");
+	});
+	test("normal output is done; nonzero exit is error", () => {
+		expect(classifyFinish({ exitCode: 0, output: "ok" })).toMatchObject({ status: "done", message: "ok" });
+		expect(classifyFinish({ exitCode: 1, output: "x" }).status).toBe("error");
+	});
+});
+
 describe("parseModelSpec", () => {
 	test("splits provider, model, effort", () => {
 		expect(parseModelSpec(A)).toEqual({ raw: A, provider: "anthropic", model: "claude-sonnet-5-5", effort: "high" });
-		expect(parseModelSpec("openai-codex/gpt-6.1-sol:xhigh").effort).toBe("xhigh");
+		expect(parseModelSpec("openai-codex/gpt-6-luna:xhigh").effort).toBe("xhigh");
 	});
 	test("effort is optional and only real levels count", () => {
 		expect(parseModelSpec("anthropic/claude-x").effort).toBeNull();
@@ -151,7 +171,7 @@ describe("config", () => {
 	test("reviewerFor uses the map, else any other provider", () => {
 		const cfg = normalizeConfig({
 			classes: { standard: [A, B] },
-			reviewer: { anthropic: "openai-codex/gpt-6.1-sol:high", "openai-codex": "anthropic/claude-opus-5-5:high" },
+			reviewer: { anthropic: "openai-codex/gpt-6-luna:high", "openai-codex": "anthropic/claude-opus-5-5:high" },
 		});
 		expect(reviewerFor(parseModelSpec(A), cfg).provider).toBe("openai-codex");
 		expect(reviewerFor(parseModelSpec(B), cfg).provider).toBe("anthropic");

@@ -1,12 +1,12 @@
 {
   "classes": {
-    "standard": ["anthropic/claude-sonnet-5-5:high", "openai-codex/gpt-6.1-sol:high"],
-    "strong": ["anthropic/claude-opus-5-5:high", "openai-codex/gpt-6.1-sol:xhigh"]
+    "standard": ["anthropic/claude-sonnet-5-5:high", "openai-codex/gpt-6-luna:high"],
+    "strong": ["anthropic/claude-opus-5-5:high", "openai-codex/gpt-6-luna:xhigh"]
   },
   "size_class": { "S": "standard", "M": "standard", "L": "strong", "XL": "strong" },
   "draw": "learned",
   "reviewer": {
-    "anthropic": "openai-codex/gpt-6.1-sol:high",
+    "anthropic": "openai-codex/gpt-6-luna:high",
     "openai-codex": "anthropic/claude-opus-5-5:high"
   },
   "skills": { "worker": [], "reviewer": [] },

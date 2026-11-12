@@ -846,3 +846,20 @@ export function readAndDeleteMessage(dir: string): AgentMessage | null {
 		}
 	}
 }
+
+/**
+ * How a finished plain process ends. A provider/model error (e.g. a model the
+ * account may not use) shows up as `errorMessage` with empty output; surface that
+ * message instead of calling it an empty-return protocol violation.
+ */
+export function classifyFinish(r: { exitCode: number; output?: string; stderr?: string; errorMessage?: string }): {
+	status: "done" | "error";
+	emptyReturn: boolean;
+	message: string | undefined;
+} {
+	const noOutput = !r.output || r.output.trim().length === 0;
+	const emptyReturn = r.exitCode === 0 && noOutput && !r.errorMessage;
+	const status = r.exitCode === 0 && !r.errorMessage && !emptyReturn ? "done" : "error";
+	const message = emptyReturn ? "empty return (protocol violation: no return block)" : resultMessage(r);
+	return { status, emptyReturn, message };
+}

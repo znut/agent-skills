@@ -41,6 +41,7 @@ import {
 	findPrUrl,
 	findReviewLinks,
 	loadConfig,
+	classifyFinish,
 	findAgentDir,
 	readAndDeleteMessage,
 	resolvePingDir,
@@ -438,8 +439,7 @@ interface AgentResult {
 }
 
 async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentState, result: AgentResult): Promise<void> {
-	const emptyReturn = result.exitCode === 0 && (!result.output || result.output.trim().length === 0);
-	const status = emptyReturn ? "error" : result.exitCode === 0 && !result.errorMessage ? "done" : "error";
+	const { status, emptyReturn, message } = classifyFinish(result);
 	state.finishedAt = Date.now();
 	// Stamp model identity + timings so result.json is a complete per-task cost
 	// record (modelName = catalog-resolved version, model = the stable alias).
@@ -459,7 +459,6 @@ async function finalizeAgent(pi: ExtensionAPI, agentId: string, state: AgentStat
 	state.watcher = undefined;
 
 	const existingStatus = readStatus(state.dir);
-	const message = emptyReturn ? "empty return (protocol violation: no return block)" : resultMessage(result);
 	if (!existingStatus || emptyReturn) {
 		writeStatus(state.dir, { status, message });
 	}

@@ -44,6 +44,13 @@ file replaces the global one). Missing keys use the defaults shown.
 | `max_review_rounds` | stop after this many BLOCK verdicts and ping `needs_help`                                      | `2`                                      |
 | `worktrees_dir`     | where worktrees go; `<repo-parent>` / `<repo-name>` / leading `~` expand                       | `<repo-parent>/<repo-name>-worktrees`    |
 
+The `openai-codex` provider only accepts models your ChatGPT plan allows (others
+fail with "not supported when using Codex with a ChatGPT account"); `example.json`
+uses `openai-codex/gpt-6-luna`, the one that works on the plan it was tested with.
+Check yours with `pi --list-models` or a one-line `pi -p` before putting a model
+in a class. A model error on the first turn ends the task `error` with the
+provider's message (not an empty-return protocol error).
+
 Every subagent starts `pi --no-skills` plus one `--skill <path>` per entry of its
 role's list, and runs with `PI_CACHE_RETENTION=short`. Effort is the `:suffix`
 (`off|minimal|low|medium|high|xhigh|max`).
