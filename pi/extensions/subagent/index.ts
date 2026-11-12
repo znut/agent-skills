@@ -30,8 +30,10 @@ import { Type } from "typebox";
 import {
 	addUsage,
 	appendRun,
+	afterPass,
 	buildDeliveryPrompt,
 	buildFixPrompt,
+	buildSteerPrompt,
 	buildReviewPrompt,
 	buildRunRow,
 	buildWorkerPrompt,
@@ -975,8 +977,9 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 
 	const pipeline = async (): Promise<TaskEnd> => {
 		let workerPrompt = buildWorkerPrompt({ task: params.task, branch: wt.branch, base: wt.base, defaultBranch: wt.baseRef });
+		let workerLabel = "worker";
 		for (;;) {
-			const w = await phase(blocks === 0 ? "worker" : `worker fix ${blocks}`, "worker", withPending(workerPrompt));
+			const w = await phase(workerLabel, "worker", withPending(workerPrompt));
 			const failure = workerFailure(w);
 			if (failure) return { status: "error", outcome: "error", message: `worker failed: ${failure}` };
 			const question = parseNeedsHelp(w.output);
@@ -999,7 +1002,13 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 			reviewLog.push({ round: reviews, verdict: v.verdict, findings: v.findings });
 			if (!v.verdict) return { status: "error", outcome: "error", message: `reviewer returned no VERDICT line: ${clipMessage(r.output, 500)}` };
 			firstReview ??= v.verdict;
-			if (v.verdict === "pass") break;
+			if (v.verdict === "pass") {
+				// Steering that arrived during the review was never reviewed: apply it, then review again.
+				if (afterPass(task.pending.length) === "deliver") break;
+				workerPrompt = buildSteerPrompt();
+				workerLabel = "worker steer";
+				continue;
+			}
 			blocks++;
 			if (blocks >= cfg.max_review_rounds) {
 				return {
@@ -1009,6 +1018,7 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 				};
 			}
 			workerPrompt = buildFixPrompt({ findings: v.findings, round: blocks, max: cfg.max_review_rounds });
+			workerLabel = `worker fix ${blocks}`;
 		}
 
 		const n = commitCount(wt.dir, wt.base, tip);
@@ -1017,7 +1027,7 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 		if (!canOpenPr(wt.dir)) {
 			return { status: "done", outcome: "pass", message: `${summary}. No GitHub remote/gh here: branch ready in ${wt.dir}, not pushed.` };
 		}
-		const d = await phase("deliver", "worker", withPending(buildDeliveryPrompt({ branch: wt.branch, defaultBranch: wt.baseRef, task: params.task })));
+		const d = await phase("deliver", "worker", buildDeliveryPrompt({ branch: wt.branch, defaultBranch: wt.baseRef, task: params.task }));
 		prUrl = findPrUrl(d.output);
 		const dFailure = workerFailure(d);
 		if (prUrl) return { status: "done", outcome: "pass", message: `${summary}. PR: ${prUrl}` };

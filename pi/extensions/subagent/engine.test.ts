@@ -3,7 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	afterPass,
 	appendRun,
+	buildSteerPrompt,
 	branchType,
 	buildReviewPrompt,
 	buildRunRow,
@@ -570,5 +572,20 @@ describe("agent state dirs", () => {
 		fs.writeFileSync(path.join(dir, "message.json"), '{"type":"ste');
 		expect(readAndDeleteMessage(dir)).toBeNull();
 		expect(fs.readdirSync(dir)).toEqual([]);
+	});
+});
+
+describe("steering during review", () => {
+	test("a PASS with pending steering goes back to the worker, not to delivery", () => {
+		expect(afterPass(0)).toBe("deliver");
+		expect(afterPass(1)).toBe("steer");
+		expect(afterPass(3)).toBe("steer");
+	});
+
+	test("the steer turn prompt asks for commits and a fresh review", () => {
+		const p = buildSteerPrompt();
+		expect(p).toContain("commit");
+		expect(p).toContain("fresh review");
+		expect(p).toContain("Do not push");
 	});
 });

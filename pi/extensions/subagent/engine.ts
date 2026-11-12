@@ -664,6 +664,19 @@ export function buildFixPrompt(o: { findings: string; round: number; max: number
 	].join("\n");
 }
 
+/** After a PASS: unreviewed manager steering means another worker turn and review, not delivery. */
+export function afterPass(pendingMessages: number): "steer" | "deliver" {
+	return pendingMessages > 0 ? "steer" : "deliver";
+}
+
+/** Worker turn run when manager steering arrived while the reviewer was passing the branch. */
+export function buildSteerPrompt(): string {
+	return [
+		"The reviewer returned VERDICT: PASS, but the manager sent the message(s) above while the review ran.",
+		"Apply them (they override the original task where they conflict), re-run the repo's checks, and commit on the same branch. Do not push. A fresh review follows. End with a short summary.",
+	].join("\n");
+}
+
 export function buildDeliveryPrompt(o: { branch: string; defaultBranch: string; task: string }): string {
 	return [
 		"The reviewer returned VERDICT: PASS. Deliver the branch:",
