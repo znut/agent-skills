@@ -46,6 +46,8 @@ export interface RunRow {
 	repo: string;
 	branch: string;
 	task: string;
+	/** First `#<digits>` in the task text, as a number. */
+	ticket: number | null;
 	size: Size | null;
 	provider: string;
 	model: string;
@@ -427,6 +429,12 @@ export function firstLine(text: string, max = 200): string {
 	return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
+/** First `#<digits>` in the text (issue/ticket reference), else null. */
+export function extractTicket(text: string): number | null {
+	const m = text.match(/#(\d+)/);
+	return m ? Number.parseInt(m[1], 10) : null;
+}
+
 export interface RunRowInput {
 	ts?: Date;
 	repo: string;
@@ -448,6 +456,7 @@ export function buildRunRow(i: RunRowInput): RunRow {
 		repo: i.repo,
 		branch: i.branch,
 		task: firstLine(i.task),
+		ticket: extractTicket(i.task),
 		size: i.size,
 		provider: i.spec.provider,
 		model: i.spec.model,

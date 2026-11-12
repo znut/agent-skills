@@ -109,13 +109,13 @@ log at draw time (nothing is stored):
 per finished managed task:
 
 ```json
-{"ts":"…","repo":"/src/app","branch":"fix/handle-empty-body","task":"fix: handle empty…","size":"M",
+{"ts":"…","repo":"/src/app","branch":"fix/handle-empty-body","task":"fix: handle empty…","ticket":123,"size":"M",
  "provider":"anthropic","model":"claude-sonnet-5-5","effort":"high","review_rounds":2,
  "first_review":"block","outcome":"pass","tokens_in":0,"tokens_out":0,"tokens_cache":0,
  "cost_usd":0.0,"wall_s":0.0,"why":"learned size=M scope=repo n=7 a=4 b=4 cost=… wall=…s score=… path=score"}
 ```
 
-`outcome` is `pass | block | stopped | error`; `first_review` is `pass | block |
+`ticket` is the first `#<digits>` in the task text as a number, else `null`. `outcome` is `pass | block | stopped | error`; `first_review` is `pass | block |
 null`; tokens and cost sum the worker and reviewer runs (`tokens_cache` = cache
 read + write).
 

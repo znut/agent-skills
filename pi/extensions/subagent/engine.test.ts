@@ -10,6 +10,7 @@ import {
 	candidatesFor,
 	describeStatus,
 	drawModel,
+	extractTicket,
 	findPrUrl,
 	findReviewLinks,
 	loadConfig,
@@ -47,6 +48,7 @@ function row(over: Partial<RunRow> & { spec?: string; ageDays?: number }): RunRo
 		repo: "/r/one",
 		branch: "feat/x",
 		task: "t",
+		ticket: null,
 		size: "M",
 		provider: spec.provider,
 		model: spec.model,
@@ -316,7 +318,7 @@ describe("run rows", () => {
 			ts: new Date("2026-06-15T12:00:00Z"),
 			repo: "/r/one",
 			branch: "feat/a-thing",
-			task: "\n  Add a thing\nmore detail",
+			task: "\n  Add a thing\nmore detail (see #42, not #7)",
 			size: "M",
 			spec: parseModelSpec(A),
 			reviewRounds: 2,
@@ -331,6 +333,7 @@ describe("run rows", () => {
 			repo: "/r/one",
 			branch: "feat/a-thing",
 			task: "Add a thing",
+			ticket: 42,
 			size: "M",
 			provider: "anthropic",
 			model: "claude-sonnet-5-5",
@@ -345,6 +348,13 @@ describe("run rows", () => {
 			wall_s: 61.2,
 			why: "learned …",
 		});
+	});
+
+	test("extractTicket: first #<digits> anywhere in the task, else null", () => {
+		expect(extractTicket("fix: login (#123)")).toBe(123);
+		expect(extractTicket("first line\nsee #9 and #10")).toBe(9);
+		expect(extractTicket("no ticket, # alone, #abc")).toBeNull();
+		expect(extractTicket("")).toBeNull();
 	});
 
 	test("missing usage becomes zeros; null first_review is kept", () => {
