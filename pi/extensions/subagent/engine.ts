@@ -664,6 +664,29 @@ export function buildFixPrompt(o: { findings: string; round: number; max: number
 	].join("\n");
 }
 
+/** Worker turn run when the worktree has uncommitted changes before a review. */
+export function buildDirtyPrompt(files: string[]): string {
+	return [
+		"The worktree has uncommitted changes. A reviewer sees only committed work, and only commits are delivered:",
+		"",
+		...files.map((f) => `  ${f}`),
+		"",
+		"Commit what belongs to the task (after the repo's checks pass) or discard what does not (`git restore`/`git clean`). Leave `git status --porcelain` empty. Do not push. End with a short summary.",
+	].join("\n");
+}
+
+/**
+ * Never review or deliver a dirty tree: if `files()` is non-empty, run one worker
+ * turn (`turn`) asking it to commit or discard, then check again. Returns the files
+ * still dirty (empty = clean). `turn` may throw (e.g. stopped); that propagates.
+ */
+export async function ensureCleanTree(files: () => string[], turn: (prompt: string) => Promise<void>): Promise<string[]> {
+	const first = files();
+	if (first.length === 0) return [];
+	await turn(buildDirtyPrompt(first));
+	return files();
+}
+
 /** After a PASS: unreviewed manager steering means another worker turn and review, not delivery. */
 export function afterPass(pendingMessages: number): "steer" | "deliver" {
 	return pendingMessages > 0 ? "steer" : "deliver";

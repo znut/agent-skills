@@ -2,10 +2,14 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirtyFiles } from "./git";
 import {
 	afterPass,
 	appendRun,
+	buildDirtyPrompt,
 	buildSteerPrompt,
+	ensureCleanTree,
 	branchType,
 	buildReviewPrompt,
 	buildRunRow,
@@ -587,5 +591,57 @@ describe("steering during review", () => {
 		expect(p).toContain("commit");
 		expect(p).toContain("fresh review");
 		expect(p).toContain("Do not push");
+	});
+});
+
+describe("clean tree before review", () => {
+	function repo(): string {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "dirty-"));
+		const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: d, stdio: "ignore" });
+		g("init", "-q");
+		fs.writeFileSync(path.join(d, "a.txt"), "1");
+		g("add", ".");
+		g("commit", "-qm", "init");
+		return d;
+	}
+
+	test("dirtyFiles lists modified and untracked files, empty when clean", () => {
+		const d = repo();
+		expect(dirtyFiles(d)).toEqual([]);
+		fs.writeFileSync(path.join(d, "a.txt"), "2");
+		fs.writeFileSync(path.join(d, "new.txt"), "x");
+		expect(dirtyFiles(d).sort()).toEqual([" M a.txt", "?? new.txt"]);
+	});
+
+	test("a clean tree runs no worker turn", async () => {
+		const prompts: string[] = [];
+		expect(await ensureCleanTree(() => [], async (p) => void prompts.push(p))).toEqual([]);
+		expect(prompts).toEqual([]);
+	});
+
+	test("a dirty tree gets one worker turn; cleaned after it passes", async () => {
+		let files = [" M a.txt"];
+		const prompts: string[] = [];
+		const left = await ensureCleanTree(
+			() => files,
+			async (p) => {
+				prompts.push(p);
+				files = [];
+			},
+		);
+		expect(left).toEqual([]);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain(" M a.txt");
+		expect(prompts[0]).toBe(buildDirtyPrompt([" M a.txt"]));
+	});
+
+	test("still dirty after the turn returns the files (caller ends the task in error), no second turn", async () => {
+		let turns = 0;
+		const left = await ensureCleanTree(
+			() => ["?? junk.txt"],
+			async () => void turns++,
+		);
+		expect(left).toEqual(["?? junk.txt"]);
+		expect(turns).toBe(1);
 	});
 });

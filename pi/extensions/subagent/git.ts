@@ -85,8 +85,11 @@ export function diffRange(cwd: string, base: string, tip: string): string {
 	}
 }
 
-export function isDirty(cwd: string): boolean {
-	return git(cwd, ["status", "--porcelain"]).length > 0;
+/** `git status --porcelain` lines (tracked changes and untracked files); empty when clean. */
+export function dirtyFiles(cwd: string): string[] {
+	return execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] })
+		.split("\n")
+		.filter((l) => l.length > 0);
 }
 
 export function commitCount(cwd: string, base: string, tip: string): number {

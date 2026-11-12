@@ -32,6 +32,7 @@ import {
 	appendRun,
 	afterPass,
 	buildDeliveryPrompt,
+	ensureCleanTree,
 	buildFixPrompt,
 	buildSteerPrompt,
 	buildReviewPrompt,
@@ -69,7 +70,7 @@ import {
 	type Size,
 	type Usage,
 } from "./engine";
-import { canOpenPr, commitCount, createWorktree, diffRange, headSha, isDirty, repoRoot } from "./git";
+import { canOpenPr, commitCount, createWorktree, diffRange, dirtyFiles, headSha, repoRoot } from "./git";
 
 // ---------------------------------------------------------------------------
 // Defaults (can be overridden per repo or per spawn)
@@ -984,6 +985,23 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 			if (failure) return { status: "error", outcome: "error", message: `worker failed: ${failure}` };
 			const question = parseNeedsHelp(w.output);
 			if (question) return { status: "needs_help", outcome: "stopped", message: `worker needs a decision: ${clipMessage(question)}` };
+			const turnFailed: { end?: TaskEnd } = {};
+			const stillDirty = await ensureCleanTree(
+				() => dirtyFiles(wt.dir),
+				async (prompt) => {
+					const c = await phase("worker commit", "worker", withPending(prompt));
+					const cf = workerFailure(c);
+					if (cf) turnFailed.end = { status: "error", outcome: "error", message: `worker failed: ${cf}` };
+				},
+			);
+			if (turnFailed.end) return turnFailed.end;
+			if (stillDirty.length > 0) {
+				return {
+					status: "error",
+					outcome: "error",
+					message: `worktree ${wt.dir} still has uncommitted changes after asking the worker to commit or discard them; not reviewed or delivered:\n${stillDirty.slice(0, 30).join("\n")}${stillDirty.length > 30 ? `\n… (${stillDirty.length - 30} more)` : ""}`,
+				};
+			}
 			tip = headSha(wt.dir);
 			if (tip === wt.base) return { status: "error", outcome: "error", message: `worker made no commits on ${wt.branch}. ${resultMessage(w) ?? ""}`.trim() };
 
@@ -1022,8 +1040,7 @@ function startManaged(pi: ExtensionAPI, ctx: any, params: ManagedParams): Manage
 		}
 
 		const n = commitCount(wt.dir, wt.base, tip);
-		const dirty = isDirty(wt.dir) ? " (uncommitted changes left in the worktree)" : "";
-		const summary = `review PASS after ${reviews} round(s), first review ${firstReview}; ${n} commit(s) on ${wt.branch}${dirty}`;
+		const summary = `review PASS after ${reviews} round(s), first review ${firstReview}; ${n} commit(s) on ${wt.branch}`;
 		if (!canOpenPr(wt.dir)) {
 			return { status: "done", outcome: "pass", message: `${summary}. No GitHub remote/gh here: branch ready in ${wt.dir}, not pushed.` };
 		}
