@@ -26,6 +26,7 @@ import {
 	resultMessage,
 	scanAgentDirs,
 	findAgentDir,
+	resolvePingDir,
 	reviewerFor,
 	seededRandom,
 	skillArgs,
@@ -511,5 +512,24 @@ describe("agent state dirs", () => {
 		const dir = mk(root, "bbbb", "w1", "S1");
 		expect(findAgentDir(root, "w1")).toBe(dir);
 		expect(findAgentDir(root, "nope")).toBeNull();
+	});
+
+	test("resolvePingDir allows self or same-owner agents only", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagents-ping-"));
+		const mine = mk(root, "aaaa", "mine", "S1");
+		const child = mk(root, "bbbb", "child", "S1");
+		const foreign = mk(root, "bbbb", "foreign", "S2");
+		const orphan = mk(root, "cccc", "orphan", null);
+		const asManager = { owner: "S1" };
+		expect(resolvePingDir(root, "child", asManager)).toBe(child);
+		expect(resolvePingDir(root, "foreign", asManager)).toBeNull();
+		expect(resolvePingDir(root, "orphan", asManager)).toBeNull();
+		expect(resolvePingDir(root, "missing", asManager)).toBeNull();
+		// A subagent pings itself via env even with a different owner lookup.
+		const self = { selfId: "foreign", selfDir: foreign, owner: "S1" };
+		expect(resolvePingDir(root, "foreign", self)).toBe(foreign);
+		// ...but not a sibling it does not own.
+		expect(resolvePingDir(root, "orphan", { selfId: "mine", selfDir: mine, owner: "S1" })).toBeNull();
+		expect(orphan).toBeTruthy();
 	});
 });

@@ -796,3 +796,19 @@ export function findAgentDir(subagentsRoot: string, id: string): string | null {
 	}
 	return null;
 }
+
+/**
+ * Which agent dir `agent_ping` may write for `agentId`. A subagent may ping only
+ * itself (`self`), or an agent whose live.json `ownerId` equals the caller's
+ * owner id. Anything else (unknown id, another session's agent) returns null.
+ */
+export function resolvePingDir(
+	subagentsRoot: string,
+	agentId: string,
+	caller: { selfId?: string; selfDir?: string; owner: string },
+): string | null {
+	if (caller.selfId && caller.selfDir && caller.selfId === agentId) return caller.selfDir;
+	const dir = findAgentDir(subagentsRoot, agentId);
+	if (!dir) return null;
+	return readLiveFile<{ ownerId?: string }>(dir)?.ownerId === caller.owner ? dir : null;
+}

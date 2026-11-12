@@ -42,6 +42,7 @@ import {
 	findReviewLinks,
 	loadConfig,
 	findAgentDir,
+	resolvePingDir,
 	scanAgentDirs,
 	normalizeConfig,
 	parseModelSpec,
@@ -1323,12 +1324,20 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Signal the parent session. A subagent calls this to report done, needs_help, or error without exiting. The parent receives a follow-up ping in TUI mode; in print/json mode the parent calls await_agent.",
 		parameters: PingParams,
-		async execute(_toolCallId, params) {
-			// A subagent's own env names its dir; otherwise search every project root.
-			const dir =
-				process.env.PI_EXT_SUBAGENT_ID === params.agent_id && process.env.PI_EXT_SUBAGENT_DIR
-					? process.env.PI_EXT_SUBAGENT_DIR
-					: (findAgentDir(SUBAGENTS_ROOT, params.agent_id) ?? agentDir(process.cwd(), params.agent_id));
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Only the caller's own id, or an agent owned by this session's tree.
+			const dir = resolvePingDir(SUBAGENTS_ROOT, params.agent_id, {
+				selfId: process.env.PI_EXT_SUBAGENT_ID,
+				selfDir: process.env.PI_EXT_SUBAGENT_DIR,
+				owner: ownerId(ctx),
+			});
+			if (!dir) {
+				return {
+					content: [{ type: "text", text: `Cannot ping ${params.agent_id}: it is not this subagent or an agent owned by this session` }],
+					details: { agent_id: params.agent_id },
+					isError: true,
+				};
+			}
 			ensureAgentDir(dir);
 			writeStatus(dir, { status: params.status, message: params.message });
 			return {
