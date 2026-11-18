@@ -136,14 +136,17 @@ const DISCOVER_RUNS = String.raw`
   exit 0 unless -d $root;
   $root = './' . $root unless $root =~ m{^/};
   open my $find, '-|', 'find', '-H', $root, '-mindepth', $depth, '-maxdepth', $depth,
-    '-type', 'd', '-mtime', '-1', '-mmin', '-' . ($hours * 60), '-print0' or die $!;
+    '-type', 'd', '-mmin', '-' . ($hours * 60), '-print0' or die $!;
   local $/ = "\0";
+  my $found = 0;
   while (my $dir = <$find>) {
     chomp $dir;
     my @stat = stat($dir);
-    printf "%.9f\0%s\0", $stat[9], $dir if @stat;
+    next unless @stat;
+    printf "%.9f\0%s\0", $stat[9], $dir;
+    $found = 1;
   }
-  close $find or die 'find failed';
+  close $find or $found or die 'find failed';
 `
 
 async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
@@ -202,8 +205,10 @@ async function scanRuns($: $, options: PluginOptions, now: number, probes: Map<s
 
   const found: Probe[] = []
   for (const dir of probes.keys()) if (!dirs.has(dir)) probes.delete(dir)
-  const changed = [...dirs].filter(([dir, { mtime }]) => probes.get(dir)?.mtime !== mtime)
-  await Promise.all(changed.map(async ([dir, { mtime, isPanel }]) => {
+  await Promise.all([...dirs].map(async ([dir, { mtime, isPanel }]) => {
+    const cached = probes.get(dir)
+    // Writes to an existing log leave the directory mtime unchanged.
+    if (cached?.mtime === mtime && (cached.probe === null || cached.probe.hasDone)) return
     const entries = await $.fs.list(dir).catch(() => null)
     if (entries) probes.set(dir, { mtime, probe: await probe($, dir, entries, isPanel, sid) })
   }))
@@ -288,7 +293,7 @@ async function readReadyPrs($: $): Promise<PrRow[]> {
 // Repo panels: the list re-read when its file changes; each panel's last good output and last
 // error kept per root, id and argv.
 type PanelRun = { data: PanelData | null; error: string | null; startedAt: number | null; running: boolean }
-let panelList = { key: '', specs: Promise.resolve<PanelSpec[]>([]) }
+let panelList = { key: '', specs: [] as PanelSpec[] }
 const panelRuns = new Map<string, PanelRun>()
 const panelKey = (root: string, spec: PanelSpec) => [root, spec.id, ...spec.cmd].join('\0')
 
@@ -297,13 +302,10 @@ async function readPanelSpecs($: $, root: string): Promise<PanelSpec[]> {
   const stat = (await listDir($, `${root}/.agent`)).find(entry => entry.name === 'pane-panels.json' && entry.kind === 'file')
   const key = stat ? `${root}|${stat.mtimeMs}|${stat.size}` : ''
   if (panelList.key !== key) {
-    const specs = stat ? readText($, `${root}/.agent/pane-panels.json`).then(parseSpecs) : Promise.resolve([])
+    const specs = stat ? parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) : []
     panelList = { key, specs }
-    const kept = new Set((await specs).map(spec => panelKey(root, spec)))
-    if (panelList.specs === specs) {
-      for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
-    }
-    return specs
+    const kept = new Set(specs.map(spec => panelKey(root, spec)))
+    for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
   }
   return panelList.specs
 }
@@ -318,8 +320,9 @@ const panelRunOf = (root: string, spec: PanelSpec): PanelRun => {
 async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now: number): Promise<void> {
   run.running = true
   run.startedAt = now
-  const before = await panelResultKey($, root, spec)
+  let before: string | undefined
   try {
+    before = await panelResultKey($, root, spec)
     const ran = await $.process.run(spec.cmd, { cwd: root, stdin: '', timeoutMs: PANEL_TIMEOUT_MS })
     const data = ran.exitCode === 0 ? parsePanelOutput(ran.stdout) : null
     if (data) {
@@ -330,7 +333,7 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
     run.error = firstLine(error instanceof Error ? error.message : String(error)) || 'did not run'
   } finally {
     run.running = false
-    if (panelRuns.get(panelKey(root, spec)) === run && before !== await panelResultKey($, root, spec)) {
+    if (panelRuns.get(panelKey(root, spec)) === run && before !== await panelResultKey($, root, spec).catch(() => before)) {
       $.ui.invalidate('ui.render')
     }
   }
@@ -346,9 +349,8 @@ const isDue = (run: PanelRun, spec: PanelSpec, now: number) => !run.running && (
 // the `running` flag, set as a run starts, let only the first timer start it.
 function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): void {
   if (!specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
-  const scheduled = panelList.specs
   $.clock.after(1, () => {
-    if (panelList.specs !== scheduled) return
+    if (panelList.specs !== specs) return
     for (const spec of specs) {
       const run = panelRunOf(root, spec)
       if (isDue(run, spec, now)) void runPanel($, root, spec, run, now)
@@ -677,7 +679,9 @@ let chains: ReturnType<typeof chainLinks>[] = []
 let board = NO_BOARD
 let selectedTail: { key: string; tail: Tail } | null = null
 let refreshTimer: Timer | null = null
+let refreshQueued = false
 let refreshing = false
+let lastRefreshAt: number | null = null
 let drawnKey = ''
 
 // Use the same visible rows and chain titles as the pane. Hidden child durations
@@ -724,11 +728,12 @@ async function refresh($: $, options: PluginOptions): Promise<void> {
     const nextRows = rowsFor(runs, agents, now)
     const shown = selectedRow(nextRows, chosen)
     const tail = shown ? await tailOf($, shown) : null
-    const [open, currentChoice] = await Promise.all([read($, expanded), read($, selectedRun)])
+    const [open, currentChoice, refreshedAt] = await Promise.all([read($, expanded), read($, selectedRun), $.clock.now()])
     const active = new Set(allRows(nextRows).flatMap(row => {
       const n = row.status === 'running' ? issueNumber(row.label) : null
       return n ? [Number(n)] : []
     }))
+    lastRefreshAt = refreshedAt
     rows = nextRows
     prs = nextPrs
     repo = nextRepo
@@ -773,15 +778,20 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
-    if (!refreshTimer) {
-      refreshTimer = $.clock.every(REFRESH_MS, () => refresh($, options))
-      $.clock.after(1, () => refresh($, options))
-    }
-    const [chosen, open, root, openPanels, tabPicks, filterPicks] = await Promise.all([
-      read($, selectedRun), read($, expanded), repoRoot($), read($, panelsOpen), read($, panelTabs), read($, panelFilters),
+    refreshTimer ??= $.clock.every(REFRESH_MS, () => refresh($, options))
+    const [chosen, open, root, openPanels, tabPicks, filterPicks, now] = await Promise.all([
+      read($, selectedRun), read($, expanded), repoRoot($), read($, panelsOpen), read($, panelTabs), read($, panelFilters), $.clock.now(),
     ])
+    const refreshedAt = lastRefreshAt
+    if (!refreshQueued && !refreshing && (refreshedAt === null || now - refreshedAt > REFRESH_MS)) {
+      refreshQueued = true
+      $.clock.after(1, () => {
+        refreshQueued = false
+        if (lastRefreshAt === refreshedAt) return refresh($, options)
+      })
+    }
     const specs = root ? await readPanelSpecs($, root) : []
-    if (root && specs.length > 0) schedulePanels($, root, specs, await $.clock.now())
+    if (root && specs.length > 0) schedulePanels($, root, specs, now)
     panelListKey = panelTitles(specs)
     const visible = visibleRows(rows, open)
     const shown = selectedRow(rows, chosen)

@@ -1,6 +1,6 @@
 # Hooks
 
-Two Claude Code hooks, silent and fail-open. Register it in
+Watch-guard is a silent, fail-open Claude Code hook. Register it in
 `~/.claude/settings.json` or a repo's `.claude/settings.local.json`, replacing
 `<path-to>` with this repo's absolute path.
 

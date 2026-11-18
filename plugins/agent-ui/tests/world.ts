@@ -76,6 +76,7 @@ export type World = {
   root: string
   repos: Set<string>
   gitRuns: number
+  discoveries: number
   // each repo-panel command run, and what it answers: a result, or a deny (the call rejects, as on a timeout)
   panelRuns: { argv: readonly string[]; cwd?: string; stdin?: string; timeoutMs?: number }[]
   panel: (argv: readonly string[]) => PanelResult | Promise<PanelResult>
@@ -96,7 +97,7 @@ export function world(
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
     mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, lists: [], blits: [], paneShown: true, blitOk: false, denied: 0, invalidated: 0, redraws: true, tails: [],
-    cwd: '/fx/repo', root: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
+    cwd: '/fx/repo', root: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0, discoveries: 0,
     panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
   on('session.cwd', () => ({ value: w.cwd }))
@@ -152,6 +153,7 @@ export function world(
       return w.repos.has(dir) ? ok(`${dir}/.git\n`) : ok('', 128)
     }
     if (command === 'perl') {
+      w.discoveries++
       const [root = '', depth = '', , pids] = args.slice(3)
       const dirs = new Map<string, number>()
       for (const path of Object.keys(w.files)) {
@@ -159,7 +161,7 @@ export function world(
         const parts = path.slice(root.length + 1).split('/')
         if (parts.length <= Number(depth)) continue
         const dir = `${root}/${parts.slice(0, Number(depth)).join('/')}`
-        dirs.set(dir, Math.max(dirs.get(dir) ?? 0, w.mtimes[path] ?? 0))
+        dirs.set(dir, w.mtimes[dir] ?? Math.max(dirs.get(dir) ?? 0, w.mtimes[path] ?? 0))
       }
       const records = pids ? [...w.alive].flatMap(pid => ['pid', pid]) : []
       for (const [dir, mtime] of dirs) records.push(String(mtime), dir)
