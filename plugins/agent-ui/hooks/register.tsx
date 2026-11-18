@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { OpenAsk, Run } from '../types'
+import type { Run } from '../types'
 import { type Avatar, SPRITE_COLS, avatarOf, avatarPicture } from './sprites'
 import {
   TAIL_LINES,
@@ -61,15 +61,15 @@ type Row = {
 }
 type PrRow = { number: number; title: string; mark: PrMark }
 const MARK_TONES: Record<PrMark, number> = { '✓': TONES.good as number, '⋯': TONES.mid as number, '✗': TONES.bad as number, '⚡': TONES.bad as number }
-type PrFile = { mtimeMs: number; pr: PrRow | null; done: number | null }
-type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow>; done: Set<number> }
+type PrFile = { mtimeMs: number; pr: PrRow | null }
+type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
-const ASK_ACCENT = '#CBA6F7'
+const ACCENT = '#CBA6F7'
 
 // Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
 // removes `done`, or a new owner stamp, changes the key and forces a re-probe.
@@ -77,7 +77,7 @@ const ASK_ACCENT = '#CBA6F7'
 // entry carries 0 for a directory).
 const probes = new Map<string, Cached>()
 const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
-let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
+let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
 type Board = { key: string; done: Set<number>; titles: Map<number, string> }
 const NO_BOARD: Board = { key: '', done: new Set(), titles: new Map() }
 let boardCache = NO_BOARD
@@ -270,8 +270,7 @@ async function readNativeTail($: $, agentId: string): Promise<Tail> {
   return { lines: linesOut, lastMessage: '' }
 }
 
-// The gh-status files, re-read only where a file's mtime moved: the open PRs, and the numbers of
-// PRs that are MERGED or CLOSED.
+// The open PRs from gh-status files, re-read only where a file's mtime moved.
 async function refreshPrCache($: $, dir: string): Promise<PrCache> {
   const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
   const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
@@ -285,12 +284,10 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
       const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
         ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', mark: prMark(value.mergeable, value.checks) }
         : null
-      const done = (value?.state === 'MERGED' || value?.state === 'CLOSED') && typeof value.number === 'number' ? value.number : null
-      return [entry.name, { mtimeMs: entry.mtimeMs, pr, done }] as const
+      return [entry.name, { mtimeMs: entry.mtimeMs, pr }] as const
     }))
     for (const [name, file] of parsed) cache.files.set(name, file)
     cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
-    cache.done = new Set([...cache.files.values()].flatMap(file => file.done === null ? [] : [file.done]))
     cache.key = key
   }
   return cache
@@ -523,14 +520,6 @@ async function readBoard($: $): Promise<Board> {
   return boardCache
 }
 
-// Tickets that are done, from local files only: a PR MERGED or CLOSED in the gh-status files, or an
-// issue whose board-snapshot row has Status Done.
-async function readDoneTickets($: $): Promise<Set<number>> {
-  const state = await resolveStateDir($)
-  const [prs, board] = await Promise.all([state ? refreshPrCache($, `${state}/gh-status`) : null, readBoard($)])
-  return new Set([...(prs?.done ?? []), ...board.done])
-}
-
 // `<state>/chains/<session-id>`: one chain a line, issue numbers in dispatch order.
 async function readChains($: $): Promise<number[][]> {
   const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
@@ -540,8 +529,6 @@ async function readChains($: $): Promise<number[][]> {
     .map(line => line.split(/\s+/).flatMap(token => (/^#?\d+$/.test(token) ? [Number(token.replace('#', ''))] : [])))
     .filter(chain => chain.length > 0)
 }
-
-type Ask = { n: number; text: string }
 
 function jsonObject(text: string): Record<string, unknown> | null {
   try {
@@ -554,27 +541,6 @@ function jsonObject(text: string): Record<string, unknown> | null {
 
 function issueNumber(text: string): string | null {
   return /#(\d+)/.exec(text)?.[1] ?? /\/issues\/(\d+)/.exec(text)?.[1] ?? /\/pull\/(\d+)/.exec(text)?.[1] ?? null
-}
-
-function trailingLink(text: string): string | null {
-  return /https?:\/\/\S+$/.exec(text)?.[0] ?? null
-}
-
-function linkLabel(href: string): string {
-  const issue = issueNumber(href)
-  if (issue) return `#${issue}`
-  try {
-    const url = new URL(href)
-    return url.pathname.split('/').filter(Boolean).at(-1) || url.host
-  } catch {
-    return href
-  }
-}
-
-function labeledLine(line: string): { label: string; value: string } | null {
-  if (/^https?:\/\//i.test(line.trim())) return null
-  const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
-  return match ? { label: match[1] ?? '', value: match[2] ?? '' } : null
 }
 
 function safeHref(href: string): string | null {
@@ -616,59 +582,9 @@ function asNative(agent: AgentInfo): NativeRun {
   return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
 }
 
-// The ask's sentence, minus the linked `#issue` at its very start or end (the link beside it
-// carries the number); a mid-sentence `#issue` and every other `#N` stay.
-function askBody(text: string, issue: string | null, dropUrl: boolean): string {
-  const body = dropUrl ? text.replace(/\s*https?:\/\/\S+$/, '') : text
-  return issue ? body.replace(new RegExp(`^#${issue}(?!\\d)\\s*`), '').replace(new RegExp(`\\s*#${issue}$`), '') : body
-}
-
-function askOptions(detail: string): string[] {
-  const line = detail.split('\n').find(text => /^options?:/i.test(text.trim()))
-  return line ? line.replace(/^options?:/i, '').split(/\s*[|;]\s*/).map(text => text.trim()).filter(Boolean).slice(0, 4) : []
-}
-
-// `n` is the ask's 1-based line number in the file: its detail file is `<n>.md`.
-async function readAsks($: $): Promise<{ asks: Ask[]; detailDir: string }> {
-  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
-  if (!state || !sid) return { asks: [], detailDir: '' }
-  const file = `${state}/asks/${sid}`
-  const all = (await readText($, file))
-    .split('\n')
-    .map((text, i) => ({ n: i + 1, text: text.trim() }))
-    .filter(ask => ask.text !== '')
-  // An ask keyed by a done ticket is hidden at once; the hook deletes it on its next write.
-  const ticketOf = (ask: Ask) => /#(\d+)/.exec(ask.text)?.[1]
-  const done = all.some(ticketOf) ? await readDoneTickets($) : new Set<number>()
-  const asks = all.filter(ask => {
-    const ticket = ticketOf(ask)
-    return ticket === undefined || !done.has(Number(ticket))
-  })
-  return { asks, detailDir: `${file}.d` }
-}
-
-async function toggleAsk($: $, ask: Ask): Promise<void> {
-  await update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))
-}
-
-// Drops the ask's line and its detail file under the asks hook's own lock (scripts/dismiss-ask.pl),
-// then redraws the band at once rather than on the next tick.
-async function dismissAsk($: $, ask: Ask): Promise<void> {
-  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
-  if (!state || !sid || /[/]|\.\./.test(sid)) return
-  await $.process.run(['perl', `${$.plugin.root}/scripts/dismiss-ask.pl`, `${state}/asks/${sid}`, ask.text]).catch(() => undefined)
-  if (isSameAsk(await read($, openAsk), ask)) await update($, openAsk, () => null)
-  $.ui.invalidate('ui.render')
-}
-
-async function readAskDetail($: $, detailDir: string, n: number): Promise<string> {
-  return readText($, `${detailDir}/${n}.md`)
-}
-
 const PANE = 'workers'
 const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
-const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
 const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
 const panelFilters = atom({ plugin: 'agent-ui', key: 'panelFilters' } as const, {} as Record<string, Record<string, string>>)
@@ -717,8 +633,6 @@ const CARD = { position: 'absolute', display: 'none', flexDirection: 'column', b
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
-const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
-
 // boot-report writes the role marker after the session starts, so the pane waits for it a few ticks.
 const MANAGER_ROLE = /^(pm|tl-[a-z0-9-]+)$/
 const ROLE_DIR = '/tmp/cc-session-roles'
@@ -741,17 +655,11 @@ export const register: Register = (on, options) => {
       name: 'workers',
       description: "Open a pane of this session's child runs; click one for its live tail",
     })
-    // One tick redraws the pane and the band (each re-reads its files while drawn)
-    // and drops an expanded ask whose line is gone, so a later ask at that line opens closed.
     roleTicksLeft = e.isInteractive ? ROLE_WAIT_TICKS : 0
     await openForManager($)
     $.clock.every(REFRESH_MS, async () => {
       await openForManager($)
       $.ui.invalidate('ui.render')
-      const open = await read($, openAsk)
-      if (open === null) return
-      const { asks } = await readAsks($)
-      if (!asks.some(ask => isSameAsk(open, ask))) await update($, openAsk, () => null)
     })
 
     return next(e)
@@ -887,7 +795,7 @@ export const register: Register = (on, options) => {
                     <Text color={hex(MARK_TONES[pr.mark])}>{pr.mark}</Text>
                   </Box>
                   <Box key={`pr-num-${pr.number}`} flexShrink={0}>
-                    {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
+                    {href ? <Text color={ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ACCENT}>{`#${pr.number}`}</Text>}
                   </Box>
                   <Text wrap="truncate-end">{` ${pr.title}`}</Text>
                 </Box>
@@ -904,7 +812,7 @@ export const register: Register = (on, options) => {
                   return (
                     <Box key={`chain-issue:${i}:${k}`} flexDirection="row" flexShrink={0} hover={{ scope: `chain:${i}:${n}`, backgroundColor: COLUMN_LIT }}>
                       {k > 0 && <Text dimColor>{' → '}</Text>}
-                      <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : undefined} dimColor={mark === 'merged'}>
+                      <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ACCENT : undefined} dimColor={mark === 'merged'}>
                         {href ? <Link href={href} label={`#${n}`} /> : `#${n}`}
                         {mark === 'merged' ? ' ✓' : ''}
                       </Text>
@@ -985,7 +893,7 @@ export const register: Register = (on, options) => {
             return [
               <Box key={`chain-card:${i}:${k}`} {...CARD} top={placeBeside(chainTop + i, 1, 3, paneRows).x} left={0} width={width} hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
                 <Box key="chain-card-line" flexDirection="row" flexWrap="nowrap">
-                  <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : CARD_TEXT}>{head}</Text>
+                  <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ACCENT : CARD_TEXT}>{head}</Text>
                   <Text color={CARD_TEXT} wrap="truncate-end">{title}</Text>
                 </Box>
               </Box>,
@@ -996,120 +904,5 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // An ask line's Client posts each button press with the ask's text: left toggles its context,
-  // right dismisses it.
-  on('ui.message', async ($, e, next) => {
-    if (e.module !== 'hooks/ask-line.tsx') return next(e)
-    const data = e.data as { button?: unknown; text?: unknown } | null
-    const ask = (await readAsks($)).asks.find(one => one.text === data?.text)
-    if (!ask) return {}
-    if (data?.button === 'left') await toggleAsk($, ask)
-    if (data?.button === 'right') await dismissAsk($, ask)
-    return {}
-  })
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const { asks, detailDir } = await readAsks($)
-    if (asks.length === 0) return next(e)
-    const elements = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown, Link } = elements
-    // A right-click reaches a plugin only through a Client's pointer listener, where one is drawn.
-    const Client = 'Client' in elements ? elements.Client : null
-    const repo = await resolveRepo($)
-    const open = await read($, openAsk)
-    const shown = asks.find(ask => isSameAsk(open, ask))
-    const lineLabel = (ask: Ask, issue: string | null, dropUrl: boolean) => `${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, dropUrl)}`
-    const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
-    // Three text lines (options: among them) plus one link: line, whatever the file holds.
-    const rows = detail.split('\n').map(line => line.trim()).filter(Boolean)
-    const isLink = (line: string) => /^link:/i.test(line)
-    const textLines = rows.filter(line => !isLink(line)).slice(0, 3)
-    const detailLines = [...textLines.filter(line => !/^options?:/i.test(line)), ...rows.filter(isLink).slice(0, 1)]
-    const askViews = asks.map(ask => {
-      const issue = issueNumber(ask.text)
-      const trailing = trailingLink(ask.text)
-      return {
-        ask,
-        issue,
-        issueHref: issue && repo ? safeHref(`https://github.com/${repo}/issues/${issue}`) : null,
-        trailing,
-        trailingHref: trailing ? safeHref(trailing) : null,
-        askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),
-      }
-    })
-
-    return (
-      <Box flexDirection="column">
-        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
-          // The toggle leads every row, ticket or not, so no ask reads as part of the row above.
-          const urlLink = !issue && trailingHref
-          return (
-          <Box key={`ask-row-${ask.n}`} flexDirection="column">
-            <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              {Client ? (
-                <Client key={`ask-client-${ask.n}`} module="./ask-line.tsx" props={{ key: `ask-${ask.n}`, label: lineLabel(ask, issue, !!urlLink), text: ask.text }} />
-              ) : (
-                <Button key={`ask-${ask.n}`} plain label={lineLabel(ask, issue, !!urlLink)} onPress={() => toggleAsk($, ask)} />
-              )}
-              {issue || urlLink ? <Text>{' '}</Text> : null}
-              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
-              {urlLink ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
-            </Box>
-            {ask === shown &&
-              (detail ? (
-                <Box key={`ask-detail-${ask.n}`} flexDirection="column" marginLeft={2}>
-                  <Box key="ask-detail-border" flexDirection="row">
-                    <Text color={ASK_ACCENT}>│</Text>
-                    <Box flexDirection="column" marginLeft={1}>
-                      {detailLines.map((line, i) => {
-                        const labeled = labeledLine(line)
-                        const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
-                        if (link) {
-                          const href = link[1] ?? link[2] ?? ''
-                          const safe = safeHref(href)
-                          if (!safe) return <Text key={`ask-context-${i}`}>{line}</Text>
-                          return (
-                            <Text key={`ask-context-${i}`} color={ASK_ACCENT} underline>
-                              <Link href={safe} label={linkLabel(safe)} />
-                            </Text>
-                          )
-                        }
-                        if (labeled) {
-                          return (
-                            <Box key={`ask-context-${i}`} flexDirection="row">
-                              <Text dimColor bold>{`${labeled.label}: `}</Text>
-                              <Text>{labeled.value}</Text>
-                            </Box>
-                          )
-                        }
-                        return <Text key={`ask-context-${i}`}>{line}</Text>
-                      })}
-                    </Box>
-                  </Box>
-                  {askOpts.length > 0 && (
-                    <Box key="ask-options" flexDirection="row" marginTop={1}>
-                      {askOpts.map((option, i) => (
-                        <Button
-                          key={`ask-option-${ask.n}-${i}`}
-                          plain
-                          label={option}
-                          onPress={() => {
-                            const prefix = issue ? `#${issue}` : trailing ?? ''
-                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'insert' })
-                          }}
-                        />
-                      ))}
-                    </Box>
-                  )}
-                </Box>
-              ) : (
-                <Text dimColor>no context recorded</Text>
-              ))}
-          </Box>
-          )
-        })}
-      </Box>
-    )
-  })
 }

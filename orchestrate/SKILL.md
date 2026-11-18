@@ -64,12 +64,6 @@ background tasks, then resume the same worker with the result while its
 transcript lives. Start a fresh worker from the saved state only when the
 resume fails.
 
-## Pinned asks
-
-The asks hook ([tools/hooks/README.md](../tools/hooks/README.md#asks-hook-stop-and-userpromptsubmit)) pins and clears asks (a reply on its fixed short-reply list clears the newest ask, or the asks whose `#N` it names; any other message is judged); an ask also goes when the manager's own message settles it, or its `#N` ticket is done (PR merged or closed, board row Done), or the user right-clicks it in the `agent-ui` band; managers write none. A manager still ends a turn with the question as its last line, `#N` included.
-
-File format (the `agent-ui` plugin reads it): `<state>/asks/<session-id>` holds one line per ask, one ask per ticket (a newer ask with the same first `#N`, or judged the same decision, replaces the older); `<state>` per [session-bus.md §State directory](session-bus.md#state-directory). `<state>/asks/<session-id>.d/<n>.md` holds its context: at most three short lines, plus an optional `options: a | b` line (counts toward the three) and an optional `link: <url>` line. `<n>` is the ask's 1-based line number. A delete renumbers the later `<m>.md` to `<m-1>.md` in ascending order.
-
 ## Dispatch chains
 
 When the user approves a dispatch, or a report names ongoing work, the manager MUST rewrite `<state>/chains/<session-id>` (`<state>` per [session-bus.md §State directory](session-bus.md#state-directory)): one line per chain, its issue numbers space-separated in dispatch order (`4545 4549 4552`); remove a chain's line once its last issue is Done. The `agent-ui` pane draws the file as its chain row, and nothing else writes it, so a skipped rewrite shows the user a stale plan.
