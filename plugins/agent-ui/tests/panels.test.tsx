@@ -158,10 +158,10 @@ describe('repo panels', () => {
     expect(w.panelRuns).toHaveLength(1)
     expect(await ui.find({ key: `disk:${KIDS}/a-run` })).toBeDefined()
     expect((await ui.find({ key: 'panel:acme' }))?.text).toBe('▸ Acme')
-    expect(w.invalidated).toBe(0)
+    const before = w.invalidated
     release()
     await w.clock.settle()
-    expect(w.invalidated).toBe(1)
+    expect(w.invalidated).toBe(before + 1)
     await ui.unmount()
   })
 
@@ -244,7 +244,9 @@ describe('repo panels', () => {
     const first = await shown($.ui.mount(PANE()))
     await first.press({ key: 'panel-toggle:acme' })
     await first.unmount()
+    w.paneShown = false
     await w.clock.advance(30_000)
+    w.paneShown = true
     let release = () => {}
     let called = () => {}
     const calledOnce = new Promise<void>(done => { called = done })

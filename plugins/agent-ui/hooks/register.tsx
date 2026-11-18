@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { OpenAsk, Run } from '../types'
+import type { Run } from '../types'
 import { type Avatar, SPRITE_COLS, avatarOf, avatarPicture } from './sprites'
 import {
   TAIL_LINES,
@@ -42,8 +42,7 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
-type RunDir = { dir: string }
+type Cached = { mtime: string; probe: Probe | null }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
 type Row = {
@@ -61,23 +60,17 @@ type Row = {
 }
 type PrRow = { number: number; title: string; mark: PrMark }
 const MARK_TONES: Record<PrMark, number> = { '✓': TONES.good as number, '⋯': TONES.mid as number, '✗': TONES.bad as number, '⚡': TONES.bad as number }
-type PrFile = { mtimeMs: number; pr: PrRow | null; done: number | null }
-type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow>; done: Set<number> }
+type PrFile = { mtimeMs: number; pr: PrRow | null }
+type PrCache = { key: string; files: Map<string, PrFile>; open: Map<number, PrRow> }
 
 const REFRESH_MS = 3000
 const RECENT_DONE = 5
 const LIVE_WINDOW_MS = 24 * 3_600_000
 const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
-const ASK_ACCENT = '#CBA6F7'
+const ACCENT = '#CBA6F7'
 
-// Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
-// removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-// A run with `done` is not re-listed while its own dir mtime holds (`$.fs.stat`: a listing's
-// entry carries 0 for a directory).
-const probes = new Map<string, Cached>()
-const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
-let prCache: PrCache = { key: '', files: new Map(), open: new Map(), done: new Set() }
+let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
 type Board = { key: string; done: Set<number>; titles: Map<number, string> }
 const NO_BOARD: Board = { key: '', done: new Set(), titles: new Map() }
 let boardCache = NO_BOARD
@@ -130,36 +123,38 @@ async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   })
 }
 
-const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
-  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}` }))
-
-// A directory's own mtime; 0 when it cannot be read, which never counts as unchanged.
-const dirMtime = ($: $, path: string): Promise<number> => $.fs.stat(path).then(stat => stat.mtimeMs, () => 0)
-
-// A sha dir is re-listed only when its own mtime moves (a new panel run dir appears).
-async function runDirs($: $, root: Root): Promise<RunDir[]> {
-  const top = subDirs(await listDir($, root.dir), root.dir)
-  if (!root.isPanel) return top
-  const nested = await Promise.all(
-    top.map(async sha => {
-      let cached = shaRuns.get(sha.dir)
-      const mtimeMs = await dirMtime($, sha.dir)
-      if (mtimeMs === 0 || cached?.mtimeMs !== mtimeMs) {
-        cached = { mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
-        shaRuns.set(sha.dir, cached)
-      }
-      return cached.runs
-    }),
-  )
-  return nested.flat()
-}
+// NUL delimiters preserve paths with whitespace. Perl supplies sub-second directory mtimes
+// on both BSD and GNU find and includes the PID snapshot in the first root's process call.
+const DISCOVER_RUNS = String.raw`
+  use Time::HiRes qw(stat);
+  my ($root, $depth, $hours, $pids) = @ARGV;
+  if ($pids) {
+    open my $ps, '-|', 'ps', '-ax', '-o', 'pid=' or die $!;
+    while (<$ps>) { print "pid\0$1\0" if /^\s*(\d+)/; }
+    close $ps or die 'ps failed';
+  }
+  exit 0 unless -d $root;
+  $root = './' . $root unless $root =~ m{^/};
+  open my $find, '-|', 'find', '-H', $root, '-mindepth', $depth, '-maxdepth', $depth,
+    '-type', 'd', '-mmin', '-' . ($hours * 60), '-print0' or die $!;
+  local $/ = "\0";
+  my $found = 0;
+  while (my $dir = <$find>) {
+    chomp $dir;
+    my @stat = stat($dir);
+    next unless @stat;
+    printf "%.9f\0%s\0", $stat[9], $dir;
+    $found = 1;
+  }
+  close $find or $found or die 'find failed';
+`
 
 async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
-  if (!names.has('pid')) return null
+  if (!sid || !names.has('pid') || !names.has('owner-session')) return null
+  if (await readText($, `${dir}/owner-session`) !== sid) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, start, end, exitCode, cwd, agent] = await Promise.all([
-    field('owner-session'),
+  const [pid, provider, model, start, end, exitCode, cwd, agent] = await Promise.all([
     field('pid'),
     field('provider'),
     field('model'),
@@ -169,7 +164,6 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     field('cwd'),
     field('agent'),
   ])
-  if (sid === '' || owner !== sid) return null
   const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
   return {
     pid,
@@ -189,47 +183,38 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
   }
 }
 
-async function alivePids($: $, pids: string[]): Promise<Set<string>> {
-  const valid = pids.filter(pid => /^\d+$/.test(pid))
-  if (valid.length === 0) return new Set()
-  const ran = await $.process.run(['ps', '-o', 'pid=', '-p', valid.join(',')]).catch(() => null)
-  return new Set((ran?.stdout ?? '').split(/\s+/).filter(Boolean))
-}
-
-async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
+async function scanRuns($: $, options: PluginOptions, now: number, probes: Map<string, Cached>): Promise<Run[] | null> {
   const sid = await $.session.id()
-  const found: Probe[] = []
-  const seen = new Set<string>()
-  for (const root of await resolveRoots($, options)) {
-    const dirs = await runDirs($, root)
-    const probed = await Promise.all(
-      dirs.map(async ({ dir }) => {
-        let cached = probes.get(dir)
-        // read before the listing: a change in between shows as a different mtime next tick
-        const mtimeMs = await dirMtime($, dir)
-        if (!(cached?.done && mtimeMs !== 0 && cached.mtimeMs === mtimeMs)) {
-          const entries = await listDir($, dir)
-          const key = entries
-            .map(entry => entry.name)
-            .sort()
-            .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
-            .join('/')
-          if (cached?.key !== key) {
-            const done = entries.some(entry => entry.name === 'done')
-            cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
-          } else cached.mtimeMs = mtimeMs
-          probes.set(dir, cached)
-        }
-        return cached.probe
-      }),
-    )
-    for (const { dir } of dirs) seen.add(dir)
-    for (const one of probed) if (one) found.push(one)
+  const roots = await resolveRoots($, options)
+  const discovery = await Promise.all(roots.map((root, index) => $.process.run([
+    'perl', '-e', DISCOVER_RUNS, '--', root.dir, root.isPanel ? '2' : '1',
+    String(LIVE_WINDOW_MS / 3_600_000), index === 0 ? '1' : '',
+  ]).catch(() => null)))
+  if (discovery.some(result => !result || result.exitCode !== 0 || result.isStdoutTruncated)) return null
+
+  const alive = new Set<string>()
+  const dirs = new Map<string, { mtime: string; isPanel: boolean }>()
+  for (const [index, result] of discovery.entries()) {
+    const fields = result?.stdout.split('\0') ?? []
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      const [mtime, dir] = [fields[i]!, fields[i + 1]!]
+      if (mtime === 'pid') alive.add(dir)
+      else dirs.set(dir, { mtime, isPanel: roots[index]!.isPanel })
+    }
   }
-  for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
+
+  const found: Probe[] = []
+  for (const dir of probes.keys()) if (!dirs.has(dir)) probes.delete(dir)
+  await Promise.all([...dirs].map(async ([dir, { mtime, isPanel }]) => {
+    const cached = probes.get(dir)
+    // Writes to an existing log leave the directory mtime unchanged.
+    if (cached?.mtime === mtime && (cached.probe === null || cached.probe.hasDone)) return
+    const entries = await $.fs.list(dir).catch(() => null)
+    if (entries) probes.set(dir, { mtime, probe: await probe($, dir, entries, isPanel, sid) })
+  }))
+  for (const cached of probes.values()) if (cached.probe) found.push(cached.probe)
   // older runs without `done` read as dead: bounds the ps list and ignores reused pids
   const recent = (one: Probe) => now - (one.run.startedAt ?? 0) <= LIVE_WINDOW_MS
-  const alive = await alivePids($, found.filter(one => !one.hasDone && recent(one)).map(one => one.pid))
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
@@ -247,20 +232,25 @@ function runElapsed(run: Run, now: number): string {
 }
 
 // GPT runs stream codex events to result.jsonl; Claude runs only stderr.log.
+let diskTail: { key: string; tail: Tail } | null = null
 async function readTail($: $, run: Run): Promise<Tail> {
-  const names = new Set((await listDir($, run.dir)).map(entry => entry.name))
-  const tail = names.has('result.jsonl')
-    ? codexTail(await tailBytes($, `${run.dir}/result.jsonl`))
-    : names.has('stderr.log')
-      ? lines(await tailBytes($, `${run.dir}/stderr.log`)).slice(-TAIL_LINES)
-      : []
-  let lastMessage = ''
-  if (run.status !== 'running') {
-    lastMessage = names.has('last-message')
-      ? await readText($, `${run.dir}/last-message`)
-      : resultJsonMessage(names.has('result.json') ? await readText($, `${run.dir}/result.json`) : '')
+  const entries = new Map((await listDir($, run.dir)).map(entry => [entry.name, entry]))
+  const log = entries.get('result.jsonl') ?? entries.get('stderr.log')
+  const message = run.status === 'running' ? undefined : entries.get('last-message') ?? entries.get('result.json')
+  const version = (entry?: FsEntry) => entry && [entry.name, entry.mtimeMs, entry.size]
+  const key = JSON.stringify([run.dir, version(log), version(message)])
+  if (diskTail?.key === key) return diskTail.tail
+
+  const [output, final] = await Promise.all([
+    log ? tailBytes($, `${run.dir}/${log.name}`) : '',
+    message ? readText($, `${run.dir}/${message.name}`) : '',
+  ])
+  const tail = {
+    lines: log?.name === 'result.jsonl' ? codexTail(output) : lines(output).slice(-TAIL_LINES),
+    lastMessage: message?.name === 'result.json' ? resultJsonMessage(final) : final,
   }
-  return { lines: tail, lastMessage }
+  diskTail = { key, tail }
+  return tail
 }
 
 async function readNativeTail($: $, agentId: string): Promise<Tail> {
@@ -270,8 +260,7 @@ async function readNativeTail($: $, agentId: string): Promise<Tail> {
   return { lines: linesOut, lastMessage: '' }
 }
 
-// The gh-status files, re-read only where a file's mtime moved: the open PRs, and the numbers of
-// PRs that are MERGED or CLOSED.
+// The open PRs from gh-status files, re-read only where a file's mtime moved.
 async function refreshPrCache($: $, dir: string): Promise<PrCache> {
   const entries = (await listDir($, `${dir}/status`)).filter(entry => entry.kind === 'file' && /^pr-\d+\.json$/.test(entry.name))
   const key = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
@@ -285,12 +274,10 @@ async function refreshPrCache($: $, dir: string): Promise<PrCache> {
       const pr = value?.state === 'OPEN' && value.isDraft === false && typeof value.number === 'number'
         ? { number: value.number, title: typeof value.title === 'string' ? value.title : '', mark: prMark(value.mergeable, value.checks) }
         : null
-      const done = (value?.state === 'MERGED' || value?.state === 'CLOSED') && typeof value.number === 'number' ? value.number : null
-      return [entry.name, { mtimeMs: entry.mtimeMs, pr, done }] as const
+      return [entry.name, { mtimeMs: entry.mtimeMs, pr }] as const
     }))
     for (const [name, file] of parsed) cache.files.set(name, file)
     cache.open = new Map([...cache.files.values()].flatMap(file => file.pr ? [[file.pr.number, file.pr] as const] : []))
-    cache.done = new Set([...cache.files.values()].flatMap(file => file.done === null ? [] : [file.done]))
     cache.key = key
   }
   return cache
@@ -313,11 +300,11 @@ const panelKey = (root: string, spec: PanelSpec) => [root, spec.id, ...spec.cmd]
 // A re-read drops the kept output of every panel the list no longer has, in any root.
 async function readPanelSpecs($: $, root: string): Promise<PanelSpec[]> {
   const stat = (await listDir($, `${root}/.agent`)).find(entry => entry.name === 'pane-panels.json' && entry.kind === 'file')
-  if (!stat) return []
-  const key = `${root}|${stat.mtimeMs}|${stat.size}`
+  const key = stat ? `${root}|${stat.mtimeMs}|${stat.size}` : ''
   if (panelList.key !== key) {
-    panelList = { key, specs: parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) }
-    const kept = new Set(panelList.specs.map(spec => panelKey(root, spec)))
+    const specs = stat ? parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) : []
+    panelList = { key, specs }
+    const kept = new Set(specs.map(spec => panelKey(root, spec)))
     for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
   }
   return panelList.specs
@@ -333,7 +320,9 @@ const panelRunOf = (root: string, spec: PanelSpec): PanelRun => {
 async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now: number): Promise<void> {
   run.running = true
   run.startedAt = now
+  let before: string | undefined
   try {
+    before = await panelResultKey($, root, spec)
     const ran = await $.process.run(spec.cmd, { cwd: root, stdin: '', timeoutMs: PANEL_TIMEOUT_MS })
     const data = ran.exitCode === 0 ? parsePanelOutput(ran.stdout) : null
     if (data) {
@@ -344,7 +333,9 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
     run.error = firstLine(error instanceof Error ? error.message : String(error)) || 'did not run'
   } finally {
     run.running = false
-    $.ui.invalidate('ui.render')
+    if (panelRuns.get(panelKey(root, spec)) === run && before !== await panelResultKey($, root, spec).catch(() => before)) {
+      $.ui.invalidate('ui.render')
+    }
   }
 }
 
@@ -359,6 +350,7 @@ const isDue = (run: PanelRun, spec: PanelSpec, now: number) => !run.running && (
 function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): void {
   if (!specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
   $.clock.after(1, () => {
+    if (panelList.specs !== specs) return
     for (const spec of specs) {
       const run = panelRunOf(root, spec)
       if (isDue(run, spec, now)) void runPanel($, root, spec, run, now)
@@ -449,6 +441,16 @@ function panelViews(
   })
 }
 
+async function panelResultKey($: $, root: string, spec: PanelSpec): Promise<string> {
+  const [open, tabs, filters] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
+  const [view] = panelViews(root, [spec], open, tabs, filters, 0, 1000, 1000)
+  if (!view) return ''
+  return JSON.stringify([
+    view.summary, view.error, !!view.data, view.chipRows, view.header, view.noData, view.tab?.note,
+    view.rows.map(({ key, row, segments, card }) => [key, row.dim, segments, card]),
+  ])
+}
+
 const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
 
 function rowsFor(runs: Run[], agents: AgentInfo[], now: number): Row[] {
@@ -523,14 +525,6 @@ async function readBoard($: $): Promise<Board> {
   return boardCache
 }
 
-// Tickets that are done, from local files only: a PR MERGED or CLOSED in the gh-status files, or an
-// issue whose board-snapshot row has Status Done.
-async function readDoneTickets($: $): Promise<Set<number>> {
-  const state = await resolveStateDir($)
-  const [prs, board] = await Promise.all([state ? refreshPrCache($, `${state}/gh-status`) : null, readBoard($)])
-  return new Set([...(prs?.done ?? []), ...board.done])
-}
-
 // `<state>/chains/<session-id>`: one chain a line, issue numbers in dispatch order.
 async function readChains($: $): Promise<number[][]> {
   const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
@@ -540,8 +534,6 @@ async function readChains($: $): Promise<number[][]> {
     .map(line => line.split(/\s+/).flatMap(token => (/^#?\d+$/.test(token) ? [Number(token.replace('#', ''))] : [])))
     .filter(chain => chain.length > 0)
 }
-
-type Ask = { n: number; text: string }
 
 function jsonObject(text: string): Record<string, unknown> | null {
   try {
@@ -554,27 +546,6 @@ function jsonObject(text: string): Record<string, unknown> | null {
 
 function issueNumber(text: string): string | null {
   return /#(\d+)/.exec(text)?.[1] ?? /\/issues\/(\d+)/.exec(text)?.[1] ?? /\/pull\/(\d+)/.exec(text)?.[1] ?? null
-}
-
-function trailingLink(text: string): string | null {
-  return /https?:\/\/\S+$/.exec(text)?.[0] ?? null
-}
-
-function linkLabel(href: string): string {
-  const issue = issueNumber(href)
-  if (issue) return `#${issue}`
-  try {
-    const url = new URL(href)
-    return url.pathname.split('/').filter(Boolean).at(-1) || url.host
-  } catch {
-    return href
-  }
-}
-
-function labeledLine(line: string): { label: string; value: string } | null {
-  if (/^https?:\/\//i.test(line.trim())) return null
-  const match = /^([\p{L}][\p{L} /_-]*):\s*(.*)$/u.exec(line)
-  return match ? { label: match[1] ?? '', value: match[2] ?? '' } : null
 }
 
 function safeHref(href: string): string | null {
@@ -616,59 +587,9 @@ function asNative(agent: AgentInfo): NativeRun {
   return { id: agent.id, label: agent.description || agent.type, kind: agent.type, status }
 }
 
-// The ask's sentence, minus the linked `#issue` at its very start or end (the link beside it
-// carries the number); a mid-sentence `#issue` and every other `#N` stay.
-function askBody(text: string, issue: string | null, dropUrl: boolean): string {
-  const body = dropUrl ? text.replace(/\s*https?:\/\/\S+$/, '') : text
-  return issue ? body.replace(new RegExp(`^#${issue}(?!\\d)\\s*`), '').replace(new RegExp(`\\s*#${issue}$`), '') : body
-}
-
-function askOptions(detail: string): string[] {
-  const line = detail.split('\n').find(text => /^options?:/i.test(text.trim()))
-  return line ? line.replace(/^options?:/i, '').split(/\s*[|;]\s*/).map(text => text.trim()).filter(Boolean).slice(0, 4) : []
-}
-
-// `n` is the ask's 1-based line number in the file: its detail file is `<n>.md`.
-async function readAsks($: $): Promise<{ asks: Ask[]; detailDir: string }> {
-  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
-  if (!state || !sid) return { asks: [], detailDir: '' }
-  const file = `${state}/asks/${sid}`
-  const all = (await readText($, file))
-    .split('\n')
-    .map((text, i) => ({ n: i + 1, text: text.trim() }))
-    .filter(ask => ask.text !== '')
-  // An ask keyed by a done ticket is hidden at once; the hook deletes it on its next write.
-  const ticketOf = (ask: Ask) => /#(\d+)/.exec(ask.text)?.[1]
-  const done = all.some(ticketOf) ? await readDoneTickets($) : new Set<number>()
-  const asks = all.filter(ask => {
-    const ticket = ticketOf(ask)
-    return ticket === undefined || !done.has(Number(ticket))
-  })
-  return { asks, detailDir: `${file}.d` }
-}
-
-async function toggleAsk($: $, ask: Ask): Promise<void> {
-  await update($, openAsk, was => (isSameAsk(was, ask) ? null : { n: ask.n, text: ask.text }))
-}
-
-// Drops the ask's line and its detail file under the asks hook's own lock (scripts/dismiss-ask.pl),
-// then redraws the band at once rather than on the next tick.
-async function dismissAsk($: $, ask: Ask): Promise<void> {
-  const [state, sid] = await Promise.all([resolveStateDir($), $.session.id()])
-  if (!state || !sid || /[/]|\.\./.test(sid)) return
-  await $.process.run(['perl', `${$.plugin.root}/scripts/dismiss-ask.pl`, `${state}/asks/${sid}`, ask.text]).catch(() => undefined)
-  if (isSameAsk(await read($, openAsk), ask)) await update($, openAsk, () => null)
-  $.ui.invalidate('ui.render')
-}
-
-async function readAskDetail($: $, detailDir: string, n: number): Promise<string> {
-  return readText($, `${detailDir}/${n}.md`)
-}
-
 const PANE = 'workers'
 const expanded = atom({ plugin: 'agent-ui', key: 'expanded' } as const, [] as string[])
 const selectedRun = atom({ plugin: 'agent-ui', key: 'selectedRun' } as const, null)
-const openAsk = atom({ plugin: 'agent-ui', key: 'openAsk' } as const, null)
 const panelsOpen = atom({ plugin: 'agent-ui', key: 'panelsOpen' } as const, [] as string[])
 const panelTabs = atom({ plugin: 'agent-ui', key: 'panelTabs' } as const, {} as Record<string, string>)
 const panelFilters = atom({ plugin: 'agent-ui', key: 'panelFilters' } as const, {} as Record<string, Record<string, string>>)
@@ -717,8 +638,6 @@ const CARD = { position: 'absolute', display: 'none', flexDirection: 'column', b
 
 const MARK = { running: '◐', done: '✓', failed: '✗', dead: '†' } as const
 
-const isSameAsk = (open: OpenAsk | null, ask: Ask) => open?.n === ask.n && open.text === ask.text
-
 // boot-report writes the role marker after the session starts, so the pane waits for it a few ticks.
 const MANAGER_ROLE = /^(pm|tl-[a-z0-9-]+)$/
 const ROLE_DIR = '/tmp/cc-session-roles'
@@ -735,25 +654,118 @@ async function openForManager($: $): Promise<void> {
   await $.ui.open({ id: PANE, title: 'Workers' })
 }
 
+const allRows = (rows: Row[]) => rows.flatMap(row => [row, ...row.children])
+
+function selectedRow(rows: Row[], key: string | null): Row | null {
+  return allRows(rows).find(row => row.key === key) ?? null
+}
+
+function visibleRows(rows: Row[], open: string[]) {
+  return rows.flatMap(row => [
+    { row, isChild: false },
+    ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+  ])
+}
+
+const tailOf = ($: $, row: Row) => row.diskRun ? readTail($, row.diskRun) : readNativeTail($, row.agentId ?? '')
+
+const probes = new Map<string, Cached>()
+let probeScope = ''
+let runs: Run[] = []
+let rows: Row[] = []
+let prs: PrRow[] = []
+let repo: string | null = null
+let chains: ReturnType<typeof chainLinks>[] = []
+let board = NO_BOARD
+let selectedTail: { key: string; tail: Tail } | null = null
+let refreshTimer: Timer | null = null
+let refreshQueued = false
+let refreshing = false
+let lastRefreshAt: number | null = null
+let drawnKey = ''
+
+// Use the same visible rows and chain titles as the pane. Hidden child durations
+// and unrelated board changes do not require a redraw.
+const paneKey = (open: string[], chosen: string | null) => {
+  const shown = selectedRow(rows, chosen)
+  return JSON.stringify([
+    visibleRows(rows, open).map(({ row, isChild }) =>
+      [row.key, isChild, row.kind, row.label, row.status, row.avatar, row.model, row.duration, row.children.length]),
+    shown && [shown.key, shown.label, shown.status, selectedTail?.key === shown.key ? selectedTail.tail : null],
+    prs, prs.length > 0 || chains.length > 0 ? repo : null,
+    chains.map(chain => chain.map(issue => [issue, board.titles.get(issue.n)])),
+    panelListKey,
+  ])
+}
+
+let panelListKey = ''
+const panelTitles = (specs: PanelSpec[]) => JSON.stringify(specs.map(spec => [spec.id, spec.title]))
+
+async function refresh($: $, options: PluginOptions): Promise<void> {
+  if (refreshing) return
+  refreshing = true
+  try {
+    const panes = await $.ui.panes()
+    if (!panes.some(pane => pane.id === PANE && pane.isShown)) return
+    const now = await $.clock.now()
+    const scope = JSON.stringify(await Promise.all([$.session.root(), $.session.id()]))
+    if (scope !== probeScope) {
+      probeScope = scope
+      probes.clear()
+      diskTail = null
+      runs = []
+    }
+    const [scanned, agents, nextPrs, nextRepo, chainFile, root] = await Promise.all([
+      scanRuns($, options, now, probes), $.agent.list().catch(() => []), readReadyPrs($),
+      resolveRepo($), readChains($), repoRoot($),
+    ])
+    const [nextBoard, specs, chosen] = await Promise.all([
+      chainFile.length > 0 ? readBoard($) : NO_BOARD,
+      root ? readPanelSpecs($, root) : [],
+      read($, selectedRun),
+    ])
+    runs = scanned ?? runs
+    const nextRows = rowsFor(runs, agents, now)
+    const shown = selectedRow(nextRows, chosen)
+    const tail = shown ? await tailOf($, shown) : null
+    const [open, currentChoice, refreshedAt] = await Promise.all([read($, expanded), read($, selectedRun), $.clock.now()])
+    const active = new Set(allRows(nextRows).flatMap(row => {
+      const n = row.status === 'running' ? issueNumber(row.label) : null
+      return n ? [Number(n)] : []
+    }))
+    lastRefreshAt = refreshedAt
+    rows = nextRows
+    prs = nextPrs
+    repo = nextRepo
+    board = nextBoard
+    chains = chainFile.map(chain => chainLinks(chain, board.done, active))
+    if (chosen === currentChoice) selectedTail = shown && tail ? { key: shown.key, tail } : null
+    panelListKey = panelTitles(specs)
+    if (root) schedulePanels($, root, specs, now)
+    const key = paneKey(open, currentChoice)
+    if (drawnKey !== key) {
+      drawnKey = key
+      $.ui.invalidate('ui.render')
+    }
+  } finally {
+    refreshing = false
+  }
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'workers',
       description: "Open a pane of this session's child runs; click one for its live tail",
     })
-    // One tick redraws the pane and the band (each re-reads its files while drawn)
-    // and drops an expanded ask whose line is gone, so a later ask at that line opens closed.
     roleTicksLeft = e.isInteractive ? ROLE_WAIT_TICKS : 0
     await openForManager($)
-    $.clock.every(REFRESH_MS, async () => {
-      await openForManager($)
-      $.ui.invalidate('ui.render')
-      const open = await read($, openAsk)
-      if (open === null) return
-      const { asks } = await readAsks($)
-      if (!asks.some(ask => isSameAsk(open, ask))) await update($, openAsk, () => null)
-    })
-
+    if (roleTicksLeft > 0) {
+      const roleTimer = $.clock.every(REFRESH_MS, async () => {
+        await openForManager($)
+        if (roleTicksLeft <= 0) roleTimer.cancel()
+      })
+    }
     return next(e)
   })
 
@@ -766,34 +778,29 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
-    const now = await $.clock.now()
-    const [runs, agents] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => [])])
-    const rows = rowsFor(runs, agents, now)
-    const prs = await readReadyPrs($)
-    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
-    const visible = rows.flatMap(row => [
-      { row, isChild: false },
-      ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+    refreshTimer ??= $.clock.every(REFRESH_MS, () => refresh($, options))
+    const [chosen, open, root, openPanels, tabPicks, filterPicks, now] = await Promise.all([
+      read($, selectedRun), read($, expanded), repoRoot($), read($, panelsOpen), read($, panelTabs), read($, panelFilters), $.clock.now(),
     ])
-    const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
+    const refreshedAt = lastRefreshAt
+    if (!refreshQueued && !refreshing && (refreshedAt === null || now - refreshedAt > REFRESH_MS)) {
+      refreshQueued = true
+      $.clock.after(1, () => {
+        refreshQueued = false
+        if (lastRefreshAt === refreshedAt) return refresh($, options)
+      })
+    }
+    const specs = root ? await readPanelSpecs($, root) : []
+    if (root && specs.length > 0) schedulePanels($, root, specs, now)
+    panelListKey = panelTitles(specs)
+    const visible = visibleRows(rows, open)
+    const shown = selectedRow(rows, chosen)
+    const tail = shown && selectedTail?.key === shown.key ? selectedTail.tail : null
+    drawnKey = paneKey(open, chosen)
     animating = Image
       ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
     syncFrames($)
-    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
-    const repo = await resolveRepo($)
-    const chainFile = await readChains($)
-    const board = chainFile.length > 0 ? await readBoard($) : NO_BOARD
-    // an issue is in progress while a running row's label names its #N
-    const active = new Set(rows.flatMap(row => [row, ...row.children]).flatMap(row => {
-      const n = row.status === 'running' ? issueNumber(row.label) : null
-      return n ? [Number(n)] : []
-    }))
-    const chains = chainFile.map(chain => chainLinks(chain, board.done, active))
-    const root = await repoRoot($)
-    const specs = root ? await readPanelSpecs($, root) : []
-    const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
-    if (root && specs.length > 0) schedulePanels($, root, specs, now)
     // a card's top counts pane rows: the panels are the first rows of the pane
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, 0, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     // chain row i sits below the panels (one line each: head, error, chips, columns, rows, no
@@ -887,7 +894,7 @@ export const register: Register = (on, options) => {
                     <Text color={hex(MARK_TONES[pr.mark])}>{pr.mark}</Text>
                   </Box>
                   <Box key={`pr-num-${pr.number}`} flexShrink={0}>
-                    {href ? <Text color={ASK_ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ASK_ACCENT}>{`#${pr.number}`}</Text>}
+                    {href ? <Text color={ACCENT}><Link key={`pr-link-${pr.number}`} href={href} label={`#${pr.number}`} /></Text> : <Text color={ACCENT}>{`#${pr.number}`}</Text>}
                   </Box>
                   <Text wrap="truncate-end">{` ${pr.title}`}</Text>
                 </Box>
@@ -904,7 +911,7 @@ export const register: Register = (on, options) => {
                   return (
                     <Box key={`chain-issue:${i}:${k}`} flexDirection="row" flexShrink={0} hover={{ scope: `chain:${i}:${n}`, backgroundColor: COLUMN_LIT }}>
                       {k > 0 && <Text dimColor>{' → '}</Text>}
-                      <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : undefined} dimColor={mark === 'merged'}>
+                      <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ACCENT : undefined} dimColor={mark === 'merged'}>
                         {href ? <Link href={href} label={`#${n}`} /> : `#${n}`}
                         {mark === 'merged' ? ' ✓' : ''}
                       </Text>
@@ -941,6 +948,8 @@ export const register: Register = (on, options) => {
               label={`${row.kind ? `${row.kind} ` : ''}${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
               onPress={async () => {
                 const wasShown = (await read($, selectedRun)) === row.key
+                const tail = wasShown ? null : await tailOf($, row)
+                selectedTail = tail ? { key: row.key, tail } : null
                 await update($, selectedRun, () => (wasShown ? null : row.key))
                 if (row.children.length > 0) await update($, expanded, keys => (wasShown ? keys.filter(key => key !== row.key) : [...keys, row.key]))
               }}
@@ -985,7 +994,7 @@ export const register: Register = (on, options) => {
             return [
               <Box key={`chain-card:${i}:${k}`} {...CARD} top={placeBeside(chainTop + i, 1, 3, paneRows).x} left={0} width={width} hover={{ display: 'flex', scope: `chain:${i}:${n}` }}>
                 <Box key="chain-card-line" flexDirection="row" flexWrap="nowrap">
-                  <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ASK_ACCENT : CARD_TEXT}>{head}</Text>
+                  <Text color={mark === 'merged' ? 'green' : mark === 'active' ? ACCENT : CARD_TEXT}>{head}</Text>
                   <Text color={CARD_TEXT} wrap="truncate-end">{title}</Text>
                 </Box>
               </Box>,
@@ -996,120 +1005,5 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // An ask line's Client posts each button press with the ask's text: left toggles its context,
-  // right dismisses it.
-  on('ui.message', async ($, e, next) => {
-    if (e.module !== 'hooks/ask-line.tsx') return next(e)
-    const data = e.data as { button?: unknown; text?: unknown } | null
-    const ask = (await readAsks($)).asks.find(one => one.text === data?.text)
-    if (!ask) return {}
-    if (data?.button === 'left') await toggleAsk($, ask)
-    if (data?.button === 'right') await dismissAsk($, ask)
-    return {}
-  })
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const { asks, detailDir } = await readAsks($)
-    if (asks.length === 0) return next(e)
-    const elements = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown, Link } = elements
-    // A right-click reaches a plugin only through a Client's pointer listener, where one is drawn.
-    const Client = 'Client' in elements ? elements.Client : null
-    const repo = await resolveRepo($)
-    const open = await read($, openAsk)
-    const shown = asks.find(ask => isSameAsk(open, ask))
-    const lineLabel = (ask: Ask, issue: string | null, dropUrl: boolean) => `${ask === shown ? '▾' : '▸'} ${askBody(ask.text, issue, dropUrl)}`
-    const detail = shown ? await readAskDetail($, detailDir, shown.n) : ''
-    // Three text lines (options: among them) plus one link: line, whatever the file holds.
-    const rows = detail.split('\n').map(line => line.trim()).filter(Boolean)
-    const isLink = (line: string) => /^link:/i.test(line)
-    const textLines = rows.filter(line => !isLink(line)).slice(0, 3)
-    const detailLines = [...textLines.filter(line => !/^options?:/i.test(line)), ...rows.filter(isLink).slice(0, 1)]
-    const askViews = asks.map(ask => {
-      const issue = issueNumber(ask.text)
-      const trailing = trailingLink(ask.text)
-      return {
-        ask,
-        issue,
-        issueHref: issue && repo ? safeHref(`https://github.com/${repo}/issues/${issue}`) : null,
-        trailing,
-        trailingHref: trailing ? safeHref(trailing) : null,
-        askOpts: askOptions(ask === shown ? textLines.join('\n') : ''),
-      }
-    })
-
-    return (
-      <Box flexDirection="column">
-        {askViews.map(({ ask, issue, issueHref, trailing, trailingHref, askOpts }) => {
-          // The toggle leads every row, ticket or not, so no ask reads as part of the row above.
-          const urlLink = !issue && trailingHref
-          return (
-          <Box key={`ask-row-${ask.n}`} flexDirection="column">
-            <Box key={`ask-line-${ask.n}`} flexDirection="row">
-              {Client ? (
-                <Client key={`ask-client-${ask.n}`} module="./ask-line.tsx" props={{ key: `ask-${ask.n}`, label: lineLabel(ask, issue, !!urlLink), text: ask.text }} />
-              ) : (
-                <Button key={`ask-${ask.n}`} plain label={lineLabel(ask, issue, !!urlLink)} onPress={() => toggleAsk($, ask)} />
-              )}
-              {issue || urlLink ? <Text>{' '}</Text> : null}
-              {issue ? issueHref ? <Text color={ASK_ACCENT}><Link href={issueHref} label={`#${issue}`} /></Text> : <Text color={ASK_ACCENT}>{`#${issue}`}</Text> : null}
-              {urlLink ? <Text color={ASK_ACCENT} underline><Link href={trailingHref} label={linkLabel(trailingHref)} /></Text> : null}
-            </Box>
-            {ask === shown &&
-              (detail ? (
-                <Box key={`ask-detail-${ask.n}`} flexDirection="column" marginLeft={2}>
-                  <Box key="ask-detail-border" flexDirection="row">
-                    <Text color={ASK_ACCENT}>│</Text>
-                    <Box flexDirection="column" marginLeft={1}>
-                      {detailLines.map((line, i) => {
-                        const labeled = labeledLine(line)
-                        const link = /^link:\s*(?:<([^>]+)>|(\S+))/i.exec(line.trim())
-                        if (link) {
-                          const href = link[1] ?? link[2] ?? ''
-                          const safe = safeHref(href)
-                          if (!safe) return <Text key={`ask-context-${i}`}>{line}</Text>
-                          return (
-                            <Text key={`ask-context-${i}`} color={ASK_ACCENT} underline>
-                              <Link href={safe} label={linkLabel(safe)} />
-                            </Text>
-                          )
-                        }
-                        if (labeled) {
-                          return (
-                            <Box key={`ask-context-${i}`} flexDirection="row">
-                              <Text dimColor bold>{`${labeled.label}: `}</Text>
-                              <Text>{labeled.value}</Text>
-                            </Box>
-                          )
-                        }
-                        return <Text key={`ask-context-${i}`}>{line}</Text>
-                      })}
-                    </Box>
-                  </Box>
-                  {askOpts.length > 0 && (
-                    <Box key="ask-options" flexDirection="row" marginTop={1}>
-                      {askOpts.map((option, i) => (
-                        <Button
-                          key={`ask-option-${ask.n}-${i}`}
-                          plain
-                          label={option}
-                          onPress={() => {
-                            const prefix = issue ? `#${issue}` : trailing ?? ''
-                            return $.prompt.fill({ text: `${prefix} ${option}`.trim(), mode: 'insert' })
-                          }}
-                        />
-                      ))}
-                    </Box>
-                  )}
-                </Box>
-              ) : (
-                <Text dimColor>no context recorded</Text>
-              ))}
-          </Box>
-          )
-        })}
-      </Box>
-    )
-  })
 }

@@ -63,7 +63,7 @@ review process, so a skill update changes every repo that links these skills.
 
 `tools/` contains optional local programs: a PR status poller that turns
 GitHub into local files, a board snapshot, a per-clone gh identity wrapper, a session boot report,
-a worktree hook, and Claude Code hooks (watch-guard, asks). Each
+a worktree hook, and the Claude Code watch-guard hook. Each
 documents its own setup in `tools/README.md` or its folder.
 
 ## Plugins
@@ -71,9 +71,7 @@ documents its own setup in `tools/README.md` or its folder.
 `plugins/` holds Claude Code plugins. `plugins/agent-ui` adds `/workers`, a
 pane of the session's child runs (GPT, Claude, Claude review panels) with each
 run's live tail on click, opens itself at start in
-PM and TL sessions, and pins
-the session's asks ([orchestrate §Pinned asks](orchestrate/SKILL.md#pinned-asks))
-above the prompt (an ask whose `#N` ticket is done is hidden), each expanding to its recorded context on click; a right-click on an ask drops it from the file (under the asks hook's lock), on the surfaces that draw a `Client`. Above its
+PM and TL sessions. Above its
 child runs it draws the session's dispatch chains
 ([orchestrate §Dispatch chains](orchestrate/SKILL.md#dispatch-chains)), one line each,
 `#4545 → #4549 → #4552`: the newest issue Done on the board ticked green (older Done ones
@@ -87,7 +85,7 @@ Set `childrenDir` to the folder of child run out-dirs: empty, the pane lists no
 child runs from disk and says to set it. The pane lists only runs whose
 `owner-session` file holds this session's id, and reads each run's kind from
 its `provider` file alone. Review panels come from the clone's git common
-directory (`.review-panel/`), the asks, gh-status and board state from
+directory (`.review-panel/`), gh-status and board state from
 `state_dir` in the main checkout's `.agent/local.env`
 ([session-bus.md §State directory](orchestrate/session-bus.md#state-directory)), and
 ticket links from the GitHub repository of the session clone's `origin` remote

@@ -12,13 +12,10 @@ export type Run = {
   endedAt: number | null
 }
 
-export type OpenAsk = { n: number; text: string }
-
 declare module 'claude-code' {
   interface PluginState {
     'agent-ui': {
       selectedRun: string | null
-      openAsk: OpenAsk | null
       expanded: string[]
       panelsOpen: string[]
       panelTabs: Record<string, string>

@@ -23,7 +23,7 @@ tools/
                               ln -s ~/src/agent-skills/tools/boot-report.sh ~/.local/bin/boot-report;
                               skills call `boot-report <role>`)
   worktree-hook/              WorktreeCreate hook: agent worktrees outside the repo
-  hooks/                      Claude Code hooks: watch-guard, asks-hook
+  hooks/                      Claude Code hooks: watch-guard
   launchd/*.plist.template    launchd service templates, rendered by install.sh
 ```
 
