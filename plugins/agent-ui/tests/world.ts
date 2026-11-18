@@ -63,6 +63,7 @@ export type World = {
   lists: string[]
   blits: { key: string; rgba: string }[]
   // the pane is "mounted" for blits only when a test says so; otherwise a blit is denied, as after unmount
+  paneShown: boolean
   blitOk: boolean
   invalidated: number
   // set: an invalidate draws the mounted pane again, as the engine does; off, it is only counted
@@ -94,7 +95,7 @@ export function world(
   const clock = mock.clock(on, { now: NOW })
   const w: World = {
     files: { ...files }, alive: new Set(alive), reads: [], clock,
-    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, lists: [], blits: [], blitOk: false, denied: 0, invalidated: 0, redraws: false, tails: [],
+    mtimes: fixtures.mtimes ?? {}, agents: fixtures.agents ?? [], transcripts: fixtures.transcripts ?? {}, lists: [], blits: [], paneShown: true, blitOk: false, denied: 0, invalidated: 0, redraws: true, tails: [],
     cwd: '/fx/repo', root: '/fx/repo', repos: new Set(['/fx/repo']), gitRuns: 0,
     panelRuns: [], panel: argv => ({ deny: `no answer staged for ${argv.join(' ')}` }),
   }
@@ -103,6 +104,7 @@ export function world(
   on('session.id', () => ({ value: SID }))
   on('agent.list', () => ({ value: w.agents }))
   on('session.messages', ($, e) => ({ value: w.transcripts[e.agentId ?? ''] ?? [] }))
+  on('ui.panes', () => ({ value: [{ id: 'workers', title: 'Workers', isShown: w.paneShown, isFocused: false, isPlaced: true }] }))
   on('ui.blit', ($, e) => {
     if (!w.blitOk) {
       w.denied++
@@ -139,13 +141,6 @@ export function world(
     if (seen.size === 0) return { deny: `ENOENT: ${e.path}` }
     return { value: [...seen.values()] }
   })
-  // A directory's own mtime, as the host's stat gives it: the newest change beneath it, which a test
-  // stages in `mtimes`. A listing entry carries 0 for a directory.
-  on('fs.stat', ($, e) => {
-    const under = Object.keys(w.files).filter(path => path.startsWith(`${e.path}/`))
-    if (under.length === 0) return w.files[e.path] === undefined ? { deny: `ENOENT: ${e.path}` } : { value: { kind: 'file', size: 0, mtimeMs: w.mtimes[e.path] ?? 0, isLink: false } }
-    return { value: { kind: 'dir', size: 0, mtimeMs: Math.max(0, ...under.map(path => w.mtimes[path] ?? 0)), isLink: false } }
-  })
   on('process.run', async ($, e) => {
     const [command, ...args] = e.argv
     const ok = (stdout: string, exitCode = 0) => ({
@@ -156,7 +151,20 @@ export function world(
       const dir = e.init?.cwd ?? w.cwd
       return w.repos.has(dir) ? ok(`${dir}/.git\n`) : ok('', 128)
     }
-    if (command === 'ps') return ok((args.at(-1) ?? '').split(',').filter(pid => w.alive.has(pid)).join('\n'))
+    if (command === 'perl') {
+      const [root = '', depth = '', , pids] = args.slice(3)
+      const dirs = new Map<string, number>()
+      for (const path of Object.keys(w.files)) {
+        if (!path.startsWith(`${root}/`)) continue
+        const parts = path.slice(root.length + 1).split('/')
+        if (parts.length <= Number(depth)) continue
+        const dir = `${root}/${parts.slice(0, Number(depth)).join('/')}`
+        dirs.set(dir, Math.max(dirs.get(dir) ?? 0, w.mtimes[path] ?? 0))
+      }
+      const records = pids ? [...w.alive].flatMap(pid => ['pid', pid]) : []
+      for (const [dir, mtime] of dirs) records.push(String(mtime), dir)
+      return ok([...records, ''].join('\0'))
+    }
     if (command === 'tail') {
       const text = w.files[args.at(-1) ?? '']
       if (text === undefined || args[0] !== '-c') return ok('', 1)

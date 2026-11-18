@@ -42,8 +42,7 @@ import {
 type $ = EngineInterface
 type Root = { dir: string; isPanel: boolean }
 type Tail = { lines: string[]; lastMessage: string }
-type Cached = { key: string; mtimeMs: number; done: boolean; probe: Probe | null }
-type RunDir = { dir: string }
+type Cached = { mtime: string; probe: Probe | null }
 type Probe = { run: Run; pid: string; hasDone: boolean; exitCode: string }
 type NativeRun = { id: string; label: string; kind: string; status: Run['status'] }
 type Row = {
@@ -71,12 +70,6 @@ const MAX_ROWS = 30
 const TAIL_BYTES = 262_144
 const ACCENT = '#CBA6F7'
 
-// Probes keyed by the out-dir's listing (names + newest file mtime): a resume that
-// removes `done`, or a new owner stamp, changes the key and forces a re-probe.
-// A run with `done` is not re-listed while its own dir mtime holds (`$.fs.stat`: a listing's
-// entry carries 0 for a directory).
-const probes = new Map<string, Cached>()
-const shaRuns = new Map<string, { mtimeMs: number; runs: RunDir[] }>()
 let prCache: PrCache = { key: '', files: new Map(), open: new Map() }
 type Board = { key: string; done: Set<number>; titles: Map<number, string> }
 const NO_BOARD: Board = { key: '', done: new Set(), titles: new Map() }
@@ -130,36 +123,35 @@ async function resolveRoots($: $, options: PluginOptions): Promise<Root[]> {
   })
 }
 
-const subDirs = (entries: FsEntry[], parent: string): RunDir[] =>
-  entries.filter(entry => entry.kind === 'dir').map(entry => ({ dir: `${parent}/${entry.name}` }))
-
-// A directory's own mtime; 0 when it cannot be read, which never counts as unchanged.
-const dirMtime = ($: $, path: string): Promise<number> => $.fs.stat(path).then(stat => stat.mtimeMs, () => 0)
-
-// A sha dir is re-listed only when its own mtime moves (a new panel run dir appears).
-async function runDirs($: $, root: Root): Promise<RunDir[]> {
-  const top = subDirs(await listDir($, root.dir), root.dir)
-  if (!root.isPanel) return top
-  const nested = await Promise.all(
-    top.map(async sha => {
-      let cached = shaRuns.get(sha.dir)
-      const mtimeMs = await dirMtime($, sha.dir)
-      if (mtimeMs === 0 || cached?.mtimeMs !== mtimeMs) {
-        cached = { mtimeMs, runs: subDirs(await listDir($, sha.dir), sha.dir) }
-        shaRuns.set(sha.dir, cached)
-      }
-      return cached.runs
-    }),
-  )
-  return nested.flat()
-}
+// NUL delimiters preserve paths with whitespace. Perl supplies sub-second directory mtimes
+// on both BSD and GNU find and includes the PID snapshot in the first root's process call.
+const DISCOVER_RUNS = String.raw`
+  use Time::HiRes qw(stat);
+  my ($root, $depth, $hours, $pids) = @ARGV;
+  if ($pids) {
+    open my $ps, '-|', 'ps', '-ax', '-o', 'pid=' or die $!;
+    while (<$ps>) { print "pid\0$1\0" if /^\s*(\d+)/; }
+    close $ps or die 'ps failed';
+  }
+  exit 0 unless -d $root;
+  $root = './' . $root unless $root =~ m{^/};
+  open my $find, '-|', 'find', '-H', $root, '-mindepth', $depth, '-maxdepth', $depth,
+    '-type', 'd', '-mtime', '-1', '-mmin', '-' . ($hours * 60), '-print0' or die $!;
+  local $/ = "\0";
+  while (my $dir = <$find>) {
+    chomp $dir;
+    my @stat = stat($dir);
+    printf "%.9f\0%s\0", $stat[9], $dir if @stat;
+  }
+  close $find or die 'find failed';
+`
 
 async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, sid: string): Promise<Probe | null> {
   const names = new Map(entries.map(entry => [entry.name, entry]))
-  if (!names.has('pid')) return null
+  if (!sid || !names.has('pid') || !names.has('owner-session')) return null
+  if (await readText($, `${dir}/owner-session`) !== sid) return null
   const field = (name: string) => (names.has(name) ? readText($, `${dir}/${name}`) : Promise.resolve(''))
-  const [owner, pid, provider, model, start, end, exitCode, cwd, agent] = await Promise.all([
-    field('owner-session'),
+  const [pid, provider, model, start, end, exitCode, cwd, agent] = await Promise.all([
     field('pid'),
     field('provider'),
     field('model'),
@@ -169,7 +161,6 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
     field('cwd'),
     field('agent'),
   ])
-  if (sid === '' || owner !== sid) return null
   const lastMtime = Math.max(0, ...entries.map(entry => entry.mtimeMs))
   return {
     pid,
@@ -189,47 +180,36 @@ async function probe($: $, dir: string, entries: FsEntry[], isPanel: boolean, si
   }
 }
 
-async function alivePids($: $, pids: string[]): Promise<Set<string>> {
-  const valid = pids.filter(pid => /^\d+$/.test(pid))
-  if (valid.length === 0) return new Set()
-  const ran = await $.process.run(['ps', '-o', 'pid=', '-p', valid.join(',')]).catch(() => null)
-  return new Set((ran?.stdout ?? '').split(/\s+/).filter(Boolean))
-}
-
-async function scanRuns($: $, options: PluginOptions, now: number): Promise<Run[]> {
+async function scanRuns($: $, options: PluginOptions, now: number, probes: Map<string, Cached>): Promise<Run[] | null> {
   const sid = await $.session.id()
-  const found: Probe[] = []
-  const seen = new Set<string>()
-  for (const root of await resolveRoots($, options)) {
-    const dirs = await runDirs($, root)
-    const probed = await Promise.all(
-      dirs.map(async ({ dir }) => {
-        let cached = probes.get(dir)
-        // read before the listing: a change in between shows as a different mtime next tick
-        const mtimeMs = await dirMtime($, dir)
-        if (!(cached?.done && mtimeMs !== 0 && cached.mtimeMs === mtimeMs)) {
-          const entries = await listDir($, dir)
-          const key = entries
-            .map(entry => entry.name)
-            .sort()
-            .concat(String(Math.max(0, ...entries.map(entry => entry.mtimeMs))))
-            .join('/')
-          if (cached?.key !== key) {
-            const done = entries.some(entry => entry.name === 'done')
-            cached = { key, mtimeMs, done, probe: await probe($, dir, entries, root.isPanel, sid) }
-          } else cached.mtimeMs = mtimeMs
-          probes.set(dir, cached)
-        }
-        return cached.probe
-      }),
-    )
-    for (const { dir } of dirs) seen.add(dir)
-    for (const one of probed) if (one) found.push(one)
+  const roots = await resolveRoots($, options)
+  const discovery = await Promise.all(roots.map((root, index) => $.process.run([
+    'perl', '-e', DISCOVER_RUNS, '--', root.dir, root.isPanel ? '2' : '1',
+    String(LIVE_WINDOW_MS / 3_600_000), index === 0 ? '1' : '',
+  ]).catch(() => null)))
+  if (discovery.some(result => !result || result.exitCode !== 0 || result.isStdoutTruncated)) return null
+
+  const alive = new Set<string>()
+  const dirs = new Map<string, { mtime: string; isPanel: boolean }>()
+  for (const [index, result] of discovery.entries()) {
+    const fields = result?.stdout.split('\0') ?? []
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      const [mtime, dir] = [fields[i]!, fields[i + 1]!]
+      if (mtime === 'pid') alive.add(dir)
+      else dirs.set(dir, { mtime, isPanel: roots[index]!.isPanel })
+    }
   }
-  for (const dir of probes.keys()) if (!seen.has(dir)) probes.delete(dir)
+
+  const found: Probe[] = []
+  for (const dir of probes.keys()) if (!dirs.has(dir)) probes.delete(dir)
+  const changed = [...dirs].filter(([dir, { mtime }]) => probes.get(dir)?.mtime !== mtime)
+  await Promise.all(changed.map(async ([dir, { mtime, isPanel }]) => {
+    const entries = await $.fs.list(dir).catch(() => null)
+    if (entries) probes.set(dir, { mtime, probe: await probe($, dir, entries, isPanel, sid) })
+  }))
+  for (const cached of probes.values()) if (cached.probe) found.push(cached.probe)
   // older runs without `done` read as dead: bounds the ps list and ignores reused pids
   const recent = (one: Probe) => now - (one.run.startedAt ?? 0) <= LIVE_WINDOW_MS
-  const alive = await alivePids($, found.filter(one => !one.hasDone && recent(one)).map(one => one.pid))
   const running: Run[] = []
   const done: Run[] = []
   for (const one of found) {
@@ -247,20 +227,25 @@ function runElapsed(run: Run, now: number): string {
 }
 
 // GPT runs stream codex events to result.jsonl; Claude runs only stderr.log.
+let diskTail: { key: string; tail: Tail } | null = null
 async function readTail($: $, run: Run): Promise<Tail> {
-  const names = new Set((await listDir($, run.dir)).map(entry => entry.name))
-  const tail = names.has('result.jsonl')
-    ? codexTail(await tailBytes($, `${run.dir}/result.jsonl`))
-    : names.has('stderr.log')
-      ? lines(await tailBytes($, `${run.dir}/stderr.log`)).slice(-TAIL_LINES)
-      : []
-  let lastMessage = ''
-  if (run.status !== 'running') {
-    lastMessage = names.has('last-message')
-      ? await readText($, `${run.dir}/last-message`)
-      : resultJsonMessage(names.has('result.json') ? await readText($, `${run.dir}/result.json`) : '')
+  const entries = new Map((await listDir($, run.dir)).map(entry => [entry.name, entry]))
+  const log = entries.get('result.jsonl') ?? entries.get('stderr.log')
+  const message = run.status === 'running' ? undefined : entries.get('last-message') ?? entries.get('result.json')
+  const version = (entry?: FsEntry) => entry && [entry.name, entry.mtimeMs, entry.size]
+  const key = JSON.stringify([run.dir, version(log), version(message)])
+  if (diskTail?.key === key) return diskTail.tail
+
+  const [output, final] = await Promise.all([
+    log ? tailBytes($, `${run.dir}/${log.name}`) : '',
+    message ? readText($, `${run.dir}/${message.name}`) : '',
+  ])
+  const tail = {
+    lines: log?.name === 'result.jsonl' ? codexTail(output) : lines(output).slice(-TAIL_LINES),
+    lastMessage: message?.name === 'result.json' ? resultJsonMessage(final) : final,
   }
-  return { lines: tail, lastMessage }
+  diskTail = { key, tail }
+  return tail
 }
 
 async function readNativeTail($: $, agentId: string): Promise<Tail> {
@@ -303,19 +288,22 @@ async function readReadyPrs($: $): Promise<PrRow[]> {
 // Repo panels: the list re-read when its file changes; each panel's last good output and last
 // error kept per root, id and argv.
 type PanelRun = { data: PanelData | null; error: string | null; startedAt: number | null; running: boolean }
-let panelList = { key: '', specs: [] as PanelSpec[] }
+let panelList = { key: '', specs: Promise.resolve<PanelSpec[]>([]) }
 const panelRuns = new Map<string, PanelRun>()
 const panelKey = (root: string, spec: PanelSpec) => [root, spec.id, ...spec.cmd].join('\0')
 
 // A re-read drops the kept output of every panel the list no longer has, in any root.
 async function readPanelSpecs($: $, root: string): Promise<PanelSpec[]> {
   const stat = (await listDir($, `${root}/.agent`)).find(entry => entry.name === 'pane-panels.json' && entry.kind === 'file')
-  if (!stat) return []
-  const key = `${root}|${stat.mtimeMs}|${stat.size}`
+  const key = stat ? `${root}|${stat.mtimeMs}|${stat.size}` : ''
   if (panelList.key !== key) {
-    panelList = { key, specs: parseSpecs(await readText($, `${root}/.agent/pane-panels.json`)) }
-    const kept = new Set(panelList.specs.map(spec => panelKey(root, spec)))
-    for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
+    const specs = stat ? readText($, `${root}/.agent/pane-panels.json`).then(parseSpecs) : Promise.resolve([])
+    panelList = { key, specs }
+    const kept = new Set((await specs).map(spec => panelKey(root, spec)))
+    if (panelList.specs === specs) {
+      for (const runKey of panelRuns.keys()) if (!kept.has(runKey)) panelRuns.delete(runKey)
+    }
+    return specs
   }
   return panelList.specs
 }
@@ -330,6 +318,7 @@ const panelRunOf = (root: string, spec: PanelSpec): PanelRun => {
 async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now: number): Promise<void> {
   run.running = true
   run.startedAt = now
+  const before = await panelResultKey($, root, spec)
   try {
     const ran = await $.process.run(spec.cmd, { cwd: root, stdin: '', timeoutMs: PANEL_TIMEOUT_MS })
     const data = ran.exitCode === 0 ? parsePanelOutput(ran.stdout) : null
@@ -341,7 +330,9 @@ async function runPanel($: $, root: string, spec: PanelSpec, run: PanelRun, now:
     run.error = firstLine(error instanceof Error ? error.message : String(error)) || 'did not run'
   } finally {
     run.running = false
-    $.ui.invalidate('ui.render')
+    if (panelRuns.get(panelKey(root, spec)) === run && before !== await panelResultKey($, root, spec)) {
+      $.ui.invalidate('ui.render')
+    }
   }
 }
 
@@ -355,7 +346,9 @@ const isDue = (run: PanelRun, spec: PanelSpec, now: number) => !run.running && (
 // the `running` flag, set as a run starts, let only the first timer start it.
 function schedulePanels($: $, root: string, specs: PanelSpec[], now: number): void {
   if (!specs.some(spec => isDue(panelRunOf(root, spec), spec, now))) return
+  const scheduled = panelList.specs
   $.clock.after(1, () => {
+    if (panelList.specs !== scheduled) return
     for (const spec of specs) {
       const run = panelRunOf(root, spec)
       if (isDue(run, spec, now)) void runPanel($, root, spec, run, now)
@@ -444,6 +437,16 @@ function panelViews(
       rows,
     }
   })
+}
+
+async function panelResultKey($: $, root: string, spec: PanelSpec): Promise<string> {
+  const [open, tabs, filters] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
+  const [view] = panelViews(root, [spec], open, tabs, filters, 0, 1000, 1000)
+  if (!view) return ''
+  return JSON.stringify([
+    view.summary, view.error, !!view.data, view.chipRows, view.header, view.noData, view.tab?.note,
+    view.rows.map(({ key, row, segments, card }) => [key, row.dim, segments, card]),
+  ])
 }
 
 const startOf = (row: Row) => row.diskRun?.startedAt ?? 0
@@ -649,6 +652,101 @@ async function openForManager($: $): Promise<void> {
   await $.ui.open({ id: PANE, title: 'Workers' })
 }
 
+const allRows = (rows: Row[]) => rows.flatMap(row => [row, ...row.children])
+
+function selectedRow(rows: Row[], key: string | null): Row | null {
+  return allRows(rows).find(row => row.key === key) ?? null
+}
+
+function visibleRows(rows: Row[], open: string[]) {
+  return rows.flatMap(row => [
+    { row, isChild: false },
+    ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+  ])
+}
+
+const tailOf = ($: $, row: Row) => row.diskRun ? readTail($, row.diskRun) : readNativeTail($, row.agentId ?? '')
+
+const probes = new Map<string, Cached>()
+let probeScope = ''
+let runs: Run[] = []
+let rows: Row[] = []
+let prs: PrRow[] = []
+let repo: string | null = null
+let chains: ReturnType<typeof chainLinks>[] = []
+let board = NO_BOARD
+let selectedTail: { key: string; tail: Tail } | null = null
+let refreshTimer: Timer | null = null
+let refreshing = false
+let drawnKey = ''
+
+// Use the same visible rows and chain titles as the pane. Hidden child durations
+// and unrelated board changes do not require a redraw.
+const paneKey = (open: string[], chosen: string | null) => {
+  const shown = selectedRow(rows, chosen)
+  return JSON.stringify([
+    visibleRows(rows, open).map(({ row, isChild }) =>
+      [row.key, isChild, row.kind, row.label, row.status, row.avatar, row.model, row.duration, row.children.length]),
+    shown && [shown.key, shown.label, shown.status, selectedTail?.key === shown.key ? selectedTail.tail : null],
+    prs, prs.length > 0 || chains.length > 0 ? repo : null,
+    chains.map(chain => chain.map(issue => [issue, board.titles.get(issue.n)])),
+    panelListKey,
+  ])
+}
+
+let panelListKey = ''
+const panelTitles = (specs: PanelSpec[]) => JSON.stringify(specs.map(spec => [spec.id, spec.title]))
+
+async function refresh($: $, options: PluginOptions): Promise<void> {
+  if (refreshing) return
+  refreshing = true
+  try {
+    const panes = await $.ui.panes()
+    if (!panes.some(pane => pane.id === PANE && pane.isShown)) return
+    const now = await $.clock.now()
+    const scope = JSON.stringify(await Promise.all([$.session.root(), $.session.id()]))
+    if (scope !== probeScope) {
+      probeScope = scope
+      probes.clear()
+      diskTail = null
+      runs = []
+    }
+    const [scanned, agents, nextPrs, nextRepo, chainFile, root] = await Promise.all([
+      scanRuns($, options, now, probes), $.agent.list().catch(() => []), readReadyPrs($),
+      resolveRepo($), readChains($), repoRoot($),
+    ])
+    const [nextBoard, specs, chosen] = await Promise.all([
+      chainFile.length > 0 ? readBoard($) : NO_BOARD,
+      root ? readPanelSpecs($, root) : [],
+      read($, selectedRun),
+    ])
+    runs = scanned ?? runs
+    const nextRows = rowsFor(runs, agents, now)
+    const shown = selectedRow(nextRows, chosen)
+    const tail = shown ? await tailOf($, shown) : null
+    const [open, currentChoice] = await Promise.all([read($, expanded), read($, selectedRun)])
+    const active = new Set(allRows(nextRows).flatMap(row => {
+      const n = row.status === 'running' ? issueNumber(row.label) : null
+      return n ? [Number(n)] : []
+    }))
+    rows = nextRows
+    prs = nextPrs
+    repo = nextRepo
+    board = nextBoard
+    chains = chainFile.map(chain => chainLinks(chain, board.done, active))
+    if (chosen === currentChoice) selectedTail = shown && tail ? { key: shown.key, tail } : null
+    panelListKey = panelTitles(specs)
+    if (root) schedulePanels($, root, specs, now)
+    const key = paneKey(open, currentChoice)
+    if (drawnKey !== key) {
+      drawnKey = key
+      $.ui.invalidate('ui.render')
+    }
+  } finally {
+    refreshing = false
+  }
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -657,11 +755,12 @@ export const register: Register = (on, options) => {
     })
     roleTicksLeft = e.isInteractive ? ROLE_WAIT_TICKS : 0
     await openForManager($)
-    $.clock.every(REFRESH_MS, async () => {
-      await openForManager($)
-      $.ui.invalidate('ui.render')
-    })
-
+    if (roleTicksLeft > 0) {
+      const roleTimer = $.clock.every(REFRESH_MS, async () => {
+        await openForManager($)
+        if (roleTicksLeft <= 0) roleTimer.cancel()
+      })
+    }
     return next(e)
   })
 
@@ -674,34 +773,24 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown, Link } = $.ui.resolve(e)
     const Image = e.surface === 'terminal' ? $.ui.resolve(e).Image : null
-    const now = await $.clock.now()
-    const [runs, agents] = await Promise.all([scanRuns($, options, now), $.agent.list().catch(() => [])])
-    const rows = rowsFor(runs, agents, now)
-    const prs = await readReadyPrs($)
-    const [chosen, open] = await Promise.all([read($, selectedRun), read($, expanded)])
-    const visible = rows.flatMap(row => [
-      { row, isChild: false },
-      ...(open.includes(row.key) ? row.children.slice(0, CHILD_CAP).map(child => ({ row: child, isChild: true })) : []),
+    if (!refreshTimer) {
+      refreshTimer = $.clock.every(REFRESH_MS, () => refresh($, options))
+      $.clock.after(1, () => refresh($, options))
+    }
+    const [chosen, open, root, openPanels, tabPicks, filterPicks] = await Promise.all([
+      read($, selectedRun), read($, expanded), repoRoot($), read($, panelsOpen), read($, panelTabs), read($, panelFilters),
     ])
-    const shown = rows.flatMap(row => [row, ...row.children]).find(row => row.key === chosen) ?? null
+    const specs = root ? await readPanelSpecs($, root) : []
+    if (root && specs.length > 0) schedulePanels($, root, specs, await $.clock.now())
+    panelListKey = panelTitles(specs)
+    const visible = visibleRows(rows, open)
+    const shown = selectedRow(rows, chosen)
+    const tail = shown && selectedTail?.key === shown.key ? selectedTail.tail : null
+    drawnKey = paneKey(open, chosen)
     animating = Image
       ? visible.flatMap(({ row }) => (row.status === 'running' && row.avatar ? [{ key: row.key, avatar: row.avatar }] : [])).slice(0, MAX_ANIMATED)
       : []
     syncFrames($)
-    const tail = shown ? (shown.diskRun ? await readTail($, shown.diskRun) : await readNativeTail($, shown.agentId ?? '')) : null
-    const repo = await resolveRepo($)
-    const chainFile = await readChains($)
-    const board = chainFile.length > 0 ? await readBoard($) : NO_BOARD
-    // an issue is in progress while a running row's label names its #N
-    const active = new Set(rows.flatMap(row => [row, ...row.children]).flatMap(row => {
-      const n = row.status === 'running' ? issueNumber(row.label) : null
-      return n ? [Number(n)] : []
-    }))
-    const chains = chainFile.map(chain => chainLinks(chain, board.done, active))
-    const root = await repoRoot($)
-    const specs = root ? await readPanelSpecs($, root) : []
-    const [openPanels, tabPicks, filterPicks] = await Promise.all([read($, panelsOpen), read($, panelTabs), read($, panelFilters)])
-    if (root && specs.length > 0) schedulePanels($, root, specs, now)
     // a card's top counts pane rows: the panels are the first rows of the pane
     const panels = root ? panelViews(root, specs, openPanels, tabPicks, filterPicks, 0, e.props.bodyColumns, e.props.scroll.offset + e.props.scroll.bodyRows) : []
     // chain row i sits below the panels (one line each: head, error, chips, columns, rows, no
@@ -849,6 +938,8 @@ export const register: Register = (on, options) => {
               label={`${row.kind ? `${row.kind} ` : ''}${row.label}${row.model ? `  ${row.model}` : ''}${row.duration ? `  ${row.duration}` : ''}  ${row.status}${row.children.length > 0 ? `  ${open.includes(row.key) ? '▾' : '▸'}${row.children.length}` : ''}`}
               onPress={async () => {
                 const wasShown = (await read($, selectedRun)) === row.key
+                const tail = wasShown ? null : await tailOf($, row)
+                selectedTail = tail ? { key: row.key, tail } : null
                 await update($, selectedRun, () => (wasShown ? null : row.key))
                 if (row.children.length > 0) await update($, expanded, keys => (wasShown ? keys.filter(key => key !== row.key) : [...keys, row.key]))
               }}
